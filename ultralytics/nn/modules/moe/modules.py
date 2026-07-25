@@ -620,6 +620,10 @@ class ES_MOE(nn.Module):
 
     def _sparse_forward(self, x, routing_weights):
         """Sparse forward: compute only Top-K experts (used during inference)."""
+        # Selecting every expert must exactly match the dense training-time path.
+        if self.top_k >= self.num_experts:
+            return self._dense_forward(x, routing_weights)
+
         B, E, H, W = routing_weights.shape
 
         # Compute per-expert importance
