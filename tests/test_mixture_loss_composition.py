@@ -6,6 +6,7 @@ import torch.nn as nn
 from ultralytics.nn.mixture_loss import CompositeCriterion, build_composite_criterion
 from ultralytics.nn.modules.moa import C2fMoA
 from ultralytics.nn.modules.routing_protocol import clear_aux_records
+from ultralytics.nn.modules.latent_mixture import LatentMixture
 
 
 class NativeCriterion:
@@ -59,3 +60,17 @@ def test_composite_aux_keeps_router_gradient_connection():
         parameter.grad is not None and parameter.grad.abs().sum() > 0
         for parameter in block.m[0].router.parameters()
     )
+
+
+def test_latent_aux_uses_conservative_default_gain():
+    clear_aux_records(step=3)
+    block = LatentMixture([8, 8], 8, residual_init=0.01, balance_loss_coeff=0.1, router_z_loss_coeff=0.01).train()
+    model = nn.Sequential(block)
+    output = block([torch.randn(2, 8, 4, 4), torch.randn(2, 8, 4, 4)])
+    native = NativeCriterion()
+    criterion = CompositeCriterion(model, native)
+    loss, _ = criterion(output, {})
+
+    assert loss.requires_grad
+    assert model._last_mixture_aux_loss.detach().abs().item() > 0
+    assert loss.detach().abs().item() > 0

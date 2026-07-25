@@ -37,7 +37,9 @@ class MixtureRuntimeController:
                 parameter for parameter in iter_core_moe_expert_params(self.model) if parameter.requires_grad
             ]
         if getattr(self.trainer, "world_size", 1) > 1:
-            self.prepare_ddp()
+            # Routed models use find_unused_parameters=True in BaseTrainer. Configure
+            # the contract before compilation, then confirm the exact value at DDP wrap time.
+            self.prepare_ddp(find_unused_parameters=True)
 
     def _configure_map_saturation(self) -> None:
         """Attach opt-in validation-driven balance schedulers to core MoE modules."""
@@ -88,15 +90,22 @@ class MixtureRuntimeController:
             LOGGER.warning("[Mixture] temperature scheduler found no routable temperature buffers")
         return updated
 
-    def prepare_ddp(self) -> tuple[int, int, int]:
-        """Disable checkpoint recomputation and sparse dispatch combinations unsafe under DDP."""
+    def prepare_ddp(self, *, find_unused_parameters: bool = True) -> tuple[int, int, int]:
+        """Configure routed modules for the exact unused-parameter policy used by DDP."""
         root = self.model
         disabled = frozen = dense = 0
         for module in root.modules():
             if getattr(module, "use_gradient_checkpointing", False):
                 module.use_gradient_checkpointing = False
                 disabled += 1
-            if hasattr(module, "sparse_train") and module.sparse_train:
+            if hasattr(module, "configure_ddp_sparse_training"):
+                module.configure_ddp_sparse_training(
+                    find_unused_parameters=find_unused_parameters,
+                    source="trainer",
+                )
+                if getattr(module, "sparse_train", False) and not find_unused_parameters:
+                    dense += 1
+            elif hasattr(module, "sparse_train") and module.sparse_train:
                 module.sparse_train = False
                 dense += 1
             if hasattr(module, "expert_projections") and hasattr(module, "ddp_safe_dense"):
@@ -115,6 +124,49 @@ class MixtureRuntimeController:
                 f"enabled dense routing={dense}, froze control-path adapters={frozen}."
             )
         return disabled, frozen, dense
+
+    def resolve_ddp_policy(self, *, compile_enabled: bool) -> tuple[bool, bool]:
+        """Return ``(find_unused_parameters, static_graph)`` for the routed training graph.
+
+        Compiled dense routed modules have a stable parameter-use graph and can
+        avoid DDP's per-step unused-parameter traversal. Modules that explicitly
+        declare sparse training, and older modules that only declare generic
+        sparse dispatch, retain the conservative unused-parameter policy.
+        """
+        if not compile_enabled:
+            return True, False
+
+        from ultralytics.utils.export_capabilities import classify_routed_module
+
+        for module in self.model.modules():
+            capability_fn = getattr(module, "export_capabilities", None)
+            if not callable(capability_fn):
+                if classify_routed_module(module) is not None:
+                    return True, False
+                continue
+            try:
+                capabilities = capability_fn()
+            except (AttributeError, RuntimeError, TypeError, ValueError) as exc:
+                LOGGER.warning(
+                    f"[Mixture+DDP] could not resolve {module.__class__.__name__} training dispatch: {exc}. "
+                    "Keeping find_unused_parameters=True."
+                )
+                return True, False
+            if not isinstance(capabilities, dict):
+                LOGGER.warning(
+                    f"[Mixture+DDP] {module.__class__.__name__}.export_capabilities() returned "
+                    f"{type(capabilities).__name__}, expected dict. Keeping find_unused_parameters=True."
+                )
+                return True, False
+            if "training_sparse_dispatch" in capabilities:
+                training_sparse = bool(capabilities["training_sparse_dispatch"])
+            elif "sparse_train" in capabilities:
+                training_sparse = bool(capabilities["sparse_train"])
+            else:
+                training_sparse = bool(capabilities.get("sparse_dispatch", False))
+            if training_sparse:
+                return True, False
+        return False, True
 
     def begin_forward(self) -> int:
         try:

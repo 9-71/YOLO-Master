@@ -89,6 +89,41 @@ def test_compatibility_alias_survives_torch_serialization():
     assert loaded.state_dict().keys() == model.state_dict().keys()
 
 
+def test_visual_gated_helpers_preserve_legacy_exports_and_checkpoint_paths():
+    from ultralytics.nn.modules.moe import gated, hybrid, modules
+
+    exported = (
+        "VisualDetailGate",
+        "PyramidContextMixer",
+        "_pool_to_size_mps_safe",
+        "_run_visual_hybrid_moe_forward",
+    )
+    assert all(getattr(hybrid, name) is getattr(gated, name) for name in exported if hasattr(hybrid, name))
+    assert all(getattr(modules, name) is getattr(gated, name) for name in exported)
+    assert gated.VisualDetailGate.__module__ == gated.__name__
+    assert gated.PyramidContextMixer.__module__ == gated.__name__
+
+    model = gated.VisualEnhancedAdaptiveGateMoE(
+        16,
+        16,
+        num_experts=2,
+        top_k=1,
+        num_groups=4,
+        fused_expert_threshold=4,
+    )
+    keys = set(model.state_dict())
+    assert any(key.startswith("detail_gate.") for key in keys)
+    assert any(key.startswith("context_mixer.") for key in keys)
+    assert any(key.startswith("feature_refiner.") for key in keys)
+
+    buffer = io.BytesIO()
+    torch.save(model, buffer)
+    buffer.seek(0)
+    loaded = torch_load(buffer, map_location="cpu", weights_only=False)
+    assert type(loaded) is gated.VisualEnhancedAdaptiveGateMoE
+    assert loaded.state_dict().keys() == model.state_dict().keys()
+
+
 def test_legacy_modules_contain_no_public_class_definitions():
     moe_root = Path(__file__).parents[1] / "ultralytics/nn/modules/moe"
     for name in ("base.py", "blocks_advanced.py", "experts_advanced.py", "hybrid.py", "integration.py", "routers_advanced.py"):

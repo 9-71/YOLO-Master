@@ -145,7 +145,7 @@ def test_mixture_buffer_initializer_is_idempotent_and_shape_three():
     first = initialize_mixture_loss_ema_buffer(model)
     second = initialize_mixture_loss_ema_buffer(model)
     assert first is second
-    assert first.shape == (3,)
+    assert first.shape == (4,)
     assert first.dtype == torch.float32
     assert "_mixture_loss_ema_buf" in model.state_dict()
 

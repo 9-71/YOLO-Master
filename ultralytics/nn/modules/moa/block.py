@@ -131,6 +131,7 @@ class MoABlock(nn.Module):
             routing_kind="moa",
             sparse_dispatch=False,
             eager_sparse_dispatch=False,
+            training_sparse_dispatch=False,
             sparse_export_limitation="MoA uses dense soft routing in eager and exported graphs.",
         )
         return capabilities

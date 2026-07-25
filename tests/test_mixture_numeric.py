@@ -11,6 +11,9 @@ from ultralytics.nn.modules._numeric import (
     fp_clamp_floor,
     stable_normalize,
 )
+from ultralytics.nn.modules.moa.router import _MoARouter
+from ultralytics.nn.modules.moe.gated import DualStreamGateRouter, ZeroCostRouter
+from ultralytics.nn.modules.mot.router import _MoTRouter
 from ultralytics.nn.modules.moa.moa import all_reduce_mean as moa_all_reduce_mean
 from ultralytics.nn.modules.moe.loss import all_reduce_mean as moe_all_reduce_mean
 from ultralytics.nn.modules.mot.mot import all_reduce_mean as mot_all_reduce_mean
@@ -72,3 +75,43 @@ def test_router_logit_limits_remain_module_specific():
     """The shared constants cleanup must not merge semantically distinct router policies."""
     assert MOA_ROUTER_LOGIT_LIMIT == 80.0
     assert MOT_ROUTER_LOGIT_LIMIT == 80.0
+
+
+def test_moa_router_keeps_fp32_logits_and_activation_dtype_weights():
+    router = _MoARouter(8, num_groups=3).eval().half()
+    x = torch.randn(2, 8, 4, 4, dtype=torch.bfloat16)
+
+    probs, logits = router(x, return_logits=True)
+
+    assert probs.dtype == x.dtype
+    assert logits.dtype == torch.float32
+    assert torch.isfinite(probs).all()
+    assert torch.allclose(probs.float().sum(dim=1), torch.ones_like(probs[:, 0].float()), atol=2e-3)
+
+
+def test_mot_router_keeps_fp32_logits_and_activation_dtype_weights():
+    router = _MoTRouter(8, num_experts=3, top_k=2).eval().half()
+    x = torch.randn(2, 8, 4, 4, dtype=torch.bfloat16)
+
+    weights, indices, logits = router(x, return_logits=True)
+
+    assert weights.dtype == x.dtype
+    assert logits.dtype == torch.float32
+    assert indices.dtype == torch.long
+    assert torch.isfinite(weights).all()
+    assert torch.allclose(weights.float().sum(dim=1), torch.ones_like(weights[:, 0].float()), atol=2e-3)
+
+
+@pytest.mark.parametrize("router_cls", [DualStreamGateRouter, ZeroCostRouter])
+def test_gated_router_keeps_fp32_aux_statistics_and_activation_dtype_weights(router_cls):
+    router = router_cls(8, num_experts=3, top_k=2).train().half()
+    x = torch.randn(2, 8, 4, 4, dtype=torch.bfloat16)
+
+    weights, indices, stats = router(x)
+
+    assert weights.dtype == x.dtype
+    assert indices.dtype == torch.long
+    assert stats["router_probs"].dtype == torch.float32
+    assert stats["router_logits"].dtype == torch.float32
+    assert {parameter.dtype for parameter in router.parameters()} == {torch.float32}
+    assert torch.isfinite(weights).all()
