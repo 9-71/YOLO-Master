@@ -115,6 +115,20 @@ def example_small_function(arg1: int, arg2: int = 4) -> bool:
 
 All pull requests must pass the [GitHub Actions](https://github.com/features/actions) [Continuous Integration](https://docs.ultralytics.com/help/CI) (CI) tests before they can be merged. These tests include linting, unit tests, and other checks to ensure that your changes meet the project's quality standards. Review the CI output and address any issues that arise.
 
+#### YOLO-Master Local Quality Gate
+
+Install the development tools and check the files changed in your working tree before opening a pull request:
+
+```bash
+pip install -e ".[dev]"
+python scripts/check_changed_quality.py
+```
+
+The default command runs Ruff lint and codespell on every supported changed file. It enforces Ruff formatting for new
+files and for files whose Git baseline was already formatted, while reporting existing baseline formatting debt
+without rewriting unrelated code. Use `python scripts/check_changed_quality.py --strict-format` on formatting cleanup
+branches or before enabling full formatting enforcement in CI. Explicit file arguments are always checked strictly.
+
 ## ✨ Best Practices for Code Contributions
 
 When contributing code to Ultralytics projects, keep these best practices in mind:

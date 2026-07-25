@@ -5,8 +5,9 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Any
 
-from ultralytics.nn.modules.moa import C2fMoA
+from ultralytics.mixture_metadata import MIXTURE_MODULE_KINDS
 from ultralytics.nn.modules.block import DyC2f, DyMoEBlock
+from ultralytics.nn.modules.moa import C2fMoA
 from ultralytics.nn.modules.moe import (
     A2C2fMoE,
     AdaptiveGateMoE,
@@ -58,6 +59,12 @@ MIXTURE_MODULES = {
     "VisualEnhancedAdaptiveGateMoE": VisualEnhancedAdaptiveGateMoE,
     "LatentMixture": LatentMixture,
 }
+if set(MIXTURE_MODULES) != set(MIXTURE_MODULE_KINDS):
+    missing_metadata = sorted(set(MIXTURE_MODULES) - set(MIXTURE_MODULE_KINDS))
+    missing_runtime = sorted(set(MIXTURE_MODULE_KINDS) - set(MIXTURE_MODULES))
+    raise RuntimeError(
+        f"mixture module metadata mismatch: missing_metadata={missing_metadata}, missing_runtime={missing_runtime}"
+    )
 MIXTURE_BASE_MODULES = frozenset(MIXTURE_MODULES.values())
 MIXTURE_REPEAT_MODULES = frozenset({A2C2fMoE, C2fMoA, C2fMoT, DyC2f})
 MIXTURE_MULTI_INPUT_MODULES = frozenset({LatentMixture})

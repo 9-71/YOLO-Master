@@ -215,26 +215,32 @@ class BaseRouter(nn.Module):
         if self.capacity_factor is not None and training:
             max_tokens = int(self.capacity_factor * self.num_experts)
             if B > max_tokens:
-                overflow_mask = torch.zeros(B, dtype=torch.bool, device=logits.device)
+                capacity_mask = torch.zeros(B, dtype=torch.bool, device=logits.device)
                 # Use a rank-independent selection so DDP replicas make the
                 # same capacity decision for identical local batch shapes.
                 indices = torch.arange(max_tokens, device=logits.device)
-                overflow_mask[indices] = True
+                capacity_mask[indices] = True
+                overflow_mask = ~capacity_mask
                 # Spread overflow tokens across experts instead of forcing all
                 # of them onto expert 0, which amplifies load imbalance.
                 topk_indices = topk_indices.clone()
-                overflow_indices = torch.nonzero(~overflow_mask, as_tuple=False).flatten()
+                overflow_indices = torch.nonzero(overflow_mask, as_tuple=False).flatten()
                 topk_indices[overflow_indices] = (
                     torch.arange(overflow_indices.numel(), device=logits.device) % self.num_experts
                 ).unsqueeze(1)
-                # Mask routing probabilities before normalization so the
-                # capacity decision cannot be undone by later weighting.
-                topk_vals = topk_vals.masked_fill(~overflow_mask[:, None], 0)
-                topk_vals[~overflow_mask, 0] = 1
 
         # 4) Normalize weights
         sum_vals = topk_vals.sum(dim=1, keepdim=True) + 1e-6
         topk_vals = topk_vals / sum_vals
+        if overflow_mask is not None:
+            # Preserve the established hard round-robin forward assignment but
+            # use assigned router probabilities as a straight-through surrogate
+            # so overflow samples still train the router.
+            assigned_probs = probs.gather(1, topk_indices)
+            hard_weights = torch.zeros_like(assigned_probs)
+            hard_weights[:, 0] = 1
+            straight_through = hard_weights + (assigned_probs - assigned_probs.detach())
+            topk_vals = torch.where(overflow_mask[:, None], straight_through, topk_vals)
 
         # 5) Collect loss-related info (train only)
         loss_dict = {}
@@ -243,7 +249,12 @@ class BaseRouter(nn.Module):
             loss_dict['router_probs'] = probs
             loss_dict['topk_indices'] = topk_indices
             if overflow_mask is not None:
-                loss_dict['overflow_count'] = int(B - max_tokens)
+                overflow_count = int(B - max_tokens)
+                loss_dict['overflow_count'] = overflow_count
+                loss_dict['overflow_fraction'] = overflow_count / max(B, 1)
+                loss_dict['overflow_mask'] = overflow_mask.detach().clone()
+                loss_dict['capacity_limit'] = int(max_tokens)
+                loss_dict['overflow_policy'] = 'round_robin_straight_through'
 
         return topk_vals, topk_indices, loss_dict
 

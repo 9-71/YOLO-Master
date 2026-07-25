@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import re
 from copy import deepcopy
 from pathlib import Path
@@ -87,6 +88,68 @@ MULTIMODAL_EVALUATE_PARAM_KEYS = {
     "report_name",
 }
 
+
+def _sha256_file(path: Path) -> str:
+    """Return the SHA-256 digest for a local profile YAML."""
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _resolve_profile_input(inputs: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    """Resolve an exact mixture profile ID into downstream YOLO inputs and provenance."""
+    inputs = dict(inputs)
+    profile_id = inputs.pop("profile", None)
+    if profile_id is None:
+        return inputs, None
+    if not isinstance(profile_id, str) or not profile_id.strip():
+        raise ValueError("`inputs.profile` must be a non-empty mixture profile identifier.")
+    if inputs.get("model") not in (None, ""):
+        raise ValueError("`inputs.model` and `inputs.profile` are mutually exclusive.")
+
+    from ultralytics.cfg.mixture_catalog import DEFAULT_MIXTURE_MODEL_ROOT, get_mixture_profile
+
+    try:
+        profile = get_mixture_profile(profile_id)
+    except KeyError as exc:
+        raise ValueError(str(exc)) from exc
+    requested_task = inputs.get("task")
+    if requested_task and profile.task != "unknown" and str(requested_task).casefold() != profile.task.casefold():
+        raise ValueError(
+            f"requested task {requested_task!r} conflicts with profile {profile.profile_id!r} task {profile.task!r}"
+        )
+
+    model_path = (DEFAULT_MIXTURE_MODEL_ROOT / profile.path).resolve(strict=True)
+    inputs["model"] = str(model_path)
+    if profile.task != "unknown":
+        inputs.setdefault("task", profile.task)
+    provenance = profile.as_dict()
+    provenance.update({"model_path": str(model_path), "sha256": _sha256_file(model_path)})
+    return inputs, provenance
+
+
+def _resolve_request_profile(inputs: dict[str, Any], existing: Any) -> tuple[dict[str, Any], dict[str, Any] | None]:
+    """Resolve new profile input or revalidate provenance carried by an async child request."""
+    if inputs.get("profile") is not None or existing is None:
+        return _resolve_profile_input(inputs)
+    if not isinstance(existing, dict) or not existing.get("profile_id"):
+        raise ValueError("top-level profile provenance must contain a valid `profile_id`.")
+
+    inputs = dict(inputs)
+    supplied_model = inputs.pop("model", None)
+    inputs["profile"] = existing["profile_id"]
+    resolved_inputs, provenance = _resolve_profile_input(inputs)
+    if supplied_model:
+        supplied_path = Path(str(supplied_model))
+        if not supplied_path.is_absolute():
+            supplied_path = REPO_ROOT / supplied_path
+        if supplied_path.resolve() != Path(resolved_inputs["model"]).resolve():
+            raise ValueError("top-level profile provenance conflicts with the resolved model path.")
+    return resolved_inputs, provenance
+
+
 def parse_bool(value: Any, default: bool = False) -> bool:
     if value is None:
         return default
@@ -101,8 +164,12 @@ def parse_bool(value: Any, default: bool = False) -> bool:
         if text in {"0", "false", "no", "off"}:
             return False
     return bool(value)
+
+
 def path_like(value: str) -> bool:
     return any(token in value for token in ("/", "\\", ".")) and not value.startswith(("http://", "https://"))
+
+
 def normalize_value(value: Any) -> Any:
     if isinstance(value, dict):
         return {k: normalize_value(v) for k, v in value.items()}
@@ -119,8 +186,11 @@ def normalize_value(value: Any) -> Any:
         if builtin_dataset.exists():
             return str(builtin_dataset)
     return value
+
+
 def normalize_request(request: dict[str, Any]) -> dict[str, Any]:
     request = deepcopy(request)
+    existing_profile = request.pop("profile", None)
     request.setdefault("workspace_root", str(REPO_ROOT))
     request.setdefault("request_id", default_request_id(request.get("skill", "skill")))
     request.setdefault("runtime", {})
@@ -128,22 +198,35 @@ def normalize_request(request: dict[str, Any]) -> dict[str, Any]:
     request.setdefault("params", {})
     request.setdefault("artifacts", {})
     request.setdefault("policy", {})
+    request["inputs"], profile = _resolve_request_profile(request["inputs"], existing_profile)
+    if profile is not None:
+        request["profile"] = profile
     request["inputs"] = normalize_value(request["inputs"])
     request["params"] = normalize_value(request["params"])
     request["artifacts"] = normalize_value(request["artifacts"])
     return request
+
+
 def is_dry_run(request: dict[str, Any]) -> bool:
     return bool(request.get("policy", {}).get("dry_run", False))
+
+
 def slugify(value: str) -> str:
     slug = re.sub(r"[^a-zA-Z0-9]+", "-", value).strip("-").lower()
     return slug or "skill"
+
+
 def default_request_id(skill: str) -> str:
     return f"{slugify(skill)}-{uuid4().hex[:8]}"
+
+
 def prefer_cli(request: dict[str, Any]) -> bool:
     runtime = request.get("runtime", {})
     if runtime.get("prefer_python_api"):
         return False
     return runtime.get("prefer_cli", True)
+
+
 def reference_state(value: Any) -> dict[str, Any]:
     if value in (None, ""):
         return {"requested": value, "resolved": value, "exists": False}
@@ -154,9 +237,13 @@ def reference_state(value: Any) -> dict[str, Any]:
     else:
         state["exists"] = bool(resolved)
     return state
+
+
 def resolved_path(value: str | Path) -> Path:
     path = Path(value)
     return path if path.is_absolute() else (REPO_ROOT / path).resolve()
+
+
 def coerce_scalar(value: Any) -> Any:
     if not isinstance(value, str):
         return value
@@ -174,10 +261,14 @@ def coerce_scalar(value: Any) -> Any:
         return float(text)
     except Exception:
         return text
+
+
 def as_list(value: Any) -> list[Any]:
     if value is None:
         return []
     return value if isinstance(value, list) else [value]
+
+
 def coerce_int(value: Any) -> int | None:
     if isinstance(value, bool) or value is None:
         return None
@@ -190,6 +281,8 @@ def coerce_int(value: Any) -> int | None:
         return int(value)
     except Exception:
         return None
+
+
 def coerce_float(value: Any) -> float | None:
     if isinstance(value, bool) or value is None:
         return None
@@ -197,6 +290,8 @@ def coerce_float(value: Any) -> float | None:
         return float(value)
     except Exception:
         return None
+
+
 def split_yolo_and_multimodal_params(params: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
     yolo_params = {}
     multimodal_params = {}
@@ -206,7 +301,11 @@ def split_yolo_and_multimodal_params(params: dict[str, Any]) -> tuple[dict[str, 
         else:
             yolo_params[key] = value
     return yolo_params, multimodal_params
-def split_yolo_multimodal_evaluate_params(params: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+
+
+def split_yolo_multimodal_evaluate_params(
+    params: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
     yolo_params: dict[str, Any] = {}
     multimodal_params: dict[str, Any] = {}
     evaluate_params: dict[str, Any] = {}

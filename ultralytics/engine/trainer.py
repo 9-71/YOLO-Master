@@ -457,12 +457,16 @@ class BaseTrainer:
         if self.world_size > 1:
             # static_graph=True permits params used >1 time per forward (e.g. flow_model in
             # o2m+o2o pose loss branches) under torch.compile.
+            ddp_find_unused_parameters, ddp_static_graph = self.mixture_controller.resolve_ddp_policy(
+                compile_enabled=bool(self.args.compile)
+            )
+            self.mixture_controller.prepare_ddp(find_unused_parameters=ddp_find_unused_parameters)
             self.model = nn.parallel.DistributedDataParallel(
                 self.model,
                 device_ids=[self.device.index],
-                static_graph=bool(self.args.compile and not has_mixture_loss),
+                static_graph=ddp_static_graph,
                 broadcast_buffers=False,
-                find_unused_parameters=bool(has_mixture_loss or not self.args.compile),
+                find_unused_parameters=ddp_find_unused_parameters,
             )
 
         # Batch size

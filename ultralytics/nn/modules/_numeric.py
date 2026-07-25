@@ -2,9 +2,33 @@
 
 from __future__ import annotations
 
+from contextlib import nullcontext
+
 import torch
 import torch.distributed as dist
 import torch.nn as nn
+
+
+def disabled_autocast(device_type: str):
+    """Return an autocast-disabled context for router-critical numerical work."""
+    if device_type in {"cpu", "cuda", "mps"}:
+        return torch.autocast(device_type=device_type, enabled=False)
+    return nullcontext()
+
+
+class FP32RouterMixin:
+    """Keep router parameters in FP32 across model-wide dtype conversions."""
+
+    def _apply(self, fn):
+        super()._apply(fn)
+        for parameter in self.parameters(recurse=True):
+            parameter.data = parameter.data.float()
+            if parameter.grad is not None:
+                parameter.grad.data = parameter.grad.data.float()
+        for buffer in self.buffers(recurse=True):
+            if buffer.is_floating_point():
+                buffer.data = buffer.data.float()
+        return self
 
 
 def should_reduce_ddp(module: nn.Module | None = None, *, training: bool | None = None) -> bool:

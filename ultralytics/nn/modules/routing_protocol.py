@@ -231,12 +231,14 @@ def export_capabilities(module: nn.Module) -> dict[str, Any]:
         or getattr(module, "sparse_train", False)
         or getattr(module, "use_sparse_inference", False)
     )
+    training_sparse = bool(getattr(module, "sparse_train", False))
     return {
         "routing_kind": getattr(module, "_routing_aux_kind", "unknown"),
         "supported": True,
         "dynamic_routing": True,
         "sparse_dispatch": eager_sparse,
         "eager_sparse_dispatch": eager_sparse,
+        "training_sparse_dispatch": training_sparse,
         "onnx_sparse_dispatch": False,
         "torchscript_trace_sparse_dispatch": False,
         "exact_sparse_export": False,

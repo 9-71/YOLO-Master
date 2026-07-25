@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import json
 import os
 import shutil
 import subprocess
@@ -161,6 +162,7 @@ CLI_HELP_MSG = f"""
         yolo checks
         yolo version
         yolo settings
+        yolo mixtures kind=mot task=detect family=master/v0_10
         yolo copy-cfg
         yolo cfg
         yolo solutions help
@@ -327,6 +329,7 @@ MIXTURE_INT_KEYS = frozenset(
         "molora_r",
         "molora_top_k",
         "molora_warmup_steps",
+        "mot_sparse_train_warmup_steps",
         "slice_size",
     }
 )
@@ -351,6 +354,7 @@ CFG_INT_MIN = {  # minimum valid values for integer arguments used as divisors, 
     "mask_ratio": 1,
     "vid_stride": 1,
     "seed": 0,
+    "mot_sparse_train_warmup_steps": 0,
 }
 MIXTURE_BOOL_KEYS = frozenset(
     {
@@ -446,6 +450,7 @@ MIXTURE_STR_KEYS = frozenset(
         "lora_planner_backend",
         "molora_expert_init",
         "molora_router_type",
+        "mot_scene_inference_mode",
     }
 )
 CFG_STR_KEYS = frozenset({"optimizer", "split", "copy_paste_mode", "auto_augment"}) | MIXTURE_STR_KEYS
@@ -1052,6 +1057,57 @@ def handle_yolo_solutions(args: list[str]) -> None:
             cap.release()
 
 
+def _format_mixture_profiles(profiles: tuple) -> str:
+    """Format mixture catalog profiles as a deterministic plain-text table."""
+    headers = ("PROFILE", "TASK", "FAMILY", "KINDS", "SCALES", "MODULES")
+    rows = [
+        (
+            profile.profile_id,
+            profile.task,
+            profile.family,
+            ",".join(profile.mixture_kinds),
+            ",".join(profile.scales) or "-",
+            ",".join(profile.mixture_modules),
+        )
+        for profile in profiles
+    ]
+    widths = [max((len(headers[index]), *(len(row[index]) for row in rows))) for index in range(len(headers))]
+
+    def render(row: tuple[str, ...]) -> str:
+        """Render one left-aligned table row."""
+        return "  ".join(value.ljust(widths[index]) for index, value in enumerate(row)).rstrip()
+
+    lines = [render(headers), render(tuple("-" * width for width in widths))]
+    lines.extend(render(row) for row in rows)
+    count = len(rows)
+    lines.append(f"{count} mixture profile{'s' if count != 1 else ''}")
+    return "\n".join(lines)
+
+
+def handle_yolo_mixtures(args: list[str]) -> None:
+    """List packaged mixture model profiles without constructing model instances."""
+    from ultralytics.cfg import mixture_catalog
+
+    options = {"kind": None, "task": None, "family": None, "format": "table"}
+    for argument in merge_equals_args(args):
+        if "=" not in argument:
+            raise ValueError(f"invalid mixtures argument {argument!r}; expected key=value")
+        key, value = parse_key_value_pair(argument)
+        if key not in options:
+            raise ValueError(f"unknown mixtures argument {key!r}; expected one of {tuple(options)}")
+        options[key] = value
+
+    output_format = str(options.pop("format")).casefold()
+    if output_format not in {"table", "json"}:
+        raise ValueError(f"unknown mixtures format {output_format!r}; expected 'table' or 'json'")
+    filters = {key: str(value) for key, value in options.items() if value is not None}
+    profiles = mixture_catalog.list_mixture_profiles(**filters)
+    if output_format == "json":
+        LOGGER.info(json.dumps([profile.as_dict() for profile in profiles], indent=2, sort_keys=False))
+    else:
+        LOGGER.info(_format_mixture_profiles(profiles))
+
+
 def parse_key_value_pair(pair: str = "key=value") -> tuple:
     """Parse a key-value pair string into separate key and value components.
 
@@ -1167,6 +1223,7 @@ def entrypoint(debug: str = "") -> None:
         "checks": checks.collect_system_info,
         "version": lambda: LOGGER.info(__version__),
         "settings": lambda: handle_yolo_settings(args[1:]),
+        "mixtures": lambda: handle_yolo_mixtures(args[1:]),
         "cfg": lambda: YAML.print(DEFAULT_CFG_PATH),
         "hub": lambda: handle_yolo_hub(args[1:]),
         "login": lambda: handle_yolo_hub(args),

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from contextlib import nullcontext
 from dataclasses import dataclass
 from typing import Any, Sequence
 
@@ -10,6 +9,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from ultralytics.nn.modules._numeric import all_reduce_mean, disabled_autocast, should_reduce_ddp
 from ultralytics.nn.modules.routing_protocol import (
     export_capabilities as _export_routing_capabilities,
     graph_connected_finite_zero,
@@ -42,12 +42,6 @@ def _non_negative_float(value: float, name: str) -> float:
     if value < 0.0 or not torch.isfinite(torch.tensor(value)):
         raise ValueError(f"{name} must be finite and non-negative, got {value}")
     return value
-
-
-def _disabled_autocast(device_type: str):
-    if device_type in {"cpu", "cuda", "mps"}:
-        return torch.autocast(device_type=device_type, enabled=False)
-    return nullcontext()
 
 
 def _conv1x1(c1: int, c2: int) -> nn.Module:
@@ -227,7 +221,7 @@ class LatentRouter(nn.Module):
             raise ValueError(f"LatentRouter expects [B,D] or [B,T,D], got shape {tuple(tokens.shape)}")
         if tokens.shape[-1] != self.latent_dim:
             raise ValueError(f"token dim {tokens.shape[-1]} does not match latent_dim {self.latent_dim}")
-        with _disabled_autocast(tokens.device.type):
+        with disabled_autocast(tokens.device.type):
             x = tokens.float()
             if x.ndim == 3:
                 if self.num_tokens is not None and x.shape[1] != self.num_tokens:
@@ -252,6 +246,7 @@ class _LatentAuxMixin:
 
     def _init_runtime_state(self) -> None:
         self._last_aux_loss = torch.zeros((), dtype=torch.float32)
+        self._last_ddp_balance_synced = False
         self.last_routing_snapshot: dict[str, Any] = {}
         self.last_routing_diagnostics: dict[str, Any] = {}
 
@@ -294,10 +289,14 @@ class _LatentAuxMixin:
         self, logits: torch.Tensor, probs: torch.Tensor
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         if not self.training or (float(self.balance_loss_coeff) == 0.0 and float(self.router_z_loss_coeff) == 0.0):
+            self._last_ddp_balance_synced = False
             zero = graph_connected_finite_zero(logits, probs)
             return zero, zero.detach(), zero.detach()
         p = probs.float()
         importance = p.reshape(-1, p.shape[-1]).mean(dim=0)
+        self._last_ddp_balance_synced = bool(float(self.balance_loss_coeff) > 0.0 and should_reduce_ddp(self))
+        if self._last_ddp_balance_synced:
+            importance = all_reduce_mean(importance)
         balance = self.num_experts * torch.sum(importance.square()) - 1.0
         balance = balance.clamp_min(0.0)
         z_loss = torch.logsumexp(logits.float(), dim=-1).square().mean()
@@ -316,6 +315,18 @@ class _LatentAuxMixin:
             p = probs.detach().float()
             mean_probs = p.reshape(-1, p.shape[-1]).mean(dim=0)
             entropy = -(p.clamp_min(1e-12) * p.clamp_min(1e-12).log()).sum(dim=-1).mean()
+            residual_gain = getattr(self, "residual_gain", None)
+            residual_gain_magnitude = 0.0
+            if isinstance(residual_gain, torch.Tensor) and residual_gain.numel():
+                residual_gain_magnitude = float(residual_gain.detach().float().abs().max().cpu())
+            router_head_magnitude = max(
+                (
+                    float(parameter.detach().float().abs().max().cpu())
+                    for parameter in self.router.expert_head.parameters()
+                    if parameter.numel()
+                ),
+                default=0.0,
+            )
             snapshot: dict[str, Any] = {
                 "family": "latent",
                 "num_experts": int(self.num_experts),
@@ -329,6 +340,13 @@ class _LatentAuxMixin:
                 "temperature": float(self.router.temperature.detach().cpu()),
                 "noise_std": float(self.router._noise_std.detach().cpu()),
                 "router_init_std": float(getattr(self.router, "router_init_std", 0.0)),
+                "identity_cold_start": residual_gain_magnitude == 0.0 and router_head_magnitude == 0.0,
+                "residual_gain_magnitude": residual_gain_magnitude,
+                "router_output_head_magnitude": router_head_magnitude,
+                "router_aux_gradient_enabled": bool(
+                    self.training and (float(self.balance_loss_coeff) > 0.0 or float(self.router_z_loss_coeff) > 0.0)
+                ),
+                "ddp_balance_synced": bool(self._last_ddp_balance_synced),
                 "finite": bool(
                     routing_finite_diagnostics(logits=logits, probabilities=probs, aux_loss=aux).get("all_finite", True)
                 ),
@@ -356,6 +374,7 @@ class _LatentAuxMixin:
             routing_kind="latent",
             sparse_dispatch=False,
             eager_sparse_dispatch=False,
+            training_sparse_dispatch=False,
             sparse_export_limitation="Latent mixture uses dense expert execution only.",
         )
         return capabilities

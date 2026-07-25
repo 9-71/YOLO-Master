@@ -4,9 +4,8 @@ import torch
 import argparse
 import numpy as np
 from collections import defaultdict
-import matplotlib.pyplot as plt
 import os
-from typing import Dict, Set, List, Tuple
+from typing import Dict, List, Set
 from dataclasses import dataclass
 from ultralytics.utils import LOGGER
 
@@ -300,7 +299,7 @@ class ExpertUsageTracker:
             data_matrix.append(layer_data)
 
             # Statistical summary
-            LOGGER.info(f"\n📈 Summary:")
+            LOGGER.info("\n📈 Summary:")
             LOGGER.info(f"   • Total Experts: {num_experts}")
             LOGGER.info(f"   • Ideal Share: {ideal_share:.2f}%")
             LOGGER.info(f"   • Total Hits: {int(total_hits):,}")
@@ -330,6 +329,14 @@ class ExpertUsageTracker:
             data_matrix: Usage data per layer
         """
         if not layers:
+            return
+
+        # Plotting is an optional diagnostics feature. Keep the core MoE
+        # package importable when Matplotlib is missing or ABI-incompatible.
+        try:
+            import matplotlib.pyplot as plt
+        except Exception as exc:
+            LOGGER.info(f"Visualization dependencies unavailable; skipping plots: {exc}")
             return
 
         max_expert_id = max(all_experts) if all_experts else 0
@@ -447,7 +454,7 @@ def diagnose_model(
     # Local import to avoid circular dependency
     from ultralytics import YOLO
 
-    LOGGER.info(f"\n🚀 Starting Model Diagnosis")
+    LOGGER.info("\n🚀 Starting Model Diagnosis")
     LOGGER.info(f"📁 Model: {model_path}")
     LOGGER.info(f"📊 Dataset: {dataset}")
 

@@ -2,7 +2,7 @@
 import math
 import re
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Union
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Union
 
 import torch
 import torch.nn as nn
@@ -21,13 +21,14 @@ from .api import (
     PEFT_AVAILABLE,
     PeftModel,
     _effective_peft_variant,
-    _fast_parse_int_list,
-    _fast_parse_str_list,
     _normalize_lora_init,
     _unfreeze_detection_head,
     build_lora_target_audit,
     resolve_effective_lora_request,
 )
+
+if TYPE_CHECKING:
+    from .config import LoRAConfig
 
 
 def _fallback_lora_scaling(alpha: int, r: int, use_rslora: bool) -> float:
@@ -513,6 +514,7 @@ def _replace_conv_with_manual_lora(module: nn.Module, config: "LoRAConfig", pref
     """
     replaced = 0
     base_r = getattr(config, "r", 0) or 0
+    rank_pattern = getattr(config, "rank_pattern", None) or {}
     allow_depthwise = bool(getattr(config, "allow_depthwise", False))
     few_shot = getattr(config, "few_shot_mode", False)
     layerwise_rank = few_shot and getattr(config, "few_shot_layerwise_rank", False)
@@ -522,8 +524,8 @@ def _replace_conv_with_manual_lora(module: nn.Module, config: "LoRAConfig", pref
         if isinstance(child, nn.Conv2d):
             groups = child.groups
             # Compute per-layer rank if layerwise_rank is enabled
-            r = base_r
-            if layerwise_rank:
+            r = int(rank_pattern.get(full_name, base_r))
+            if layerwise_rank and full_name not in rank_pattern:
                 r = _compute_layer_rank(child, base_r, full_name)
             
             # Grouped conv compatibility: rank must be divisible by groups.
@@ -656,6 +658,8 @@ def apply_manual_lora(model: nn.Module, config: "LoRAConfig", include_head: bool
         freeze_bn=bool(getattr(config, "freeze_bn", False)),
         target_modules=model.lora_target_modules,
         target_audit=model.lora_target_audit,
+        rank_pattern=dict(getattr(config, "rank_pattern", None) or {}),
+        placement_plan=getattr(model, "lora_placement_plan", None),
     )
 
     _unfreeze_detection_head(model)
@@ -810,7 +814,6 @@ def _merge_manual_lora_conv(module) -> nn.Conv2d:
     # Per-group delta: (out_per_group, in_per_group * kH * kW)
     delta_per_group = torch.bmm(lora_B, lora_A.transpose(1, 2))
     # Reshape into Conv2d weight layout: (out_channels, in_channels/groups, kH, kW)
-    out_per_group = conv.out_channels // max(groups, 1)
     in_per_group = conv.in_channels // max(groups, 1)
     weight_delta = delta_per_group.reshape(
         conv.out_channels, in_per_group, *conv.kernel_size
@@ -968,13 +971,32 @@ class LoRADetectionModel:
         return self
 
 # Wrapper classes for pickling support
-class LoRADetectionModelWrapper(LoRADetectionModel, DetectionModel): pass
-class LoRASegmentationModelWrapper(LoRADetectionModel, SegmentationModel): pass
-class LoRAPoseModelWrapper(LoRADetectionModel, PoseModel): pass
-class LoRAClassificationModelWrapper(LoRADetectionModel, ClassificationModel): pass
-class LoRAOBBModelWrapper(LoRADetectionModel, OBBModel): pass
-class LoRARTDETRDetectionModelWrapper(LoRADetectionModel, RTDETRDetectionModel): pass
-class LoRAWorldModelWrapper(LoRADetectionModel, WorldModel): pass
+class LoRADetectionModelWrapper(LoRADetectionModel, DetectionModel):
+    pass
+
+
+class LoRASegmentationModelWrapper(LoRADetectionModel, SegmentationModel):
+    pass
+
+
+class LoRAPoseModelWrapper(LoRADetectionModel, PoseModel):
+    pass
+
+
+class LoRAClassificationModelWrapper(LoRADetectionModel, ClassificationModel):
+    pass
+
+
+class LoRAOBBModelWrapper(LoRADetectionModel, OBBModel):
+    pass
+
+
+class LoRARTDETRDetectionModelWrapper(LoRADetectionModel, RTDETRDetectionModel):
+    pass
+
+
+class LoRAWorldModelWrapper(LoRADetectionModel, WorldModel):
+    pass
 
 
 def _wrap_top_level_lora_model(model: "DetectionModel", config: Any = None) -> "DetectionModel":
