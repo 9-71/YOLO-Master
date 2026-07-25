@@ -707,6 +707,8 @@ def _collect_fallback_adapter_state(model: nn.Module) -> Dict[str, Any]:
         }
         if isinstance(module, FewShotLoRAConv):
             modules[name]["few_shot"] = True
+            modules[name]["dropconnect"] = float(module.dropconnect_rate)
+            modules[name]["adaptive_rank"] = bool(module.adaptive_rank)
             modules[name]["dropconnect_schedule"] = getattr(module, "dropconnect_schedule", "constant")
             modules[name]["dropconnect_max"] = getattr(module, "dropconnect_max", 0.3)
             modules[name]["dropconnect_min"] = getattr(module, "dropconnect_min", 0.0)

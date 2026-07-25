@@ -64,6 +64,28 @@ def test_fallback_adapter_round_trip_preserves_effective_rslora(tmp_path):
     torch.testing.assert_close(restored(sample), expected)
 
 
+def test_few_shot_round_trip_preserves_dropconnect_and_adaptive_rank(tmp_path):
+    source = nn.Sequential(
+        FewShotLoRAConv(
+            nn.Conv2d(4, 4, 1),
+            r=8,
+            alpha=16,
+            dropconnect=0.27,
+            adaptive_rank=False,
+        )
+    )
+    saved = _collect_fallback_adapter_state(source)
+    torch.save(saved, tmp_path / "fallback_adapter.pt")
+    payload = {"backend": "fallback", "weight_file": "fallback_adapter.pt"}
+
+    restored = _load_fallback_adapter_state(nn.Sequential(nn.Conv2d(4, 4, 1)), tmp_path, payload)
+
+    assert isinstance(restored[0], FewShotLoRAConv)
+    assert restored[0].dropconnect_rate == pytest.approx(0.27)
+    assert restored[0].adaptive_rank is False
+    assert not hasattr(restored[0], "rank_mask")
+
+
 def test_legacy_fallback_adapter_without_scaling_mode_keeps_lora_scaling(tmp_path):
     source = nn.Sequential(_manual_layer(use_rslora=False))
     saved = _collect_fallback_adapter_state(source)
