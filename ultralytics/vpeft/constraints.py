@@ -735,7 +735,38 @@ class ConstraintRegistry:
         candidates = cfg.get("candidate_targets")
         if candidates:
             registry._register(CandidateTargetConstraint(candidates), as_hard=True)
+
+        # Expose the canonical hard/soft partition used by serialized plans
+        # and older callers. A supplied ``hard_constraints`` list is an
+        # explicit replacement; ``soft_constraints`` only augments the
+        # default hard set unless hard constraints were explicitly supplied.
+        name_map = {constraint.name: constraint for constraint in registry._constraints}
+        aliases = {
+            "op": "C_op",
+            "sem": "C_sem",
+            "budget": "C_budget",
+            "deploy": "C_deploy",
+            "compat": "C_compat",
+            "moe": "C_moe",
+            "div": "C_div",
+        }
+
+        def resolve_names(names):
+            return [name_map.get(aliases.get(str(name), str(name))) for name in names]
+
+        if "hard_constraints" in cfg:
+            registry._hard_constraints = [c for c in resolve_names(cfg["hard_constraints"]) if c is not None]
+        if "soft_constraints" in cfg:
+            registry._soft_constraints = [c for c in resolve_names(cfg["soft_constraints"]) if c is not None]
         return registry
+
+    def hard_constraint_names(self) -> List[str]:
+        """Return canonical names of currently active hard constraints."""
+        return [constraint.name for constraint in self._hard_constraints]
+
+    def soft_constraint_names(self) -> List[str]:
+        """Return canonical names of currently active soft constraints."""
+        return [constraint.name for constraint in self._soft_constraints]
 
     # -- legacy interface (required by policy.py & solver.py) --
 
@@ -872,11 +903,11 @@ class ConstraintRegistry:
         """Evaluate soft constraints and return a dict of violation scalars.
         Positive values indicate violation; zero means satisfied.
         """
-        variants = [variant] * graph.n_nodes if isinstance(variant, str) else list(variant)
+        variants = variant if isinstance(variant, (list, tuple)) else [variant] * graph.n_nodes
         if len(variants) != graph.n_nodes:
-            raise ValueError("variant list must have one entry per graph node")
-        differentiable = bool(placement.requires_grad or ranks.requires_grad)
-        total_penalties: Dict[str, Union[float, torch.Tensor]] = {}
+            raise ValueError("per-node variant list must match graph.n_nodes")
+        # Aggregate per-node penalties for placed modules
+        total_penalties: Dict[str, float] = {}
         for c in self._soft_constraints:
             if differentiable and isinstance(c, BudgetConstraint):
                 costs = []
@@ -889,14 +920,11 @@ class ConstraintRegistry:
                 total_penalties[c.name] = torch.relu(used - c.max_params) / max(float(c.max_params), 1.0)
                 continue
             total = 0.0
-            for index in range(graph.n_nodes):
-                node_info = self._node_info_from_graph(graph, index)
-                rank = int(ranks[index].item()) if isinstance(ranks[index], torch.Tensor) else int(ranks[index])
-                penalty = c.penalty(node_info, variants[index], rank)
-                if differentiable:
-                    total = total + placement[index] * penalty
-                elif placement[index] > 0.5:
-                    total += penalty
+            for i in range(graph.n_nodes):
+                if placement[i] > 0.5:
+                    node_info = self._node_info_from_graph(graph, i)
+                    rank = int(ranks[i].item()) if isinstance(ranks[i], torch.Tensor) else int(ranks[i])
+                    total += c.penalty(node_info, variants[i], rank)
             total_penalties[c.name] = total * c.weight
         return total_penalties
 
@@ -908,13 +936,13 @@ class ConstraintRegistry:
         variant: Union[str, Sequence[str]],
     ) -> int:
         """Sum of adapter parameters for all placed modules."""
-        variants = [variant] * graph.n_nodes if isinstance(variant, str) else list(variant)
+        variants = variant if isinstance(variant, (list, tuple)) else [variant] * graph.n_nodes
         if len(variants) != graph.n_nodes:
-            raise ValueError("variant list must have one entry per graph node")
+            raise ValueError("per-node variant list must match graph.n_nodes")
         total = 0
-        for index in range(graph.n_nodes):
-            if placement[index] > 0.5:
-                total += int(graph.estimate_params(index, int(ranks[index].item()), variants[index]))
+        for i in range(graph.n_nodes):
+            if placement[i] > 0.5:
+                total += int(graph.estimate_params(i, int(ranks[i].item()), variants[i]))
         return total
 
     # -- new per-node interface --

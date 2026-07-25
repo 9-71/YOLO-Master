@@ -1,6 +1,7 @@
 """PlacementPlan serialization and fingerprint contracts."""
 
 import pytest
+import torch.nn as nn
 
 from ultralytics.vpeft import PlacementPlan, PlacementTarget
 
@@ -30,3 +31,35 @@ def test_placement_plan_rejects_tampering():
     payload["targets"] = [{"name": "tampered", "rank": 4, "variant": "lora"}]
     with pytest.raises(ValueError, match="fingerprint"):
         PlacementPlan.from_dict(payload)
+
+
+def test_placement_plan_validates_bound_model_and_target_capacity():
+    from ultralytics.utils.lora.api import _vpeft_model_fingerprint
+
+    model = nn.Sequential(nn.Linear(4, 4))
+    plan = PlacementPlan(
+        model_fingerprint=_vpeft_model_fingerprint(model),
+        planner_backend="vpeft",
+        solver="ao",
+        budget={"max_adapter_params": 128},
+        targets=(PlacementTarget("0", "lora", 2),),
+        status="ACCEPT",
+    )
+    plan.validate_model(model)
+
+    with pytest.raises(ValueError, match="fingerprint"):
+        plan.validate_model(nn.Sequential(nn.Linear(4, 8)))
+
+
+def test_placement_plan_rejects_stale_or_unsupported_target():
+    model = nn.Sequential(nn.ReLU())
+    plan = PlacementPlan(
+        model_fingerprint="",
+        planner_backend="vpeft",
+        solver="ao",
+        budget={"max_adapter_params": 128},
+        targets=(PlacementTarget("0", "lora", 1),),
+        status="ACCEPT",
+    )
+    with pytest.raises(ValueError, match="unsupported"):
+        plan.validate_model(model)

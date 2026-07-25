@@ -172,6 +172,7 @@ class C2fMoA(nn.Module):
             routing_kind="moa",
             sparse_dispatch=False,
             eager_sparse_dispatch=False,
+            training_sparse_dispatch=False,
             sparse_export_limitation="C2fMoA uses dense soft routing in eager and exported graphs.",
         )
         return capabilities
@@ -372,6 +373,7 @@ class NeckMoAFusion(nn.Module):
             routing_kind="moa",
             sparse_dispatch=False,
             eager_sparse_dispatch=False,
+            training_sparse_dispatch=False,
             sparse_export_limitation="NeckMoAFusion uses dense soft routing in eager and exported graphs.",
         )
         return capabilities

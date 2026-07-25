@@ -2,6 +2,7 @@
 
 from pathlib import Path
 
+import pytest
 import torch
 
 from ultralytics.nn.modules.mot import C2fMoT, MoTBlock
@@ -38,6 +39,44 @@ def test_scene_aware_router_zero_init_matches_legacy_path():
     assert torch.equal(enhanced_weights, legacy_weights)
 
 
+def test_scene_aware_eval_bypass_matches_base_router_and_reports_policy():
+    torch.manual_seed(0)
+    base = _MoTRouter(8, top_k=3, scene_aware=False).eval()
+    bypass = _MoTRouter(8, top_k=3, scene_aware=True, scene_inference_mode="bypass").eval()
+    bypass.router.load_state_dict(base.router.state_dict())
+    with torch.no_grad():
+        bypass.scene_projector[-1].weight.normal_()
+        bypass.scene_projector[-1].bias.fill_(2.0)
+    x = torch.randn(2, 8, 6, 6)
+
+    base_weights, _ = base(x)
+    bypass_weights, _ = bypass(x)
+
+    assert torch.equal(bypass_weights, base_weights)
+    assert bypass.last_scene_applied is False
+    assert bypass.last_scene_bypass_reason == "inference_policy_bypass"
+    assert bypass.last_scene_stats is None
+    assert bypass.last_scene_bias is None
+
+
+def test_scene_aware_eval_bypass_still_applies_scene_branch_during_training():
+    router = _MoTRouter(8, top_k=3, scene_aware=True, scene_inference_mode="bypass").train()
+    with torch.no_grad():
+        router.scene_projector[-1].weight.normal_()
+
+    weights, _ = router(torch.randn(2, 8, 6, 6))
+    weights[:, 0].mean().backward()
+
+    assert router.last_scene_applied is True
+    assert router.last_scene_bypass_reason is None
+    assert any(parameter.grad is not None for parameter in router.scene_projector.parameters())
+
+
+def test_scene_inference_mode_rejects_unknown_policy():
+    with pytest.raises(ValueError, match="scene_inference_mode"):
+        _MoTRouter(8, scene_aware=True, scene_inference_mode="cached")
+
+
 def test_learned_scene_residual_distinguishes_smooth_and_high_frequency_inputs():
     router = _MoTRouter(4, top_k=3, scene_aware=True).eval()
     with torch.no_grad():
@@ -55,6 +94,7 @@ def test_learned_scene_residual_distinguishes_smooth_and_high_frequency_inputs()
     checker_weights, _ = router(checker)
 
     assert checker_weights[:, 0].mean() > smooth_weights[:, 0].mean()
+    assert router.last_scene_applied is True
 
 
 def test_scene_consistency_loss_prefers_matching_expert_distribution():
@@ -80,10 +120,19 @@ def test_c2fmot_plumbs_scene_aware_options_to_children():
         scene_aware_router=True,
         scene_hidden_dim=6,
         scene_consistency_coeff=0.02,
+        scene_inference_mode="bypass",
     )
 
     assert all(block.router.scene_aware for block in module.m)
     assert all(block.scene_consistency_coeff == 0.02 for block in module.m)
+    assert all(block.router.scene_inference_mode == "bypass" for block in module.m)
+
+    module.eval()
+    with torch.no_grad():
+        _ = module(torch.randn(1, 32, 8, 8))
+    assert module.last_routing_snapshot["scene_inference_mode"] == "bypass"
+    assert not any(module.last_routing_snapshot["scene_aware_applied"])
+    assert set(module.last_routing_snapshot["scene_bypass_reason"]) == {"inference_policy_bypass"}
 
 
 def test_scene_consistency_component_reaches_scene_projector():

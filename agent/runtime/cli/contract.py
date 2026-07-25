@@ -1,7 +1,12 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import math
+import os
+import re
+import tempfile
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -10,6 +15,98 @@ SKILL_ROOT = Path(__file__).resolve().parents[2]
 REPO_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_MANIFEST_DIR = REPO_ROOT / "runs" / "agent"
 PROVIDER_CONFIG_DIR = SKILL_ROOT / "runtime" / "multimodal" / "providers"
+MANIFEST_SCHEMA_VERSION = 1
+MANIFEST_LOG_LIMIT = 20_000
+REDACTED = "<redacted>"
+
+_SENSITIVE_KEYS = {
+    "api_key",
+    "apikey",
+    "authorization",
+    "client_secret",
+    "password",
+    "refresh_token",
+    "secret",
+    "token",
+}
+_INLINE_SECRET_RE = re.compile(
+    r"(?i)\b((?:[a-z0-9]+[_-])?(?:api[_-]?key|access[_-]?token|refresh[_-]?token|password|secret|authorization))"
+    r"(\s*[:=]\s*)([^\s,;&]+)"
+)
+_BEARER_RE = re.compile(r"(?i)\bBearer\s+[a-z0-9._~+/=-]+")
+
+
+def _sensitive_key(key: Any) -> bool:
+    """Return whether a mapping key conventionally contains a credential."""
+    normalized = re.sub(r"[^a-z0-9]+", "_", str(key).casefold()).strip("_")
+    return normalized in _SENSITIVE_KEYS or normalized.endswith(
+        ("_api_key", "_access_token", "_refresh_token", "_password", "_secret")
+    )
+
+
+def _redact_inline_secrets(value: str) -> str:
+    """Redact common credentials embedded in CLI strings or free text."""
+    value = _BEARER_RE.sub(f"Bearer {REDACTED}", value)
+    return _INLINE_SECRET_RE.sub(lambda match: f"{match.group(1)}{match.group(2)}{REDACTED}", value)
+
+
+def redact_sensitive(value: Any) -> Any:
+    """Recursively redact secret fields and inline credential assignments."""
+    if isinstance(value, dict):
+        return {str(key): REDACTED if _sensitive_key(key) else redact_sensitive(child) for key, child in value.items()}
+    if isinstance(value, (list, tuple, set)):
+        return [redact_sensitive(child) for child in value]
+    if isinstance(value, str):
+        return _redact_inline_secrets(value)
+    return value
+
+
+def _compact_manifest_logs(value: Any) -> Any:
+    """Bound raw subprocess logs while preserving their most recent diagnostic tail."""
+    if isinstance(value, dict):
+        compact = {}
+        for key, child in value.items():
+            if key in {"stdout", "stderr"} and isinstance(child, str) and len(child) > MANIFEST_LOG_LIMIT:
+                omitted = len(child) - MANIFEST_LOG_LIMIT
+                compact[key] = f"[truncated {omitted} chars]\n{child[-MANIFEST_LOG_LIMIT:]}"
+            else:
+                compact[key] = _compact_manifest_logs(child)
+        return compact
+    if isinstance(value, list):
+        return [_compact_manifest_logs(child) for child in value]
+    return value
+
+
+def _manifest_safe(value: Any) -> Any:
+    """Convert arbitrary runtime values to bounded, redacted JSON data."""
+    return _compact_manifest_logs(redact_sensitive(json_safe(value)))
+
+
+def manifest_checksum(manifest: dict[str, Any]) -> str:
+    """Return the canonical SHA-256 for a manifest excluding its checksum field."""
+    payload = dict(_manifest_safe(manifest))
+    payload.pop("manifest_sha256", None)
+    encoded = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _request_snapshot(request: dict[str, Any]) -> dict[str, Any]:
+    """Return the normalized experiment request without machine-local dispatcher state."""
+    excluded = {"request_id", "workspace_root"}
+    return _manifest_safe({key: value for key, value in request.items() if key not in excluded})
+
+
+def _atomic_write_json(path: Path, payload: dict[str, Any]) -> None:
+    """Atomically replace a JSON file from a unique temporary file in the same directory."""
+    descriptor, temporary_name = tempfile.mkstemp(prefix=".skill_manifest.", suffix=".tmp", dir=path.parent)
+    temporary = Path(temporary_name)
+    try:
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            json.dump(payload, handle, ensure_ascii=False, indent=2)
+            handle.write("\n")
+        temporary.replace(path)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 
 def json_safe(value: Any) -> Any:
@@ -188,7 +285,7 @@ def write_manifest(request: dict[str, Any], payload: dict[str, Any]) -> Path:
     payload = enrich_envelope(payload)
     manifest_dir = ensure_manifest_dir(request)
     manifest_path = manifest_dir / "skill_manifest.json"
-    manifest = {
+    compatibility_fields = {
         "skill": request.get("skill"),
         "request_id": request.get("request_id"),
         "status": payload.get("status"),
@@ -208,7 +305,17 @@ def write_manifest(request: dict[str, Any], payload: dict[str, Any]) -> Path:
         "job": payload.get("job", {}),
         "dry_run": payload.get("dry_run", False),
     }
-    manifest_path.write_text(json.dumps(json_safe(manifest), ensure_ascii=False, indent=2), encoding="utf-8")
+    represented_fields = set(compatibility_fields) | {"manifest"}
+    manifest = {
+        "schema_version": MANIFEST_SCHEMA_VERSION,
+        "created_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        **compatibility_fields,
+        "request": _request_snapshot(request),
+        "result": _manifest_safe({key: value for key, value in payload.items() if key not in represented_fields}),
+    }
+    manifest = _manifest_safe(manifest)
+    manifest["manifest_sha256"] = manifest_checksum(manifest)
+    _atomic_write_json(manifest_path, manifest)
     return manifest_path
 
 

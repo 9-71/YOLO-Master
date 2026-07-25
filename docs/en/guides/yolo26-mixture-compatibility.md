@@ -32,6 +32,44 @@ The upstream file hashes recorded in `docs/governance/upstream-v8.4.101-manifest
 
 "Not configured" means this branch does not ship a dedicated task YAML for that combination. It is not a claim that the architecture is impossible.
 
+## Discover Mixture Profiles
+
+Use the read-only catalog to find packaged model YAMLs without constructing a model or loading weights:
+
+```bash
+yolo mixtures kind=mot task=detect
+yolo mixtures kind=latent format=json
+yolo mixtures family=master/v0_10 kind=moa
+```
+
+The optional `kind`, `task`, and `family` filters are exact and case-insensitive. `format=table` is the default;
+`format=json` is intended for scripts and development tools. Profile paths are relative to
+`ultralytics/cfg/models`.
+
+The same catalog is available through Python:
+
+```python
+from ultralytics import YOLO
+from ultralytics.cfg.mixture_catalog import DEFAULT_MIXTURE_MODEL_ROOT, list_mixture_profiles
+
+profiles = list_mixture_profiles(kind="mot", task="detect", family="master/v0_10")
+model = YOLO(DEFAULT_MIXTURE_MODEL_ROOT / profiles[0].path)
+```
+
+Catalog entries describe runnable configuration structure. They do not imply that an experimental profile is stable
+or fully exportable. Verification and maturity evidence remain in `docs/governance/model-registry.yaml`.
+
+Agent pipelines can consume the same stable identifier directly and bind the resulting manifest to the YAML checksum:
+
+```bash
+python agent/scripts/run_yolo_master_skill.py --json \
+  '{"skill":"yolo.pipeline.experiment","inputs":{"profile":"26/yolo26-master-mot-n","data":"coco8.yaml"},"params":{"train":{"epochs":1},"val":{}},"policy":{"dry_run":true}}' \
+  --pretty
+```
+
+The generated `skill_manifest.json` preserves the redacted request, resolved profile metadata, pipeline plan or stage
+results, selected checkpoint, artifacts, environment, and a semantic manifest checksum.
+
 ## Detection Configurations
 
 The following configs are additive and keep the official YOLO26 backbone, feature indices, and Detect head contract:

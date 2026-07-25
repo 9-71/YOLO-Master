@@ -53,11 +53,12 @@ yolo version
 - `runtime/cli/model_handlers.py`: `yolo.model.inspect` 的模型元信息、names、device、task map 与轻量模型操作。
 - `runtime/cli/core_handlers.py`: `train/val/predict/track/export/benchmark/tune` 与 LoRA adapter 的主干 handler, 通过依赖注入复用 dispatcher 的模型与 CLI 兼容入口。
 - `runtime/cli/launcher_handlers.py`: `yolo.solutions.run` 与 `yolo.ui.launch` 的 launcher-style handler, 包含 Solutions 参数组装和 Gradio/Streamlit 启动。
-- `runtime/cli/contract.py`: 统一响应 envelope、manifest、`usage.tokens` 与 `cost_estimate`。
+- `runtime/cli/contract.py`: 统一响应 envelope、版本化实验 manifest、敏感字段脱敏、完整性校验、`usage.tokens` 与 `cost_estimate`。
 - `runtime/cli/async_jobs.py`: 为 `policy.async=true` 的长任务提交子进程 job, 返回 `job_id`, status 文件、stdout/stderr 和可 tail 的 progress 路径。
 - `runtime/cli/job_handlers.py`: `yolo.job.status` / `yolo.job.cancel` 的异步任务查询与取消入口。
 - `runtime/cli/multimodal_handlers.py`: `yolo.multimodal.infer` / `yolo.multimodal.evaluate` 的 handler 编排, 通过依赖注入保留 dispatcher 兼容 monkeypatch 入口。
-- `runtime/cli/pipeline.py`: `yolo.pipeline.experiment` 的端到端阶段编排, 支持 train/val/export/benchmark 以及 LoRA/MoE/PEFT 诊断阶段, 并为长流程写出可 tail 的 `progress.jsonl`。
+- `runtime/cli/pipeline.py`: `yolo.pipeline.experiment` 的端到端阶段编排, 支持 catalog `profile_id`、train/val/export/benchmark 以及 LoRA/MoE/PEFT 诊断阶段, 并为长流程写出可 tail 的 `progress.jsonl`。
+- `runtime/release.py` 与 `runtime/cli/release.py`: `yolo.release.audit` 的只读发布包收集器, 从版本化 `skill_manifest.json` 汇聚模型、checkpoint、args、PlacementPlan、routing、merge/prune、export、benchmark 与治理证据, 写出带 SHA-256 的 `release_bundle.json`。
 - `runtime/cli/lora_tools.py`: `yolo.lora.diagnose`, 包含 effective rank、LoRA A/B 范数与 delta-W 谱预览。
 - `runtime/cli/moe_tools.py`: `yolo.moe.diagnose` / `yolo.moe.prune`, 包含专家使用率、保留/裁剪专家列表、裁剪比例与验证状态预览。
 - `runtime/cli/peft_compare.py`: `yolo.eval.peft_compare`, 用统一请求结构编排多个 LoRA/DoRA/LoHA/Full-SFT 变体。
@@ -84,5 +85,27 @@ yolo version
 ```
 
 新增能力时优先补 `runtime/` 模块和验证用例, 再让 `scripts/` 暴露薄入口。不要把长逻辑重新写回 `scripts/`。
+
+发布就绪审计示例:
+
+```bash
+python agent/scripts/run_yolo_master_skill.py --json '{"skill":"yolo.release.audit","inputs":{"manifest":"runs/agent/experiment/skill_manifest.json"},"params":{"output":"runs/agent/experiment/release_bundle.json"},"policy":{"dry_run":false}}' --pretty
+```
+
+审计只读取 manifest 明确引用的证据并记录路径、大小和 SHA-256, 不复制 checkpoint、不构建模型、不联网。
+结果为 `publishable`、`experimental` 或 `refused`; 缺失证据会给出 `missing` 列表, 校验和、路径逃逸、源阶段
+失败和模型/profile 冲突会进入 `hard_failures` 并拒绝发布。治理成熟度仍以 `docs/governance/model-registry.yaml`
+为准, 导出能力以 `ultralytics/cfg/export-capability-matrix.yaml` 为准。
+
+历史 manifest 若没有 `schema_version`，会标记为 `compatibility.kind=legacy_unversioned`，只能生成只读迁移报告，
+不能成为 `publishable`。兼容路径只消费显式的 `environment.references.model.resolved`、`job.save_dir` 和
+`artifacts[*].path`，不会扫描运行目录。CI/本地阈值预检可使用：
+
+```bash
+python scripts/audit_release_manifest.py runs/agent/experiment/skill_manifest.json \
+  --output runs/agent/experiment/release_bundle.json --fail-on experimental
+```
+
+`--fail-on refused` 允许 `experimental`，而 `--fail-on experimental` 会对 `experimental` 和 `refused` 均返回非零。
 
 AutoTrain case 默认从 `assets/autotrain_cases/` 目录读取, 按 skill 分组维护; 旧的 `assets/autotrain_cases.json` 仍保留为兼容入口。

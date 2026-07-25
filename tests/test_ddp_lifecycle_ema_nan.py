@@ -129,6 +129,8 @@ def test_nccl_skips_nonpersistent_cpu():
     t = tr(E(False))
     with patch("torch.distributed.is_initialized", return_value=True), patch(
         "torch.distributed.get_backend", return_value="nccl"
+    ), patch("torch.distributed.get_world_size", return_value=1), patch(
+        "torch.distributed.all_gather_object", side_effect=lambda states, state: states.__setitem__(0, state)
     ), patch("torch.distributed.broadcast") as broadcast:
         t._sync_ema_buffers_for_validation()
     broadcast.assert_not_called()
@@ -139,6 +141,8 @@ def test_nccl_moves_persistent_cpu_buffer_before_broadcast():
     t.device = torch.device("cpu")
     with patch("torch.distributed.is_initialized", return_value=True), patch(
         "torch.distributed.get_backend", return_value="nccl"
+    ), patch("torch.distributed.get_world_size", return_value=1), patch(
+        "torch.distributed.all_gather_object", side_effect=lambda states, state: states.__setitem__(0, state)
     ), patch("torch.distributed.broadcast") as broadcast:
         t._sync_ema_buffers_for_validation()
     broadcast.assert_called_once()
@@ -461,7 +465,7 @@ def test_checkpoint_forward_smoke_uses_rtdetr_safe_minimum_shape():
     assert reason == ""
 
 
-def test_save_model_does_not_overwrite_last_or_best_when_health_gate_fails(tmp_path):
+def test_save_model_keeps_standard_checkpoints_when_recovery_refresh_fails(tmp_path):
     t = object.__new__(BaseTrainer)
     t.wdir = tmp_path
     t.last = tmp_path / "last.pt"
@@ -469,13 +473,15 @@ def test_save_model_does_not_overwrite_last_or_best_when_health_gate_fails(tmp_p
     t.last.write_bytes(b"prior-last")
     t.best.write_bytes(b"prior-best")
     t.best_fitness = t.fitness = 0.5
+    t.save_period = -1
+    t.epoch = 0
     t._serialize_checkpoint = MagicMock(return_value=b"bad-checkpoint")
-    t._save_healthy_checkpoint = MagicMock(return_value=False)
+    t._refresh_healthy_checkpoint = MagicMock(return_value=False)
 
-    assert t.save_model() is False
-    assert t._checkpoint_health_failed is True
-    assert t.last.read_bytes() == b"prior-last"
-    assert t.best.read_bytes() == b"prior-best"
+    assert t.save_model() is True
+    assert t.last.read_bytes() == b"bad-checkpoint"
+    assert t.best.read_bytes() == b"bad-checkpoint"
+    t._refresh_healthy_checkpoint.assert_called_once_with()
 
 
 def final_eval_trainer(tmp_path):

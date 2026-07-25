@@ -1,8 +1,11 @@
 from pathlib import Path
+from unittest.mock import patch
 
 import pytest
 import torch
+import torch.nn as nn
 
+from ultralytics.nn.mixture_loss import build_composite_criterion
 from ultralytics.nn.modules import LatentMixture, LatentRouter, MultiScaleLatentMixture
 from ultralytics.nn.modules.routing_protocol import (
     anneal_mixture_temperatures,
@@ -81,8 +84,60 @@ def test_latent_mixture_publishes_single_train_aux_and_snapshot():
     assert snapshot["family"] == "latent"
     assert snapshot["noise_std"] == 0.0
     assert snapshot["router_init_std"] == 0.0
+    assert snapshot["identity_cold_start"] is False
+    assert snapshot["residual_gain_magnitude"] == pytest.approx(0.01)
+    assert snapshot["router_aux_gradient_enabled"] is True
+    assert snapshot["ddp_balance_synced"] is False
     assert snapshot["mean_router_probs"].requires_grad is False
     assert torch.allclose(snapshot["mean_router_probs"].sum(), torch.tensor(1.0), atol=1e-5)
+
+
+def test_latent_balance_uses_ddp_global_value_with_local_gradient():
+    module = LatentMixture([8], 8, num_experts=2, balance_loss_coeff=1.0, router_z_loss_coeff=0.0).train()
+    logits = torch.tensor([[1.3862944, 0.0]], requires_grad=True)
+    probs = logits.softmax(dim=-1)
+
+    def add_remote_importance(value, op=None):
+        value.add_(torch.tensor([0.4, 0.6]))
+
+    with patch("torch.distributed.is_available", return_value=True), patch(
+        "torch.distributed.is_initialized", return_value=True
+    ), patch("torch.distributed.get_world_size", return_value=2), patch(
+        "torch.distributed.get_backend", return_value="gloo"
+    ), patch("torch.distributed.all_reduce", side_effect=add_remote_importance):
+        aux, balance, z_loss = module._compute_aux(logits, probs)
+        aux.backward()
+    module._record_routing(logits, probs, aux, balance, z_loss)
+
+    assert balance.item() == pytest.approx(0.04, abs=1e-6)
+    assert module._last_ddp_balance_synced is True
+    assert module.routing_snapshot()["ddp_balance_synced"] is True
+    assert logits.grad is not None
+    assert logits.grad.abs().sum() > 0
+
+
+def test_latent_identity_cold_start_keeps_router_and_residual_gain_gradients():
+    class NativeCriterion:
+        def __call__(self, preds, batch):
+            return preds.square().mean(), torch.zeros(1, device=preds.device)
+
+    torch.manual_seed(0)
+    clear_aux_records(step=1)
+    block = LatentMixture([8, 8], 8).train()
+    model = nn.ModuleList([block])
+    xs = [torch.randn(2, 8, 4, 4), torch.randn(2, 8, 4, 4)]
+
+    output = block(xs)
+    loss, _ = build_composite_criterion(model, NativeCriterion())(output, {})
+    loss.backward()
+
+    snapshot = block.routing_snapshot()
+    assert snapshot["identity_cold_start"] is True
+    assert snapshot["residual_gain_magnitude"] == 0.0
+    assert snapshot["router_aux_gradient_enabled"] is True
+    assert block.residual_gain.grad is not None
+    assert block.residual_gain.grad.abs().sum() > 0
+    assert any(parameter.grad is not None and parameter.grad.abs().sum() > 0 for parameter in block.router.parameters())
 
 
 def test_multiscale_latent_mixture_shapes_and_scale_snapshot():

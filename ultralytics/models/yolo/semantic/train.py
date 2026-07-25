@@ -5,7 +5,6 @@ from __future__ import annotations
 from copy import copy
 from typing import Any
 
-import matplotlib.pyplot as plt
 import numpy as np
 
 from ultralytics.data.utils import add_polygon_background
@@ -122,6 +121,8 @@ class SemanticSegmentationTrainer(DetectionTrainer):
         if not pixel_counts.any():
             LOGGER.warning("No semantic mask files found, skipping label plot.")
             return
+
+        import matplotlib.pyplot as plt
 
         _, ax = plt.subplots(1, 1, figsize=(8, 6), tight_layout=True)
         bars = ax.bar(range(nc), pixel_counts, color=[list(c / 255.0 for c in colors(i, False)) for i in range(nc)])

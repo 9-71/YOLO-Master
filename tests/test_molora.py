@@ -573,6 +573,32 @@ class TestMoLoRAModelWrapper:
         finally:
             os.unlink(path)
 
+    @pytest.mark.parametrize(("field", "value"), [("top_k", 1), ("router_type", "mlp")])
+    def test_checkpoint_rejects_tampered_router_structure(self, field, value):
+        wrapper = MoLoRAModel(
+            self._make_model(),
+            MoLoRAConfig(
+                r=4,
+                alpha=8,
+                num_experts=4,
+                top_k=2,
+                router_type="linear",
+                target_modules=["conv1", "conv2", "fc"],
+            ),
+        )
+        with tempfile.NamedTemporaryFile(suffix=".pt", delete=False) as f:
+            path = f.name
+        try:
+            wrapper.save_checkpoint(path)
+            state = torch.load(path, map_location="cpu")
+            state["structure"][0][field] = value
+            torch.save(state, path)
+
+            with pytest.raises(ValueError, match="structure mismatch"):
+                wrapper.load_checkpoint(path)
+        finally:
+            os.unlink(path)
+
     def test_checkpoint_without_usage_ema_loads_with_uniform_fallback(self):
         model = self._make_model()
         cfg = MoLoRAConfig(

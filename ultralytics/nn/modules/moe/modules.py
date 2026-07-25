@@ -18,21 +18,27 @@ import os
 import sys
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
-from typing import Tuple, Dict, Optional, Union
+from typing import Dict, Tuple
 
 from .utils import FlopsUtils, get_safe_groups, BatchedExpertComputation
-from .experts import (
+from .experts import (  # noqa: F401 - preserve historical module attributes
     OptimizedSimpleExpert, FusedGhostExpert, SimpleExpert, GhostExpert,
     InvertedResidualExpert, EfficientExpertGroup, SpatialExpert, SharedInvertedExpertGroup
 )
-from .routers import (
+from .routers import (  # noqa: F401 - preserve historical module attributes
     UltraEfficientRouter, EfficientSpatialRouter, LocalRoutingLayer,
     AdaptiveRoutingLayer, DynamicRoutingLayer, AdvancedRoutingLayer
 )
 from ultralytics.nn.modules.block import ABlock, A2C2f, C3k
-from .loss import MoELoss, gshard_balance_loss, weighted_gshard_balance_loss, differentiable_balance_loss, all_reduce_mean, should_reduce_ddp
-from .scheduler import MoEDynamicScheduler, MoEDynamicSchedulerConfig
+from .loss import (  # noqa: F401 - preserve historical module attributes
+    MoELoss,
+    all_reduce_mean,
+    differentiable_balance_loss,
+    gshard_balance_loss,
+    should_reduce_ddp,
+    weighted_gshard_balance_loss,
+)
+from .scheduler import MoEDynamicScheduler, MoEDynamicSchedulerConfig  # noqa: F401 - compatibility attributes
 from ultralytics.nn.modules.routing_protocol import (
     export_capabilities as _export_routing_capabilities,
     graph_connected_finite_zero,
@@ -561,6 +567,7 @@ class ES_MOE(nn.Module):
             routing_kind="moe",
             sparse_dispatch=eager_sparse,
             eager_sparse_dispatch=eager_sparse,
+            training_sparse_dispatch=False,
             sparse_export_limitation=(
                 "ES_MOE eager inference supports sample-level Top-K dispatch; ONNX and TorchScript tracing execute "
                 "all experts through the dense fallback."
@@ -1063,11 +1070,6 @@ class OptimizedMOEImproved(nn.Module):
         # Only after warmup so it doesn't fight progressive-sparsity scheduling.
         active_experts = list(range(self.num_experts))
         _step = self._training_step
-        ddp_active = (
-            torch.distributed.is_available()
-            and torch.distributed.is_initialized()
-            and torch.distributed.get_world_size() > 1
-        )
         if self.training and _step >= self.warmup_steps and _step % self.dropout_interval == 0:
             num_drop = max(1, int(self.num_experts * self.expert_dropout_rate))
             # Draw the drop set on a fixed-seed generator keyed by the global

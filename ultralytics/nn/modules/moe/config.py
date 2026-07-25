@@ -35,10 +35,16 @@ MIXTURE_DEFAULTS: dict[str, dict[str, Any]] = {
         "router_z_loss_coeff": 0.01,
         "temperature": 1.0,
         "sparse_train": False,
+        "sparse_train_warmup_steps": 0,
         "scene_aware_router": False,
         "scene_hidden_dim": None,
         "scene_consistency_coeff": 0.0,
+        "scene_inference_mode": "dynamic",
         "aux_gain": 1.0,
+        "aux_budget": 3.0,
+    },
+    "latent": {
+        "aux_gain": 0.1,
         "aux_budget": 3.0,
     },
     "molora": {
@@ -75,10 +81,16 @@ CLI_FIELDS: dict[str, dict[str, str]] = {
         "router_z_loss_coeff": "mot_router_z_loss",
         "temperature": "mot_temperature",
         "sparse_train": "mot_sparse_train",
+        "sparse_train_warmup_steps": "mot_sparse_train_warmup_steps",
         "scene_aware_router": "mot_scene_aware_router",
         "scene_hidden_dim": "mot_scene_hidden_dim",
         "scene_consistency_coeff": "mot_scene_consistency",
+        "scene_inference_mode": "mot_scene_inference_mode",
         "aux_gain": "mot_aux_gain",
+        "aux_budget": "mixture_aux_budget",
+    },
+    "latent": {
+        "aux_gain": "latent_aux_gain",
         "aux_budget": "mixture_aux_budget",
     },
     "molora": {
@@ -131,6 +143,8 @@ def annotate_mixture_yaml_config(module: nn.Module, module_name: str, yaml_args:
             (10, "scene_aware_router"),
             (11, "scene_hidden_dim"),
             (12, "scene_consistency_coeff"),
+            (13, "sparse_train_warmup_steps"),
+            (14, "scene_inference_mode"),
         ):
             if len(yaml_args) > index:
                 explicit[key] = yaml_args[index]
@@ -149,6 +163,8 @@ def annotate_mixture_yaml_config(module: nn.Module, module_name: str, yaml_args:
             (15, "scene_aware_router"),
             (16, "scene_hidden_dim"),
             (17, "scene_consistency_coeff"),
+            (18, "sparse_train_warmup_steps"),
+            (19, "scene_inference_mode"),
         ):
             if len(yaml_args) > index:
                 explicit[key] = yaml_args[index]
@@ -173,6 +189,8 @@ def _module_kind(module: nn.Module) -> str | None:
         return "moa"
     if name in {"MoTBlock", "C2fMoT"}:
         return "mot"
+    if name in {"LatentMixture", "MultiScaleLatentMixture"}:
+        return "latent"
     if name in {"MoLoRALayer", "MoLoRAMoEAwareLayer"}:
         return "molora"
     try:
@@ -302,6 +320,11 @@ def apply_mixture_config(model: nn.Module, resolved: ResolvedMixtureConfig) -> i
                 module.router_z_loss_coeff = config["router_z_loss_coeff"]
             if hasattr(module, "sparse_train") and "sparse_train" not in inherited_explicit:
                 module.sparse_train = bool(config["sparse_train"])
+            if (
+                hasattr(module, "sparse_train_warmup_steps")
+                and "sparse_train_warmup_steps" not in inherited_explicit
+            ):
+                module.sparse_train_warmup_steps = max(0, int(config["sparse_train_warmup_steps"]))
             router = getattr(module, "router", None)
             if router is not None and "scene_aware_router" not in inherited_explicit:
                 if bool(config["scene_aware_router"]):
@@ -310,6 +333,8 @@ def apply_mixture_config(model: nn.Module, resolved: ResolvedMixtureConfig) -> i
                     router.scene_aware = False
             if hasattr(module, "scene_consistency_coeff") and "scene_consistency_coeff" not in inherited_explicit:
                 module.scene_consistency_coeff = max(0.0, float(config["scene_consistency_coeff"]))
+            if router is not None and "scene_inference_mode" not in inherited_explicit:
+                router.set_scene_inference_mode(config["scene_inference_mode"])
             if router is not None and hasattr(router, "temperature") and "temperature" not in inherited_explicit:
                 if hasattr(router.temperature, "fill_"):
                     router.temperature.fill_(float(config["temperature"]))
@@ -325,6 +350,10 @@ def apply_mixture_config(model: nn.Module, resolved: ResolvedMixtureConfig) -> i
                 ):
                     if hasattr(loss_fn, attr) and key not in inherited_explicit:
                         setattr(loss_fn, attr, config[key])
+        elif kind == "latent":
+            # The gain is consumed by CompositeCriterion, but keeping it in
+            # the audit makes YAML/CLI precedence visible for latent layers.
+            continue
         # Keep a compact runtime audit on the model for logging/checkpoints.
     model.mixture_config_audit = resolved.audit
     return applied

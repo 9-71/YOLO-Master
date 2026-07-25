@@ -17,8 +17,10 @@ import pytest
 # constant BEFORE any ES_MOE forward runs (env var won't work post-import).
 from ultralytics.nn.modules.moe import _common as _moe_common
 from ultralytics.nn.modules.moa.moa import MoABlock, C2fMoA
+from ultralytics.nn.modules.moe.gated import AdaptiveGateMoE
 from ultralytics.nn.modules.moe.modules import ES_MOE
 from ultralytics.nn.modules.moe.protocol import collect_routed_children, is_routed_module
+from ultralytics.nn.modules.routing_protocol import RoutingAuxPublisher, get_aux_record
 from ultralytics.nn.modules.mot.mot import MoTBlock, C2fMoT
 from ultralytics.nn.peft.molora.layer import MoLoRALayer
 
@@ -30,6 +32,10 @@ _moe_common.MOE_SNAPSHOT_INTERVAL = 1
 
 def _make_moe():
     return ES_MOE(in_channels=32, out_channels=32, num_experts=4, top_k=2)
+
+
+def _make_adaptive_gate_moe():
+    return AdaptiveGateMoE(in_channels=64, out_channels=64, num_experts=4, top_k=2)
 
 
 def _make_moa():
@@ -62,6 +68,7 @@ class TestRoutedModuleProtocol:
         "factory,name,exp_E,exp_K",
         [
             (_make_moe, "ES_MOE", 4, 2),
+            (_make_adaptive_gate_moe, "AdaptiveGateMoE", 4, 2),
             (_make_moa, "MoABlock", 3, 3),
             (_make_c2fmoa, "C2fMoA", 3, 3),
             (_make_mot, "MoTBlock", 3, 2),
@@ -77,6 +84,7 @@ class TestRoutedModuleProtocol:
         "factory,name,exp_E",
         [
             (_make_moe, "ES_MOE", 4),
+            (_make_adaptive_gate_moe, "AdaptiveGateMoE", 4),
             (_make_moa, "MoABlock", 3),
             (_make_c2fmoa, "C2fMoA", 3),
             (_make_mot, "MoTBlock", 3),
@@ -92,6 +100,7 @@ class TestRoutedModuleProtocol:
         "factory,name,exp_K",
         [
             (_make_moe, "ES_MOE", 2),
+            (_make_adaptive_gate_moe, "AdaptiveGateMoE", 2),
             (_make_moa, "MoABlock", 3),
             (_make_c2fmoa, "C2fMoA", 3),
             (_make_mot, "MoTBlock", 2),
@@ -107,6 +116,7 @@ class TestRoutedModuleProtocol:
         "factory,name",
         [
             (_make_moe, "ES_MOE"),
+            (_make_adaptive_gate_moe, "AdaptiveGateMoE"),
             (_make_moa, "MoABlock"),
             (_make_c2fmoa, "C2fMoA"),
             (_make_mot, "MoTBlock"),
@@ -126,6 +136,7 @@ class TestRoutedModuleProtocol:
         "factory,name",
         [
             (_make_moe, "ES_MOE"),
+            (_make_adaptive_gate_moe, "AdaptiveGateMoE"),
             (_make_moa, "MoABlock"),
             (_make_c2fmoa, "C2fMoA"),
             (_make_mot, "MoTBlock"),
@@ -147,6 +158,7 @@ class TestRoutedModuleProtocol:
         "factory,name,exp_E",
         [
             (_make_moe, "ES_MOE", 4),
+            (_make_adaptive_gate_moe, "AdaptiveGateMoE", 4),
             (_make_moa, "MoABlock", 3),
             (_make_mot, "MoTBlock", 3),
             (_make_molora, "MoLoRALayer", 4),
@@ -159,6 +171,29 @@ class TestRoutedModuleProtocol:
         _ = m(x)
         usage = m.last_routing_snapshot["expert_usage"]
         assert usage.shape[0] == exp_E, f"{name} expert_usage shape={usage.shape}, expected [{exp_E}]"
+
+    def test_adaptive_gate_exposes_explicit_aux_publisher_contract(self):
+        module = _make_adaptive_gate_moe().train()
+        assert isinstance(module, RoutingAuxPublisher)
+        assert module.last_routing_snapshot == {}
+
+        _ = module(torch.randn(2, 64, 8, 8))
+        published = module.publish_aux_loss(step=17, training=True)
+        record = get_aux_record(module)
+
+        assert record is not None
+        assert record.step == 17
+        assert record.value is published
+        assert record.kind == "moe"
+
+        snapshot = module.routing_snapshot()
+        snapshot["mutated"] = True
+        assert "mutated" not in module.last_routing_snapshot
+
+        capabilities = module.export_capabilities()
+        assert capabilities["routing_kind"] == "moe"
+        assert capabilities["training_sparse_dispatch"] is True
+        assert capabilities["eager_sparse_dispatch"] is True
 
 
 # ── Protocol utility tests ──────────────────────────────────────────────

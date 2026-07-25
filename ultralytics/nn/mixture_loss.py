@@ -100,6 +100,8 @@ def _get_mixture_loss_ema(model: nn.Module | None) -> dict[str, float] | None:
     if model is None:
         return None
     buf = getattr(model, "_mixture_loss_ema_buf", None)
+    if buf is not None and "_mixture_loss_ema_buf" not in model._buffers:
+        raise RuntimeError("_mixture_loss_ema_buf exists but is not registered as a model buffer")
     # Determine target device from model parameters so the buffer stays aligned
     # with the model even after ``.to(device)`` calls.
     parameter = next(model.parameters(), None)
@@ -120,6 +122,8 @@ def _get_mixture_loss_ema(model: nn.Module | None) -> dict[str, float] | None:
             persistent=True,
         )
         buf = model._mixture_loss_ema_buf
+    elif not isinstance(buf, torch.Tensor):
+        raise RuntimeError("_mixture_loss_ema_buf must be a torch.Tensor")
     elif buf.numel() == 3:
         # Migrate the pre-latent three-slot buffer in place while preserving
         # strict checkpoint compatibility for models created by older code.
@@ -208,7 +212,7 @@ def _collect_mixture_aux_loss(
     moe_gain: float = 1.0,
     mot_gain: float = 1.0,
     moa_gain: float = 1.0,
-    latent_gain: float = 0.0,
+    latent_gain: float = 0.1,
     aux_budget: float = 3.0,
 ) -> torch.Tensor:
     """Collect all mixture-routing auxiliary losses with **independent** gains.
@@ -354,7 +358,7 @@ class CompositeCriterion:
             moe_gain=_model_arg(self.model, "moe_aux_gain", 1.0),
             mot_gain=_model_arg(self.model, "mot_aux_gain", 1.0),
             moa_gain=_model_arg(self.model, "moa_aux_gain", 1.0),
-            latent_gain=_model_arg(self.model, "latent_aux_gain", 0.0),
+            latent_gain=_model_arg(self.model, "latent_aux_gain", 0.1),
             aux_budget=_model_arg(self.model, "mixture_aux_budget", 3.0),
         )
         self.model._last_mixture_aux_loss = aux.detach()
@@ -389,7 +393,7 @@ def compose_native_result(model: nn.Module, native_loss: torch.Tensor, native_it
         moe_gain=_model_arg(model, "moe_aux_gain", 1.0),
         mot_gain=_model_arg(model, "mot_aux_gain", 1.0),
         moa_gain=_model_arg(model, "moa_aux_gain", 1.0),
-        latent_gain=_model_arg(model, "latent_aux_gain", 0.0),
+        latent_gain=_model_arg(model, "latent_aux_gain", 0.1),
         aux_budget=_model_arg(model, "mixture_aux_budget", 3.0),
     )
     model._last_mixture_aux_loss = aux.detach()

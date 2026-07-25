@@ -9,28 +9,35 @@ import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from typing import Tuple, Dict, Optional, Union
+from typing import Dict, Tuple
+
+from ultralytics.nn.modules._numeric import FP32RouterMixin, disabled_autocast
+from ultralytics.nn.modules.routing_protocol import (
+    export_capabilities as _export_routing_capabilities,
+    publish_aux_loss as _publish_aux_loss,
+    routing_snapshot as _routing_snapshot,
+)
 
 from .utils import FlopsUtils, get_safe_groups, BatchedExpertComputation
-from .experts import (
+from .experts import (  # noqa: F401 - preserve historical module attributes
     OptimizedSimpleExpert, FusedGhostExpert, SimpleExpert, GhostExpert,
     InvertedResidualExpert, EfficientExpertGroup, SpatialExpert, SharedInvertedExpertGroup
 )
-from .routers import (
+from .routers import (  # noqa: F401 - preserve historical module attributes
     UltraEfficientRouter, EfficientSpatialRouter, LocalRoutingLayer,
     AdaptiveRoutingLayer, DynamicRoutingLayer, AdvancedRoutingLayer
 )
-from .loss import (
+from .loss import (  # noqa: F401 - preserve historical module attributes
     MoELoss, gshard_balance_loss, weighted_gshard_balance_loss,
     differentiable_balance_loss, all_reduce_mean, should_reduce_ddp
 )
-from .scheduler import (
+from .scheduler import (  # noqa: F401 - preserve historical module attributes
     MoEDynamicScheduler, MoEDynamicSchedulerConfig,
     MoEDynamicScheduleState, MapSaturationScheduler,
     MapSaturationSchedulerConfig, MapSaturationScheduleState,
     compute_gini,
 )
-from ._helpers import (
+from ._helpers import (  # noqa: F401 - preserve historical module attributes
     autocast,
     MOE_LOSS_REGISTRY,
     _registry_set,
@@ -43,12 +50,16 @@ from ._helpers import (
     _record_moe_snapshot,
     _robust_deepcopy,
 )
+from ._gated_visual import (
+    pool_to_size_mps_safe as _pool_to_size_mps_safe,
+    run_visual_hybrid_moe_forward as _run_visual_hybrid_moe_forward,
+)
 
 # ==========================================
 # Inverted Residual Expert & HyperSplitMoE
 # ==========================================
 
-class DualStreamGateRouter(nn.Module):
+class DualStreamGateRouter(FP32RouterMixin, nn.Module):
     """
     Dual-Stream Gate Router for v0.4 AdaptiveGateMoE.
 
@@ -93,35 +104,32 @@ class DualStreamGateRouter(nn.Module):
 
     def forward(self, x):
         B, C, H, W = x.shape
+        with disabled_autocast(x.device.type):
+            route_input = x.float()
+            # Stream A: global statistics
+            mean = route_input.mean(dim=[2, 3])
+            std = (
+                route_input.std(dim=[2, 3], unbiased=False) if H * W > 1 else torch.zeros_like(mean)
+            )
+            stats = torch.cat([mean, std], dim=1)
+            global_logits = self.global_fc(stats)
 
-        # Stream A: global statistics
-        mean = x.mean(dim=[2, 3])                          # [B, C]
-        std = x.std(dim=[2, 3], unbiased=False) if H * W > 1 else torch.zeros_like(mean)
-        stats = torch.cat([mean, std], dim=1)               # [B, 2C]
-        global_logits = self.global_fc(stats)                # [B, E]
+            # Stream B: local spatial cues (with optional downsampling)
+            if H > self.pool_scale and W > self.pool_scale:
+                x_local = F.avg_pool2d(route_input, kernel_size=self.pool_scale, stride=self.pool_scale)
+            else:
+                x_local = route_input
+            local_map = self.local_conv(x_local)
+            local_logits = local_map.mean(dim=[2, 3])
 
-        # Stream B: local spatial cues (with optional downsampling)
-        if H > self.pool_scale and W > self.pool_scale:
-            x_local = F.avg_pool2d(x, kernel_size=self.pool_scale, stride=self.pool_scale)
-        else:
-            x_local = x
-        local_map = self.local_conv(x_local)                # [B, E, h', w']
-        local_logits = local_map.mean(dim=[2, 3])           # [B, E]
-
-        # Merge with learned gate
-        alpha = torch.sigmoid(self.alpha)
-        logits = alpha * global_logits + (1 - alpha) * local_logits   # [B, E]
-
-        # Numerical stability
-        logits = logits.clamp(-30.0, 30.0)
-
-        # Softmax + Top-K
-        probs = F.softmax(logits / self.temperature, dim=1)  # [B, E]
-        topk_weights, topk_indices = torch.topk(probs, self.top_k, dim=1)
-        topk_weights = topk_weights / (topk_weights.sum(dim=1, keepdim=True) + 1e-6)
+            alpha = torch.sigmoid(self.alpha)
+            logits = (alpha * global_logits + (1 - alpha) * local_logits).clamp(-30.0, 30.0)
+            probs = F.softmax(logits / self.temperature, dim=1)
+            topk_weights, topk_indices = torch.topk(probs, self.top_k, dim=1)
+            topk_weights = topk_weights / (topk_weights.sum(dim=1, keepdim=True) + 1e-6)
 
         # Expand to spatial dims for downstream consumers
-        routing_weights = topk_weights.view(B, self.top_k, 1, 1)
+        routing_weights = topk_weights.to(dtype=x.dtype).view(B, self.top_k, 1, 1)
         routing_indices = topk_indices.view(B, self.top_k, 1, 1)
 
         routing_stats = {'topk_indices': topk_indices}
@@ -192,44 +200,35 @@ class DualStreamGateRouterV2(DualStreamGateRouter):
 
     def forward(self, x):
         B, C, H, W = x.shape
+        with disabled_autocast(x.device.type):
+            route_input = x.float()
+            mean = route_input.mean(dim=[2, 3])
+            std = (
+                route_input.std(dim=[2, 3], unbiased=False) if H * W > 1 else torch.zeros_like(mean)
+            )
+            stats = self.stat_norm(torch.cat([mean, std], dim=1))
+            global_logits = self.global_fc(stats)
 
-        # Stream A: normalized global statistics
-        mean = x.mean(dim=[2, 3])                          # [B, C]
-        std = x.std(dim=[2, 3], unbiased=False) if H * W > 1 else torch.zeros_like(mean)
-        stats = self.stat_norm(torch.cat([mean, std], dim=1))  # [B, 2C]
-        global_logits = self.global_fc(stats)               # [B, E]
+            if H > self.pool_scale and W > self.pool_scale:
+                x_local = F.avg_pool2d(route_input, kernel_size=self.pool_scale, stride=self.pool_scale)
+            else:
+                x_local = route_input
+            local_map = self.local_conv(x_local)
+            local_logits = local_map.mean(dim=[2, 3])
 
-        # Stream B: local spatial cues (with optional downsampling)
-        if H > self.pool_scale and W > self.pool_scale:
-            x_local = F.avg_pool2d(x, kernel_size=self.pool_scale, stride=self.pool_scale)
-        else:
-            x_local = x
-        local_map = self.local_conv(x_local)                # [B, E, h', w']
-        local_logits = local_map.mean(dim=[2, 3])           # [B, E]
+            alpha = torch.sigmoid(self.alpha)
+            logits = alpha * global_logits + (1 - alpha) * local_logits
+            logits = logits + self.expert_prior.view(1, -1)
+            if self.training and self.noise_std_init > 0:
+                decay = (1.0 - self._noise_progress).clamp(0.0, 1.0)
+                logits = logits + torch.randn_like(logits) * (self.noise_std_init * decay)
 
-        # Merge with learned gate + learnable balancing prior
-        alpha = torch.sigmoid(self.alpha)
-        logits = alpha * global_logits + (1 - alpha) * local_logits
-        logits = logits + self.expert_prior.view(1, -1)
+            logits = logits.clamp(-30.0, 30.0)
+            probs = F.softmax(logits / self.temperature, dim=1)
+            topk_weights, topk_indices = torch.topk(probs, self.top_k, dim=1)
+            topk_weights = topk_weights / (topk_weights.sum(dim=1, keepdim=True) + 1e-6)
 
-        # Switch-Transformer-style noise injection (training only).
-        # Decays linearly from noise_std_init to 0 over the first half of
-        # training. This is a plain tensor operation — no buffer sync, no
-        # .item() — so it is fully DDP-safe and MPS-compatible.
-        if self.training and self.noise_std_init > 0:
-            decay = (1.0 - self._noise_progress).clamp(0.0, 1.0)
-            noise = torch.randn_like(logits) * (self.noise_std_init * decay)
-            logits = logits + noise
-
-        # Numerical stability
-        logits = logits.clamp(-30.0, 30.0)
-
-        # Softmax + Top-K
-        probs = F.softmax(logits / self.temperature, dim=1)
-        topk_weights, topk_indices = torch.topk(probs, self.top_k, dim=1)
-        topk_weights = topk_weights / (topk_weights.sum(dim=1, keepdim=True) + 1e-6)
-
-        routing_weights = topk_weights.view(B, self.top_k, 1, 1)
+        routing_weights = topk_weights.to(dtype=x.dtype).view(B, self.top_k, 1, 1)
         routing_indices = topk_indices.view(B, self.top_k, 1, 1)
 
         routing_stats = {'topk_indices': topk_indices}
@@ -360,6 +359,7 @@ class AdaptiveGateMoE(nn.Module):
         # ── Training state ──
         self.register_buffer('training_step', torch.tensor(0), persistent=False)
         self._training_step_value = 0
+        self.last_routing_snapshot: dict = {}
 
         self._init_weights()
 
@@ -498,6 +498,29 @@ class AdaptiveGateMoE(nn.Module):
     @property
     def aux_loss(self):
         return _get_moe_aux_loss(self)
+
+    def publish_aux_loss(self, *, step: int, training: bool) -> torch.Tensor:
+        return _publish_aux_loss(self, self.aux_loss, step=step, kind="moe", training=training)
+
+    def routing_snapshot(self) -> dict:
+        return _routing_snapshot(self)
+
+    def export_capabilities(self) -> dict:
+        capabilities = _export_routing_capabilities(self)
+        eager_sparse = self.top_k < self.num_experts
+        ddp_safe_dense = bool(getattr(self.fused_experts, "ddp_safe_dense", False))
+        capabilities.update(
+            routing_kind="moe",
+            sparse_dispatch=eager_sparse,
+            eager_sparse_dispatch=eager_sparse,
+            training_sparse_dispatch=bool(eager_sparse and not ddp_safe_dense),
+            ddp_safe_dense=ddp_safe_dense,
+            sparse_export_limitation=(
+                "AdaptiveGateMoE uses sample-level Top-K expert projections in eager execution; "
+                "DDP safety mode and exported graphs execute all projections through a dense fallback."
+            ),
+        )
+        return capabilities
 
     def get_gflops(self, input_shape):
         B, C, H, W = input_shape
@@ -645,12 +668,6 @@ class HyperSplitMoE(nn.Module):
 
         # 3.3 Calculate Load Balancing Loss (Training only)
         if self.training:
-            # Record data for loss calculation
-            loss_info = {
-                'router_probs': router_probs,
-                'router_logits': router_logits,
-                'topk_indices': topk_indices
-            }
             aux_loss = self.moe_loss_fn(router_probs, router_logits, topk_indices)
             _registry_set(self, aux_loss)
 
@@ -852,7 +869,7 @@ class HyperFusedMoE(nn.Module):
         return _robust_deepcopy(self, memo)
 
 
-class ZeroCostRouter(nn.Module):
+class ZeroCostRouter(FP32RouterMixin, nn.Module):
     """
     Zero-cost Router: Reuses feature map statistics for routing decisions.
 
@@ -883,30 +900,20 @@ class ZeroCostRouter(nn.Module):
     def forward(self, x, top_k=None):
         B, C, H, W = x.shape
         current_top_k = max(1, min(int(self.top_k if top_k is None else top_k), self.num_experts))
-        
-        # === Zero-cost Feature Extraction ===
-        # Global statistics (Overlaps with BN computation, near zero cost)
-        mean = x.mean(dim=[2, 3])  # [B, C]
-        # Use unbiased=False to avoid DoF warning when H*W <= 1 (e.g. classification head)
-        std = x.std(dim=[2, 3], unbiased=False) if H * W > 1 else torch.zeros_like(mean)
-        stats = torch.cat([mean, std], dim=1)  # [B, 2C]
-        
-        # === Routing Decision ===
-        router_logits = self.router(stats) / self.temperature  # [B, num_experts]
-        
-        # Clamp logits for stability
-        router_logits = router_logits.clamp(-30.0, 30.0)
-        
-        router_probs = F.softmax(router_logits, dim=1)
-        
-        # Top-K Selection
-        topk_probs, topk_indices = torch.topk(router_probs, current_top_k, dim=1)
-        
-        # Renormalization
-        topk_probs = topk_probs / (topk_probs.sum(dim=1, keepdim=True) + 1e-6)
+        with disabled_autocast(x.device.type):
+            route_input = x.float()
+            mean = route_input.mean(dim=[2, 3])
+            std = (
+                route_input.std(dim=[2, 3], unbiased=False) if H * W > 1 else torch.zeros_like(mean)
+            )
+            stats = torch.cat([mean, std], dim=1)
+            router_logits = (self.router(stats) / self.temperature).clamp(-30.0, 30.0)
+            router_probs = F.softmax(router_logits, dim=1)
+            topk_probs, topk_indices = torch.topk(router_probs, current_top_k, dim=1)
+            topk_probs = topk_probs / (topk_probs.sum(dim=1, keepdim=True) + 1e-6)
         
         # Expand to spatial dimensions
-        routing_weights = topk_probs.view(B, current_top_k, 1, 1)
+        routing_weights = topk_probs.to(dtype=x.dtype).view(B, current_top_k, 1, 1)
         routing_indices = topk_indices.view(B, current_top_k, 1, 1)
         
         # Statistical Information
@@ -1115,27 +1122,6 @@ class VisualDetailGate(nn.Module):
         return flops
 
 
-def _pool_to_size_mps_safe(x: torch.Tensor, output_size: Tuple[int, int]) -> torch.Tensor:
-    """Pool to a target spatial size without hitting MPS adaptive-pool limits."""
-    h, w = output_size
-    H, W = x.shape[-2:]
-    if (H, W) == (h, w):
-        return x
-    if x.device.type != "mps":
-        return F.adaptive_avg_pool2d(x, (h, w))
-
-    if H % h == 0 and W % w == 0:
-        kernel = (H // h, W // w)
-        return F.avg_pool2d(x, kernel_size=kernel, stride=kernel)
-
-    pad_h = ((H + h - 1) // h) * h - H
-    pad_w = ((W + w - 1) // w) * w - W
-    pooled_source = F.pad(x, (0, pad_w, 0, pad_h), mode="replicate") if pad_h or pad_w else x
-    H_pad, W_pad = pooled_source.shape[-2:]
-    kernel = (H_pad // h, W_pad // w)
-    return F.avg_pool2d(pooled_source, kernel_size=kernel, stride=kernel)
-
-
 class PyramidContextMixer(nn.Module):
     """Pool-based multi-scale context mixer with a gated residual update."""
 
@@ -1182,61 +1168,6 @@ class PyramidContextMixer(nn.Module):
         flops += FlopsUtils.count_conv2d(self.context_gate, input_shape)
         flops += B * C * H * W * 4
         return flops
-
-
-def _run_visual_hybrid_moe_forward(module, x, detail_gate=None, context_mixer=None, refine_features=False):
-    """Shared forward path for visual MoE variants."""
-    B, C, H, W = x.shape
-
-    if module.training:
-        module._update_temperature()
-        module.training_step += 1
-        module._training_step_value += 1
-
-    gate_weights = module.se_gate(x)
-    gate_static = gate_weights[:, :module.static_channels].unsqueeze(-1).unsqueeze(-1)
-    gate_dynamic = gate_weights[:, module.static_channels:].unsqueeze(-1).unsqueeze(-1)
-
-    x_static = x[:, :module.static_channels, :, :] * gate_static
-    x_dynamic = x[:, module.static_channels:, :, :] * gate_dynamic
-    if detail_gate is not None:
-        x_dynamic = detail_gate(x_dynamic)
-
-    out_static = module.static_net(x_static)
-    complexity = module._safe_complexity(x_dynamic)
-
-    routing_weights, routing_indices, routing_stats = module.routing(x_dynamic)
-    routing_weights, routing_indices, routing_stats, adaptive_top_k = module._apply_complexity_gate(
-        routing_weights, routing_indices, routing_stats, complexity
-    )
-    out_dynamic = module.fused_experts(x_dynamic, routing_weights, routing_indices, adaptive_top_k)
-
-    out_concat = module._channel_shuffle(torch.cat([out_static, out_dynamic], dim=1))
-    if context_mixer is not None:
-        out_concat = context_mixer(out_concat)
-    if refine_features and hasattr(module, "_refine_features"):
-        out_concat = module._refine_features(out_concat)
-
-    out = module.proj(out_concat)
-    out = module.bn(out) + x
-
-    if module.training:
-        router_probs = routing_stats.get('router_probs')
-        router_logits = routing_stats.get('router_logits')
-        topk_indices = routing_stats.get('topk_indices')
-        if isinstance(router_probs, torch.Tensor) and isinstance(router_logits, torch.Tensor):
-            aux_loss = module.moe_loss_fn(router_probs, router_logits, topk_indices)
-            _registry_set(module, aux_loss)
-            _record_moe_snapshot(
-                module,
-                expert_usage=routing_stats.get('expert_usage'),
-                topk_indices=topk_indices,
-                topk_weights=routing_weights,
-                router_probs=router_probs,
-                aux_loss=aux_loss,
-            )
-
-    return out
 
 
 class FusedAdaptiveGateMoE(AdaptiveGateMoE):

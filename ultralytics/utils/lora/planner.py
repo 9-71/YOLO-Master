@@ -582,12 +582,15 @@ class PlacementDecision:
     refusal_reason: Optional[str] = None
     safety_overrides: Dict[str, Any] = field(default_factory=dict)
     metadata: Dict[str, Any] = field(default_factory=dict)
+    evidence: Dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self):
         if self.safety_overrides is None:
             self.safety_overrides = {}
         if self.metadata is None:
             self.metadata = {}
+        if self.evidence is None:
+            self.evidence = {}
         if self.status not in ("ACCEPT", "REFUSE", "ADAPT"):
             raise ValueError(f"Invalid status: {self.status}")
 
@@ -601,6 +604,7 @@ class PlacementDecision:
             "refusal_reason": self.refusal_reason,
             "safety_overrides": dict(self.safety_overrides),
             "metadata": dict(self.metadata),
+            "evidence": dict(self.evidence),
             "target_modules_hint": list(self.target_modules_hint or []),
             "target_modules_hint_count": len(self.target_modules_hint or []),
         }
@@ -617,6 +621,7 @@ class PlacementDecision:
             refusal_reason=payload.get("refusal_reason"),
             safety_overrides=dict(payload.get("safety_overrides") or {}),
             metadata=dict(payload.get("metadata") or {}),
+            evidence=dict(payload.get("evidence") or {}),
         )
 
 
@@ -639,6 +644,7 @@ class DecisionAudit:
     refusal_reason: Optional[str] = None
     safety_overrides: Dict[str, Any] = field(default_factory=dict)
     metadata: Dict[str, Any] = field(default_factory=dict)
+    evidence: Dict[str, Any] = field(default_factory=dict)
     target_modules_count: int = 0
 
     def to_dict(self) -> Dict[str, Any]:
@@ -656,6 +662,7 @@ class DecisionAudit:
             "refusal_reason": self.refusal_reason,
             "safety_overrides": self.safety_overrides,
             "metadata": self.metadata,
+            "evidence": self.evidence,
             "target_modules_count": self.target_modules_count,
         }
 
@@ -1834,7 +1841,20 @@ class PEFTPlanner:
     def _calibration_metadata(self) -> Dict[str, Any]:
         """Return decision evidence describing the active regression calibration."""
         fitted = len(self._history) >= 5
-        n_samples = self._fit_n_samples if fitted else 0
+        collector_observations = len(self.lovo_collector) if self.lovo_collector is not None else 0
+        n_samples = max(self._fit_n_samples, len(self._history), collector_observations)
+        rank_deficient = bool(fitted and self._fit_effective_rank < self._fit_n_features)
+        confidence_reasons = []
+        if not fitted:
+            confidence_reasons.append("no_observations" if n_samples == 0 else "insufficient_observations")
+            confidence_reasons.append("default_coefficients")
+        else:
+            if n_samples < 30:
+                confidence_reasons.append("limited_sample_size")
+            if rank_deficient:
+                confidence_reasons.append("rank_deficient_fit")
+        confidence = "low" if confidence_reasons else "high"
+        evidence_state = "cold_start" if not fitted else ("limited_evidence" if confidence_reasons else "calibrated")
         return {
             "calibration_fitted": fitted,
             "calibration_n_samples": n_samples,
@@ -1844,11 +1864,16 @@ class PEFTPlanner:
             "calibration_condition_number": self._fit_condition_number if fitted else 0.0,
             "calibration_noise_variance": self._fit_noise_variance if fitted else 0.0,
             "calibration_effective_dof": self._fit_effective_dof if fitted else 0.0,
-            "calibration_rank_deficient": bool(fitted and self._fit_effective_rank < self._fit_n_features),
+            "calibration_rank_deficient": rank_deficient,
             "calibration_posterior_available": bool(fitted and self._fit_posterior_covariance is not None),
-            "low_confidence": bool(
-                fitted and (n_samples < 30 or self._fit_effective_rank < self._fit_n_features)
-            ),
+            "evidence_state": evidence_state,
+            "evidence_source": "learned_regression" if fitted else "default_prior",
+            "evidence_observation_count": n_samples,
+            "evidence_minimum_fit_observations": 5,
+            "evidence_confidence": confidence,
+            "evidence_confidence_reasons": confidence_reasons,
+            "uses_learned_evidence": fitted,
+            "low_confidence": confidence == "low",
             "paper_regression_features": [
                 "intercept", "phi_attn", "phi_text", "phi_dw", "variant_xi"
             ],
@@ -1858,6 +1883,27 @@ class PEFTPlanner:
                 "phi_depth", "phi_width", "phi_head", "phi_residual", "phi_norm",
                 "log2_rank", "phi_attn_squared",
             ],
+        }
+
+    @staticmethod
+    def _attach_decision_evidence(
+        decision: PlacementDecision,
+        *,
+        decision_basis: str,
+        guardrails: Optional[List[str]] = None,
+    ) -> None:
+        """Attach the stable evidence contract used by callers and audit records."""
+        metadata = decision.metadata
+        decision.evidence = {
+            "state": metadata.get("evidence_state", "not_evaluated"),
+            "source": metadata.get("evidence_source", "runtime_fallback"),
+            "observation_count": int(metadata.get("evidence_observation_count", 0)),
+            "minimum_fit_observations": int(metadata.get("evidence_minimum_fit_observations", 5)),
+            "confidence": metadata.get("evidence_confidence", "unknown"),
+            "confidence_reasons": list(metadata.get("evidence_confidence_reasons") or []),
+            "uses_learned_evidence": bool(metadata.get("uses_learned_evidence", False)),
+            "decision_basis": decision_basis,
+            "guardrails": list(guardrails or []),
         }
 
     def plan(self, model: nn.Module, config: Any) -> PlacementDecision:
@@ -1878,12 +1924,22 @@ class PEFTPlanner:
             error = envelope.get("error") if isinstance(envelope, dict) else "invalid DDP planner envelope"
             reason = f"Rank-0 PEFT Planner failed: {error}. Falling back to Full-SFT."
             LOGGER.warning(f"[Planner] {reason}")
-            return PlacementDecision(
+            decision = PlacementDecision(
                 status="REFUSE",
                 refusal_reason=reason,
                 safety_overrides={"planner_refused": True, "planner_ddp_fallback": True},
-                metadata={"ddp_rank0_error": error},
+                metadata={
+                    "ddp_rank0_error": error,
+                    "evidence_state": "not_evaluated",
+                    "evidence_source": "runtime_fallback",
+                    "evidence_confidence": "unknown",
+                    "evidence_confidence_reasons": ["rank0_planner_failure"],
+                },
             )
+            self._attach_decision_evidence(
+                decision, decision_basis="runtime_fallback", guardrails=["ddp_rank0_failure"]
+            )
+            return decision
         return PlacementDecision.from_dict(envelope["decision"])
 
     def _plan_local(self, model: nn.Module, config: Any) -> PlacementDecision:
@@ -1915,7 +1971,18 @@ class PEFTPlanner:
             LOGGER.warning(
                 "[Planner] Config is not LoRAConfig, skipping planner."
             )
-            return PlacementDecision(status="ACCEPT", target_modules_hint=[])
+            decision = PlacementDecision(
+                status="ACCEPT",
+                target_modules_hint=[],
+                metadata={
+                    "evidence_state": "not_evaluated",
+                    "evidence_source": "input_bypass",
+                    "evidence_confidence": "unknown",
+                    "evidence_confidence_reasons": ["unsupported_config_type"],
+                },
+            )
+            self._attach_decision_evidence(decision, decision_basis="input_bypass")
+            return decision
 
         inner_model = getattr(model, "model", model)
         fingerprint = ArchitectureFingerprint.compute(inner_model)
@@ -2330,7 +2397,7 @@ class PEFTPlanner:
                 safety_overrides=safety_overrides,
                 metadata=calibration_metadata,
             )
-        elif calibration_metadata["low_confidence"]:
+        elif calibration_metadata["calibration_fitted"] and calibration_metadata["low_confidence"]:
             decision = PlacementDecision(
                 status="ADAPT",
                 recommended_variant=variant,
@@ -2419,6 +2486,43 @@ class PEFTPlanner:
         targets_hint: List[str],
     ) -> None:
         """Persist a decision audit record (best-effort, never raises)."""
+        guardrails = []
+        reason = decision.refusal_reason or ""
+        overrides = decision.safety_overrides
+        if "RT-DETR-like" in reason:
+            guardrails.append("rtdetr_lora_family")
+        if "No compatible PEFT variant" in reason:
+            guardrails.append("no_compatible_variant")
+        if "incompatible with this architecture" in reason or (
+            overrides.get("variant_adapted") and overrides.get("use_dora") is not False
+        ):
+            guardrails.append("variant_compatibility")
+        if overrides.get("use_dora") is False:
+            guardrails.append("dora_attention_downgrade")
+        if overrides.get("uncertainty_guard"):
+            guardrails.append("uncertainty_lower_bound")
+        if overrides.get("budget_infeasible"):
+            guardrails.append("adapter_budget")
+        if "r" in overrides:
+            guardrails.append("rank_cap")
+        if "include_attention" in overrides:
+            guardrails.append("attention_target_policy")
+        guardrails = list(dict.fromkeys(guardrails))
+
+        if overrides.get("planner_ddp_fallback"):
+            decision_basis = "runtime_fallback"
+        elif overrides.get("uncertainty_guard"):
+            decision_basis = "learned_prediction"
+        elif overrides.get("budget_infeasible"):
+            decision_basis = "constraint_guardrail"
+        elif guardrails:
+            decision_basis = "guardrail_fallback"
+        elif decision.metadata.get("uses_learned_evidence"):
+            decision_basis = "learned_prediction"
+        else:
+            decision_basis = "prior_prediction"
+        self._attach_decision_evidence(decision, decision_basis=decision_basis, guardrails=guardrails)
+
         try:
             audit = DecisionAudit(
                 timestamp=datetime.now().isoformat(),
@@ -2447,6 +2551,7 @@ class PEFTPlanner:
                 refusal_reason=decision.refusal_reason,
                 safety_overrides=dict(decision.safety_overrides),
                 metadata=dict(decision.metadata),
+                evidence=dict(decision.evidence),
                 target_modules_count=len(targets_hint),
             )
             audit.save(self.audit_dir)

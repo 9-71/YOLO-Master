@@ -155,7 +155,11 @@ class PlacementDecision:
     """Total objective value U(π, r, ξ)."""
 
     variants: Optional[List[str]] = None
-    """Effective per-node PEFT variants; absent entries default to ``variant``."""
+    """Per-node variants; defaults to the global ``variant`` for compatibility."""
+
+    def __post_init__(self) -> None:
+        if self.variants is None:
+            self.variants = [self.variant] * int(self.placement.numel())
 
 
 # ---------------------------------------------------------------------------
@@ -403,9 +407,9 @@ class AlternatingOptimizationSolver(ConstraintSolver):
                 break
 
         # --- post-processing -----------------------------------------------
-        pi, r = _project_discrete_solution(graph, pi, r, xi, constraints, self.rank_set)
-        pi, r, xi = constraints.enforce_moe_consistency(graph, pi, r, xi, self.rank_set)
-        pi, r = _project_budget(graph, pi, r, budget, xi, utilities)
+        pi, r = _project_discrete_solution(graph, pi, r, variant, constraints, self.rank_set)
+        pi, r = constraints.enforce_moe_consistency(graph, pi, r, variant, self.rank_set)
+        pi, r = _project_budget(graph, pi, r, budget, variant, utilities)
         budget_used = int(constraints.get_budget_usage(graph, pi, r, xi))
         budget_remaining = max(0, budget - budget_used)
         target_modules = [

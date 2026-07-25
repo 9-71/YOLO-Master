@@ -256,9 +256,12 @@ def test_capacity_overflow_is_distributed_round_robin():
     router = BaseRouter(num_experts=4, top_k=1, capacity_factor=0.5)
     router.train()
     logits = torch.zeros(12, 4)
-    _, indices, info = router._process_logits(logits, noise_std=0.0, training=True)
+    weights, indices, info = router._process_logits(logits, noise_std=0.0, training=True)
     assert info["overflow_count"] == 10
+    assert info["overflow_fraction"] == pytest.approx(10 / 12)
+    assert torch.equal(info["overflow_mask"], torch.tensor([False, False] + [True] * 10))
     assert set(indices[-10:, 0].tolist()) == {0, 1, 2, 3}
+    assert torch.equal(weights[-10:], torch.ones(10, 1))
 
 
 def test_capacity_overflow_is_deterministic_across_repeated_calls():
@@ -269,6 +272,22 @@ def test_capacity_overflow_is_deterministic_across_repeated_calls():
     first = router._process_logits(logits, noise_std=0.0, training=True)[1]
     second = router._process_logits(logits, noise_std=0.0, training=True)[1]
     assert torch.equal(first, second)
+
+
+def test_capacity_overflow_hard_forward_retains_router_gradient():
+    from ultralytics.nn.modules.moe.routers import BaseRouter
+
+    router = BaseRouter(num_experts=4, top_k=1, capacity_factor=0.5)
+    logits = torch.randn(12, 4, requires_grad=True)
+    weights, _, info = router._process_logits(logits, noise_std=0.0, training=True)
+    overflow = info["overflow_mask"]
+
+    assert torch.equal(weights[overflow].detach(), torch.ones(10, 1))
+    weights[overflow].sum().backward()
+
+    overflow_gradient = logits.grad[overflow]
+    assert torch.isfinite(overflow_gradient).all()
+    assert torch.count_nonzero(overflow_gradient).item() > 0
 
     def test_nonfinite_internal_output_raises(self, monkeypatch):
         router = DynamicRoutingLayer(IN_CHANNELS, NUM_EXPERTS, top_k=TOP_K)
