@@ -8,6 +8,7 @@ from ultralytics.vpeft import (
     HybridTrainingProtocol,
     ModuleNode,
     RLRankAllocator,
+    SoftRankAllocator,
 )
 
 
@@ -48,9 +49,7 @@ def test_trajectory_applies_action_masks_and_never_exceeds_budget():
     allocator = RLRankAllocator(hidden_dim=4, rank_set=[4, 8])
     _force_action(allocator, action_index=2)
 
-    trajectory = allocator.collect_trajectory(
-        _graph(), torch.ones(3), budget=128, variant="lora", deterministic=True
-    )
+    trajectory = allocator.collect_trajectory(_graph(), torch.ones(3), budget=128, variant="lora", deterministic=True)
 
     assert trajectory.actions.tolist() == [2, 0, 0]
     assert trajectory.allocation.tolist() == [8.0, 0.0, 0.0]
@@ -98,6 +97,43 @@ def test_allocate_uses_greedy_cold_start_and_trained_policy_after_update_marker(
     allocator.ppo_updates.fill_(1)
     learned = allocator.allocate(_graph(), placement, 128, "lora")
     assert learned.tolist() == [4.0, 4.0, 0.0]
+
+
+def test_soft_rank_allocator_cold_start_is_deterministic_and_auditable():
+    torch.manual_seed(5)
+    allocator = SoftRankAllocator(hidden_dim=4, rank_set=[4, 8])
+    graph = _graph(embeddings=False)
+    placement = torch.ones(3)
+
+    first = allocator.allocate(graph, placement, budget=192, variant="lora")
+    torch.manual_seed(999)
+    torch.randn(128)
+    second = allocator.allocate(graph, placement, budget=192, variant="lora")
+
+    assert torch.equal(first, second)
+    assert allocator.last_allocation_metadata == {
+        "embedding_source": "structural_cold_start",
+        "cold_start": True,
+        "deterministic": True,
+        "num_nodes": 3,
+        "input_feature_dim": 4,
+        "hidden_dim": 4,
+        "dimension_adjustment": "none",
+        "budget": 192,
+        "variant": "lora",
+    }
+
+
+def test_soft_rank_allocator_audits_and_pads_graph_node_features():
+    allocator = SoftRankAllocator(hidden_dim=6, rank_set=[4, 8])
+
+    allocation = allocator.allocate(_graph(), torch.ones(3), budget=192, variant="lora")
+
+    assert allocation.shape == (3,)
+    assert allocator.last_allocation_metadata["embedding_source"] == "node_features"
+    assert allocator.last_allocation_metadata["cold_start"] is False
+    assert allocator.last_allocation_metadata["input_feature_dim"] == 4
+    assert allocator.last_allocation_metadata["dimension_adjustment"] == "padded"
 
 
 def test_hybrid_training_protocol_runs_real_ppo_updates():

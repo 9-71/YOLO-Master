@@ -148,6 +148,13 @@ class PlacementDecision:
     utility: float
     """Total objective value U(π, r, ξ)."""
 
+    variants: Optional[List[str]] = None
+    """Per-node variants; defaults to the global ``variant`` for compatibility."""
+
+    def __post_init__(self) -> None:
+        if self.variants is None:
+            self.variants = [self.variant] * int(self.placement.numel())
+
 
 # ---------------------------------------------------------------------------
 # Base class
@@ -395,7 +402,7 @@ class AlternatingOptimizationSolver(ConstraintSolver):
         pi, r = _project_discrete_solution(graph, pi, r, variant, constraints, self.rank_set)
         pi, r = constraints.enforce_moe_consistency(graph, pi, r, variant, self.rank_set)
         pi, r = _project_budget(graph, pi, r, budget, variant, utilities)
-        budget_used = int(constraints.get_budget_usage(graph, pi, r, variant))
+        budget_used = int(constraints.get_budget_usage(graph, pi, r, xi))
         budget_remaining = max(0, budget - budget_used)
         target_modules = [
             graph.get_module_names()[i] for i in range(n) if pi[i] > 0.5
@@ -425,6 +432,7 @@ class AlternatingOptimizationSolver(ConstraintSolver):
             target_modules=target_modules,
             reason=reason,
             utility=utility,
+            variants=list(xi),
         )
 
 

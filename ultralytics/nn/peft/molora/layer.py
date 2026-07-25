@@ -75,12 +75,20 @@ class MoLoRAExpert(nn.Module):
 
             # Conv2d LoRA convention: A is 1x1, B is KxK with same stride/pad as base
             self.lora_A = nn.Conv2d(
-                in_c, r, kernel_size=1, bias=False,
+                in_c,
+                r,
+                kernel_size=1,
+                bias=False,
             )
             self.lora_B = nn.Conv2d(
-                r, out_c, kernel_size=k,
-                stride=stride, padding=padding,
-                dilation=dilation, groups=groups, bias=False,
+                r,
+                out_c,
+                kernel_size=k,
+                stride=stride,
+                padding=padding,
+                dilation=dilation,
+                groups=groups,
+                bias=False,
             )
         elif isinstance(base_layer, nn.Linear):
             self.is_conv = False
@@ -156,6 +164,7 @@ class MoLoRALayer(nn.Module):
         self.alpha = alpha
         self.num_experts = num_experts
         self.top_k = top_k
+        self.router_type = str(router_type)
         self.scaling = _molora_scales(r, alpha, use_rslora)
         self.share_moe_registry = share_moe_registry
         self.merged = False
@@ -200,7 +209,7 @@ class MoLoRALayer(nn.Module):
             raise TypeError(f"Unsupported base layer: {type(base_layer)}")
 
         self.router = build_router(
-            router_type=router_type,
+            router_type=self.router_type,
             in_channels=in_channels,
             num_experts=num_experts,
             hidden_dim=router_hidden_dim,
@@ -225,13 +234,27 @@ class MoLoRALayer(nn.Module):
         self._merge_calibration_batches = 0
 
     def publish_aux_loss(self, *, step: int, training: bool) -> torch.Tensor:
-        return publish_aux_loss(self, getattr(self, "_last_aux_loss", torch.zeros(())), step=step, kind="molora", training=training)
+        return publish_aux_loss(
+            self, getattr(self, "_last_aux_loss", torch.zeros(())), step=step, kind="molora", training=training
+        )
 
     def routing_snapshot(self) -> dict:
         return _routing_snapshot(self)
 
     def export_capabilities(self) -> dict:
-        return _export_routing_capabilities(self)
+        capabilities = _export_routing_capabilities(self)
+        eager_sparse = bool(not self.merged and self.top_k < self.num_experts)
+        capabilities.update(
+            routing_kind="molora",
+            sparse_dispatch=eager_sparse,
+            eager_sparse_dispatch=eager_sparse,
+            training_sparse_dispatch=eager_sparse,
+            sparse_export_limitation=(
+                "Unmerged MoLoRA dispatches sample-level Top-K experts in eager execution; "
+                "exported graphs execute every expert through a dense fallback."
+            ),
+        )
+        return capabilities
 
     def __deepcopy__(self, memo):
         return robust_deepcopy(self, memo)
@@ -247,6 +270,7 @@ class MoLoRALayer(nn.Module):
         """
         if self.share_moe_registry:
             from ultralytics.nn.modules.moe.modules import MOE_LOSS_REGISTRY
+
             val = MOE_LOSS_REGISTRY.get(self)
             if val is not None:
                 return val
@@ -259,9 +283,16 @@ class MoLoRALayer(nn.Module):
     def __getattr__(self, name: str) -> Any:
         """Proxy geometric attributes to base_layer (Conv2d/Linear)."""
         proxy_names = (
-            "out_channels", "in_channels", "kernel_size",
-            "stride", "padding", "dilation", "groups", "bias",
-            "out_features", "in_features",
+            "out_channels",
+            "in_channels",
+            "kernel_size",
+            "stride",
+            "padding",
+            "dilation",
+            "groups",
+            "bias",
+            "out_features",
+            "in_features",
         )
         if name in proxy_names:
             base_layer = self.__dict__.get("_modules", {}).get("base_layer")
@@ -518,12 +549,12 @@ class MoLoRALayer(nn.Module):
         if self.share_moe_registry and self.training:
             try:
                 from ultralytics.nn.modules.moe._common import _registry_set
+
                 _registry_set(self, aux_loss)
             except (ImportError, AttributeError, RuntimeError) as exc:
                 import logging
-                logging.getLogger("molora").warning(
-                    "Failed to register MoLoRA aux loss to MOE_LOSS_REGISTRY: %s", exc
-                )
+
+                logging.getLogger("molora").warning("Failed to register MoLoRA aux loss to MOE_LOSS_REGISTRY: %s", exc)
 
         # Store diagnostics
         self._last_routing_stats = {
@@ -686,6 +717,7 @@ class MoLoRALayer(nn.Module):
                 for weight, e in zip(weights, self.experts):
                     _unmerge_linear_delta(self.base_layer.weight, e.lora_A, e.lora_B, e.scaling * weight)
         self.merged = False
+        self._merge_metadata = {"mode": "dynamic", "approximate": True, "expert_weights": []}
         LOGGER.debug("[MoLoRA] Unmerged experts from base layer.")
 
     def fuse_batchnorm(self, bn: nn.BatchNorm2d) -> None:
@@ -711,6 +743,5 @@ class MoLoRALayer(nn.Module):
 
     def extra_repr(self) -> str:
         return (
-            f"r={self.r}, alpha={self.alpha}, num_experts={self.num_experts}, "
-            f"top_k={self.top_k}, merged={self.merged}"
+            f"r={self.r}, alpha={self.alpha}, num_experts={self.num_experts}, top_k={self.top_k}, merged={self.merged}"
         )

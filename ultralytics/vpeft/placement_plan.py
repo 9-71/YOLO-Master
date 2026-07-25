@@ -7,6 +7,20 @@ import json
 from dataclasses import dataclass, field
 from typing import Any, Mapping
 
+import torch.nn as nn
+
+
+def _model_fingerprint(model: nn.Module) -> str:
+    """Build the same stable model binding hash used by the LoRA API."""
+    entries = []
+    for name, module in model.named_modules():
+        if name:
+            entries.append((name, module.__class__.__qualname__))
+    for name, parameter in model.named_parameters():
+        entries.append((f"param:{name}", tuple(parameter.shape), str(parameter.dtype)))
+    payload = json.dumps(entries, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
 
 @dataclass(frozen=True)
 class PlacementTarget:
@@ -69,6 +83,39 @@ class PlacementPlan:
         if include_fingerprint:
             payload["plan_fingerprint"] = self.fingerprint
         return payload
+
+    def validate_model(self, model: nn.Module, *, require_targets: bool = True) -> None:
+        """Validate that this plan is safe to consume for ``model``.
+
+        V-PEFT plans are serialized artifacts. Checking the binding fingerprint
+        and every target before adapter injection prevents silently applying a
+        stale plan to a structurally similar but incompatible model.
+        """
+        if not isinstance(model, nn.Module):
+            raise TypeError(f"model must be an nn.Module, got {type(model)!r}")
+        actual_fingerprint = _model_fingerprint(model)
+        if self.model_fingerprint and actual_fingerprint != self.model_fingerprint:
+            raise ValueError("PlacementPlan model fingerprint mismatch; rebuild the plan for the current model")
+        if require_targets and not self.targets:
+            raise ValueError("PlacementPlan contains no adapter targets")
+        for target in self.targets:
+            try:
+                module = model.get_submodule(target.name)
+            except (AttributeError, RuntimeError):
+                module = None
+            if not isinstance(module, (nn.Conv2d, nn.Linear)):
+                raise ValueError(
+                    f"PlacementPlan target {target.name!r} is missing or unsupported; expected Conv2d/Linear"
+                )
+            rank = int(target.rank)
+            if rank <= 0:
+                raise ValueError(f"PlacementPlan target {target.name!r} must have a positive rank")
+            capacity = min(
+                int(module.in_channels if isinstance(module, nn.Conv2d) else module.in_features),
+                int(module.out_channels if isinstance(module, nn.Conv2d) else module.out_features),
+            )
+            if rank > capacity:
+                raise ValueError(f"PlacementPlan rank {rank} for {target.name!r} exceeds layer capacity {capacity}")
 
     @classmethod
     def from_dict(cls, payload: Mapping[str, Any]) -> "PlacementPlan":
