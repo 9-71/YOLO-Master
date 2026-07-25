@@ -1238,6 +1238,37 @@ class YOLOEModel(DetectionModel):
         super().__init__(cfg=cfg, ch=ch, nc=nc, verbose=verbose)
         self.text_model = self.yaml.get("text_model", "mobileclip:blt")
 
+    def load(self, weights, verbose=True):
+        """Load weights and preserve released segmentation checkpoint execution semantics when fully shared."""
+        source = weights["model"] if isinstance(weights, dict) else weights
+        super().load(weights, verbose=verbose)
+        migrated = self._migrate_released_segmentation_execution_semantics(source)
+        if verbose and migrated:
+            LOGGER.info(f"Migrated released YOLOE segmentation execution semantics: {', '.join(migrated)}")
+
+    def _migrate_released_segmentation_execution_semantics(self, source):
+        """Migrate non-state SPPF activation metadata for fully shared released segmentation sources only."""
+        if isinstance(self, YOLOESegModel) or not isinstance(source, YOLOESegModel):
+            return ()
+
+        migrated = []
+        for index, (source_layer, target_layer) in enumerate(zip(source.model, self.model)):
+            if type(source_layer) is not SPPF or type(target_layer) is not SPPF:
+                continue
+            if type(source_layer.cv1) is not type(target_layer.cv1):
+                continue
+            source_state, target_state = source_layer.state_dict(), target_layer.state_dict()
+            if source_state.keys() != target_state.keys() or any(
+                source_value.shape != target_state[name].shape or not torch.equal(source_value, target_state[name])
+                for name, source_value in source_state.items()
+            ):
+                continue
+            if not isinstance(source_layer.cv1.act, nn.SiLU) or not isinstance(target_layer.cv1.act, nn.Identity):
+                continue
+            target_layer.cv1.act = deepcopy(source_layer.cv1.act)
+            migrated.append(f"model.{index}.cv1.act")
+        return tuple(migrated)
+
     @smart_inference_mode()
     def get_text_pe(self, text, batch=80, cache_clip_model=False, without_reprta=False):
         """Get text positional embeddings using the CLIP model.
