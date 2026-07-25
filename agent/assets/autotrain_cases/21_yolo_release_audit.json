@@ -1,0 +1,19 @@
+{
+  "cases": [
+    {
+      "name": "release_audit_dry_run",
+      "suite": "dry-run",
+      "request": {
+        "skill": "yolo.release.audit",
+        "inputs": {"manifest": "runs/agent/yolo-pipeline-experiment-cd646103/skill_manifest.json"},
+        "params": {},
+        "policy": {"dry_run": true}
+      },
+      "expect": {
+        "status": "ok",
+        "paths": ["dry_run", "plan.target", "plan.params.manifest", "manifest"],
+        "equals": {"plan.target": "audit_manifest"}
+      }
+    }
+  ]
+}

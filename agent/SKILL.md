@@ -200,6 +200,42 @@ Use the bundled validator and case pack to keep this skill honest:
 
 Use `yolo.pipeline.experiment` for end-to-end train/val/export/benchmark flows. It accepts either stage keys such as `train`, `val`, `export`, `benchmark`, or an explicit `params.stages` list, and can include `inspect`, `lora_diagnose`, `moe_diagnose`, and `peft_compare`. Real runs write `progress.jsonl` next to the manifest for file-tail progress monitoring.
 
+For packaged MoE, MoA, MoT, and Latent MoE configurations, `inputs.profile` accepts the stable identifier printed by
+`yolo mixtures`. Do not also pass `inputs.model`; profile resolution supplies the exact YAML path and task:
+
+```bash
+python agent/scripts/run_yolo_master_skill.py --json '{"skill":"yolo.pipeline.experiment","inputs":{"profile":"26/yolo26-master-mot-n","data":"coco8.yaml"},"params":{"train":{"epochs":1,"imgsz":32},"val":{"imgsz":32},"export":{"format":"onnx"}},"policy":{"dry_run":true}}' --pretty
+```
+
+Every `skill_manifest.json` is schema-versioned and preserves the redacted normalized request plus handler-specific
+results such as pipeline stages, selected checkpoints, diagnostics, and plans. Profile-driven manifests also record the
+catalog metadata and model YAML SHA-256. API keys, access tokens, passwords, secrets, authorization values, and common
+inline credential assignments are written as `<redacted>`; raw stdout/stderr tails are bounded.
+
+Use `yolo.release.audit` to build a read-only release bundle from a completed Agent manifest:
+
+```bash
+python agent/scripts/run_yolo_master_skill.py --json '{"skill":"yolo.release.audit","inputs":{"manifest":"runs/agent/experiment/skill_manifest.json"},"params":{"output":"runs/agent/experiment/release_bundle.json"},"policy":{"dry_run":false}}' --pretty
+```
+
+The audit verifies the source manifest checksum, resolves only explicit artifact references, records SHA-256 and size
+for each evidence file, joins model identity with governance/export YAML, and returns `publishable`, `experimental`, or
+`refused`. It never copies checkpoints or constructs a model. Inspect `decision.missing` for incomplete evidence and
+`decision.hard_failures` for integrity, path-safety, source-stage, schema, or identity failures.
+
+Legacy manifests without `schema_version` are classified as `compatibility.kind=legacy_unversioned` and always remain
+`refused` until a new versioned manifest is emitted. The compatibility path consumes only explicit
+`environment.references.model.resolved`, `job.save_dir`, and `artifacts[*].path` values; it never scans a run directory.
+For a local or manual-CI threshold gate, use:
+
+```bash
+python scripts/audit_release_manifest.py runs/agent/experiment/skill_manifest.json \
+  --output runs/agent/experiment/release_bundle.json --fail-on experimental
+```
+
+`--fail-on refused` returns success for `experimental` audits; `--fail-on experimental` returns non-zero for both
+`experimental` and `refused`.
+
 Use `yolo.lora.diagnose` to inspect active or loaded adapters:
 
 ```bash
