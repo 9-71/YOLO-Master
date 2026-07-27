@@ -6,8 +6,6 @@ Provides:
   - MoLoRAMoEAwareLayer: extends MoLoRALayer with per-expert ranks + router calibration
   - MoLoRAMoEAwareConfig: configuration dataclass
   - build_moe_aware_layer: factory function
-
-Reference: AAAI 2026 MoE-aware PEFT strategy (Sec. 3.7 extension).
 """
 from __future__ import annotations
 

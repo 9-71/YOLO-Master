@@ -1,5 +1,5 @@
 """
-V-PEFT Solver Module — Constraint-aware Optimization Framework for AAAI 2026.
+V-PEFT Solver Module — Constraint-aware Optimization Framework.
 
 Implements three solvers for the combinatorial PEFT placement problem:
 1. AlternatingOptimizationSolver (AO) — block-coordinate ascent with greedy sub-routines.
