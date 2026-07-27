@@ -155,6 +155,9 @@ class TrainingRecoveryController:
         trainer = self.trainer
         from ultralytics.utils.checkpoint_compat import checkpoint_runtime_metadata
 
+        adapter_controller = getattr(trainer, "adapter_controller", None)
+        if adapter_controller is not None:
+            adapter_controller.sync_ema_treatment()
         buffer = io.BytesIO()
         source_model = unwrap_model(trainer.model)
         model = deepcopy(source_model) if include_online_model else None

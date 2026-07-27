@@ -27,6 +27,8 @@ def update_args_with_lora_runtime_metadata(args, model) -> None:
         "peft_type": "effective_lora_type",
         "requested_init_lora_weights": "requested_lora_init_lora_weights",
         "effective_init_lora_weights": "effective_lora_init_lora_weights",
+        "requested_use_rslora": "requested_lora_use_rslora",
+        "effective_use_rslora": "effective_lora_use_rslora",
         "safety_profile": "lora_safety_profile",
         "safety_overrides": "lora_safety_overrides",
         "target_audit": "lora_target_audit",
@@ -219,16 +221,58 @@ class AdapterRuntimeController:
         self.trainer.lora_ortho_frequency = self.ortho_frequency
         self.trainer.lora_ortho_batch_counter = 0
 
+    def sync_ema_treatment(self) -> int:
+        """Copy scheduled fallback scaling from online wrappers to matching EMA wrappers."""
+        metadata = getattr(self.model, "lora_runtime_metadata", {}) or {}
+        effective_backend = metadata.get("effective_backend", getattr(self.model, "lora_backend", None))
+        if effective_backend != "fallback":
+            return 0
+        ema = getattr(getattr(self.trainer, "ema", None), "ema", None)
+        if ema is None:
+            return 0
+        from ultralytics.utils.lora.fallback import FewShotLoRAConv, ManualLoRAConv
+
+        online_modules = dict(self.model.named_modules())
+        ema_modules = dict(unwrap_model(ema).named_modules())
+        synced = 0
+        for name, online in online_modules.items():
+            if not isinstance(online, (ManualLoRAConv, FewShotLoRAConv)):
+                continue
+            averaged = ema_modules.get(name)
+            if not isinstance(averaged, type(online)):
+                raise ValueError(f"EMA fallback adapter layout differs at '{name}'.")
+            online_identity = (online.use_rslora, online.r, online.alpha)
+            ema_identity = (averaged.use_rslora, averaged.r, averaged.alpha)
+            if ema_identity != online_identity:
+                raise ValueError(f"EMA fallback adapter identity differs at '{name}'.")
+            averaged.scaling = online.scaling
+            synced += 1
+        return synced
+
+    def _set_alpha_for_epoch(self, epoch: int) -> None:
+        """Set the effective alpha schedule, including resume after the warmup endpoint."""
+        if self.strategy is None:
+            return
+        alpha_warmup = int(getattr(self.trainer.args, "lora_alpha_warmup", 0) or 0)
+        if alpha_warmup <= 0:
+            return
+        if epoch < alpha_warmup:
+            self.strategy.step_alpha_warmup(epoch, warmup_epochs=alpha_warmup)
+        elif getattr(self.strategy, "_strategy_active", False):
+            self.strategy.finalize_alpha_warmup()
+
+    def restore_after_resume(self, start_epoch: int) -> None:
+        """Restore the scheduled treatment after checkpoint reconstruction."""
+        self._set_alpha_for_epoch(start_epoch)
+        self.sync_ema_treatment()
+
     def begin_epoch(self, epoch: int) -> None:
         """Advance alpha warmup and adapter dropout schedules."""
         if self.strategy is None:
             return
         args = self.trainer.args
-        alpha_warmup = int(getattr(args, "lora_alpha_warmup", 0) or 0)
-        if 0 <= epoch < alpha_warmup:
-            self.strategy.step_alpha_warmup(epoch, warmup_epochs=alpha_warmup)
-        elif alpha_warmup > 0 and epoch == alpha_warmup:
-            self.strategy.finalize_alpha_warmup()
+        self._set_alpha_for_epoch(epoch)
+        self.sync_ema_treatment()
         self.strategy.update_dropout_schedule(
             self.trainer.model,
             epoch=epoch,
