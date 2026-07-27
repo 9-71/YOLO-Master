@@ -1,8 +1,22 @@
 # YOLO-Master Cross-Platform Edge Inference Runtime
 
-<img alt="C++" src="https://img.shields.io/badge/C++-17-blue.svg?style=flat&logo=c%2B%2B"> <img alt="Onnx-runtime" src="https://img.shields.io/badge/OnnxRuntime-717272.svg?logo=Onnx&logoColor=white"> <img alt="NCNN" src="https://img.shields.io/badge/NCNN-Tencent-blue.svg"> <img alt="MNN" src="https://img.shields.io/badge/MNN-Alibaba-orange.svg"> <img alt="TensorRT" src="https://img.shields.io/badge/TensorRT-NVIDIA-76B900.svg"> <img alt="Core ML" src="https://img.shields.io/badge/CoreML-Apple-black.svg"> <img alt="Linux" src="https://img.shields.io/badge/Linux-FCC624.svg?logo=linux&logoColor=black"> <img alt="Windows" src="https://img.shields.io/badge/Windows-0078D6.svg?logo=windows&logoColor=white"> <img alt="macOS" src="https://img.shields.io/badge/macOS-000000.svg?logo=apple&logoColor=white"> <img alt="Jetson" src="https://img.shields.io/badge/Jetson%20Orin-76B900.svg?logo=nvidia&logoColor=white">
+<img alt="C++" src="https://img.shields.io/badge/C++-17-blue.svg?style=flat&logo=c%2B%2B"> <img alt="Onnx-runtime" src="https://img.shields.io/badge/OnnxRuntime-717272.svg?logo=Onnx&logoColor=white"> <img alt="NCNN" src="https://img.shields.io/badge/NCNN-Tencent-blue.svg"> <img alt="MNN" src="https://img.shields.io/badge/MNN-Alibaba-orange.svg"> <img alt="TensorRT" src="https://img.shields.io/badge/TensorRT-NVIDIA-76B900.svg"> <img alt="Core ML" src="https://img.shields.io/badge/CoreML-Apple-black.svg"> <img alt="CUDA" src="https://img.shields.io/badge/CUDA-NVIDIA-76B900.svg?logo=nvidia&logoColor=white"> <img alt="Vulkan" src="https://img.shields.io/badge/Vulkan-AC162C.svg?logo=vulkan&logoColor=white"> <img alt="OpenCL" src="https://img.shields.io/badge/OpenCL-000000.svg"> <img alt="Dear ImGui" src="https://img.shields.io/badge/Dear%20ImGui-1E1E1E.svg"> <img alt="Linux" src="https://img.shields.io/badge/Linux-FCC624.svg?logo=linux&logoColor=black"> <img alt="Windows" src="https://img.shields.io/badge/Windows-0078D6.svg?logo=windows&logoColor=white"> <img alt="macOS" src="https://img.shields.io/badge/macOS-000000.svg?logo=apple&logoColor=white"> <img alt="Jetson" src="https://img.shields.io/badge/Jetson%20Orin-76B900.svg?logo=nvidia&logoColor=white">
 
-This project provides a universal inference runtime for [YOLO-Master](https://github.com/Tencent/YOLO-Master) object-detection models, leveraging, [ONNX Runtime](https://onnxruntime.ai/), [NCNN](https://github.com/Tencent/ncnn), [MNN](https://github.com/alibaba/mnn), [TensorRT](https://github.com/nvidia/tensorrt), and [CoreML (NEW!)](https://github.com/apple/coremltools) backends. It runs on almost every platform: Linux, Windows (10/11), Jetson, and MacOS; supports CPU, [NVIDIA CUDA](https://developer.nvidia.com/cuda-toolkit), and [Apple Metal Performance Shaders](https://developer.apple.com/documentation/metalperformanceshaders). It's capable of auto-detecting the model format, class names, and input size -- designed for real-time, end-to-end edge deployment in some of the most challenging tasks (VisDrone, SKU-110K, AI-TOD-v2, etc.).
+This project provides a universal inference runtime for [YOLO-Master](https://github.com/Tencent/YOLO-Master) object-detection models, leveraging, [ONNX Runtime](https://onnxruntime.ai/), [NCNN](https://github.com/Tencent/ncnn), [MNN](https://github.com/alibaba/mnn), [TensorRT](https://github.com/nvidia/tensorrt), and [CoreML](https://github.com/apple/coremltools) backends, with native GUI runners for **macOS** and **Windows 10/11 (NEW!)**. It runs on almost every platform: Linux, Windows (10/11), Jetson, and MacOS; supports CPU, [NVIDIA CUDA](https://developer.nvidia.com/cuda-toolkit), and [Apple Metal Performance Shaders](https://developer.apple.com/documentation/metalperformanceshaders). It's capable of auto-detecting the model format, class names, and input size -- designed for real-time, end-to-end edge deployment in some of the most challenging tasks (VisDrone, SKU-110K, AI-TOD-v2, etc.).
+
+## ⊞ Update (27-07-2026): YOLO-Master Windows Runner for Windows 10/11 (GUI)
+
+**[Download](https://github.com/skywalker-lt/yolo-master-edge/releases/tag/v1.0.0-windows) and try it now!**
+
+The Windows 10/11 counterpart of the macOS runner: a native [Dear ImGui](https://github.com/ocornut/imgui) + Direct3D 11 frontend over the same C++ runtime, so **ONNX Runtime, NCNN, and MNN all live in one binary** and can be switched at runtime and compared on the same frame. It ships with a default `YOLO-Master-v0.1-seg-N` segmentation model and needs no installer, no admin rights, and no Python.
+
+- **Three backends, one app:** pick ONNX / NCNN / MNN from the sidebar; preprocessing and decoding are shared, so the three agree to within floating-point noise.
+- **GPU on every backend:** ONNX via **NVIDIA CUDA**, NCNN via **Vulkan**, MNN via **OpenCL**, all in FP16, each falling back to CPU and reporting why if a provider is unavailable.
+- **Detection & Segmentation:** boxes and anti-aliased instance masks, with a Masks / Boxes / Both toggle.
+- **Images, folders, video & live webcam:** folders and videos are inferred once behind a progress bar and then browsed or played back at source frame rate, because inference never sits on the playback path; the webcam runs on a drop-late worker so the preview stays smooth.
+- **⭐️ Real-Time Tuning:** confidence, IoU, box style, labels, and letterbox/stretch redraw instantly from cached pre-NMS candidates, so tuning never re-infers.
+
+For more details, please check the [Release](https://github.com/skywalker-lt/yolo-master-edge/releases/tag/v1.0.0-windows) page.
 
 ## 🍎 Update (17-07-2026): YOLO-Master CoreML Runner for MacOS (GUI)
 
@@ -19,7 +33,6 @@ Alongside the Linxu and Windows C++ runtime, we now provide a native, user-frien
 
 For more details, please check the [Release](https://github.com/skywalker-lt/yolo-master-edge/releases/tag/v1.0.0-macos) page.
 
-The refined Windows 10/11 Runner with GUI is also in developmet.
 
 ---
 
@@ -108,6 +121,17 @@ Ensure you have the following dependencies installed （not required if you only
 | [Swift toolchain](https://www.swift.org/swiftly/documentation/swiftly/install-toolchains/) | 5.9+  | swift-tools-version:5.9 in Package.swift; ships with the CLT/Xcode above. Build: swift build -c release --package-path mac. |       
 | Apple SDK frameworks | macOS 14+ SDK (system) | SwiftUI, AppKit, AVFoundation, Core ML, Core Image, Core Video, ImageIO, QuartzCore, etc. |
 
+### Windows GUI (`gui/`)
+
+|                          | Version | Notes |
+| :----------------------- | :------ | :---- |
+| Windows | 10 (1703+) or 11, x64 | Direct3D 11 frontend |
+| [Visual Studio](https://visualstudio.microsoft.com/) | 2022 or 2026 | "Desktop development with C++" workload: MSVC, the Windows SDK (D3D11, comdlg32, shell32), and CMake |
+| [OpenCV](https://opencv.org/releases/) | >= 4.5 | Image/video/camera I/O. Point `OPENCV_DIR` at the folder holding `OpenCVConfig.cmake` |
+| [ONNX Runtime](https://onnxruntime.ai/) / [NCNN](https://github.com/Tencent/ncnn) / [MNN](https://github.com/alibaba/MNN) | any recent | At least one; each is optional and skipped if its path is unset. Use the NCNN **`-shared`** release |
+| [Dear ImGui](https://github.com/ocornut/imgui) | 1.91.5 | Vendored in `gui/third_party/imgui` — nothing to install |
+| CUDA + cuDNN | 12.x + 9.x | Optional, only for ONNX on GPU. NCNN (Vulkan) and MNN (OpenCL) use the GPU driver directly |
+
 
 ## 🛠️ Build Instructions
 
@@ -174,6 +198,30 @@ Ensure you have the following dependencies installed （not required if you only
     ```zsh
     xcode-select --install
     swift run -c release --package-path mac YOLOMasterApp
+    ```
+
+### Windows GUI
+
+1.  **Point the build at your SDKs** (once). From a *x64 Native Tools Command Prompt for VS*:
+    ```bat
+    cd gui
+    copy sdk-paths.example.cmd sdk-paths.cmd
+    ```
+    Edit `sdk-paths.cmd` with your OpenCV / ONNX Runtime / NCNN / MNN locations. It is
+    gitignored; leave a backend blank to skip it.
+
+2.  **Build and run:**
+    ```bat
+    build.cmd run
+    ```
+    The output is `gui\build\Release\yolomaster_gui.exe`. `build.cmd` reports which
+    backends it resolved, so a mistyped path is visible instead of silently disabling one.
+    `build.ps1` is equivalent for PowerShell and takes the same paths as parameters.
+
+3.  **Optional — build a self-contained bundle:**
+    ```bat
+    package.cmd 1.0.0        :: GPU via NCNN-Vulkan / MNN-OpenCL
+    package-cuda.cmd 1.0.0   :: adds ONNX CUDA, bundling the CUDA + cuDNN libraries
     ```
 
 ## 🚀 Usage
