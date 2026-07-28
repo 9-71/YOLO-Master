@@ -160,6 +160,7 @@ lora_planner_backend: "legacy" # (str) Planner backend: legacy or vpeft (opt-in)
 lora_include_head: False # (bool) Include YOLO detection head layers in LoRA targeting
 lora_freeze_bn: False # (bool) Freeze BatchNorm layers during LoRA training
 lora_target_modules: # (list[str], optional) LoRA target modules
+lora_rank_pattern: # (dict[str, int], optional) Per-target LoRA rank overrides
 lora_save_adapters: True # (bool) Save LoRA adapters
 lora_adapter_dir: "lora_adapter" # (str) Directory name for adapters
 lora_auto_r_ratio: 0.0 # (float) Auto calculate LoRA rank based on params ratio
@@ -282,7 +283,7 @@ molora_diversity_loss: 0.0 # (float) Diversity loss coefficient for MoLoRA
 molora_expert_init: default # (str) Expert init: default, orthogonal, gaussian
 molora_use_rslora: true # (bool) Use rsLoRA scaling
 molora_share_moe_registry: true # (bool) Share MOE_LOSS_REGISTRY with MoLoRA
-molora_capacity_factor: 1.0 # (float) Capacity factor for MoLoRA expert selection (1.0 = no limit)
+molora_capacity_factor: 0.0 # (float) Capacity multiplier; <=0 or >=num_experts disables the limit
 molora_expert_dropout: 0.0 # (float) Probability of disabling an expert during training
 molora_top_k_warmup: # (int, optional) Steps used to ramp top_k from 1 to the target value
 molora_warmup_steps: 0 # (int) Steps to gradually increase top_k from 1 to target
