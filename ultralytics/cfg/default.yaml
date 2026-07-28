@@ -90,6 +90,11 @@ simplify: True # (bool) ONNX/engine only; run graph simplifier for cleaner ONNX 
 opset: # (int, optional) ONNX/engine only; opset version for export; leave unset to use a tested default
 workspace: # (float, optional) engine (TensorRT) only; workspace size in GiB, e.g. 4
 nms: False # (bool) fuse NMS into exported model when backend supports; if True, conf/iou apply (agnostic_nms except coreml)
+pre_export_prune: False # (bool) run an explicit, auditable MoE expert-pruning pass before export
+moe_prune_threshold: 0.15 # (float) minimum calibrated expert usage share to retain during pre-export pruning
+moe_prune_keep_top_m: # (int, optional) always retain this many top-scoring experts per MoE layer
+moe_prune_calibration_steps: 8 # (int) synthetic export-input calibration forwards for pre-export pruning
+molora_export_mode: dynamic # (str) MoLoRA export policy: dynamic or routing_preserved (ONNX/TorchScript)
 
 # Hyperparameters ------------------------------------------------------------------------------------------------------
 lr0: 0.01 # (float) initial learning rate (SGD=1e-2, Adam/AdamW=1e-3)
