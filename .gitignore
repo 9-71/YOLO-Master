@@ -204,6 +204,11 @@ calibration_*.npy
 args.yaml
 results.csv
 
+# Local reproduction archives and credential helpers
+artifacts/
+离线日志/
+.ssh_askpass.exe
+
 # CI test asset cache
 .ultralytics_cache/
 
