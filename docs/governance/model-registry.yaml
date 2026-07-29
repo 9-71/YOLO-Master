@@ -1,5 +1,5 @@
 schema_version: 1
-last_verified_commit: working-tree-20260717-p0-p1
+last_verified_commit: working-tree-20260723-phase2
 verification_policy:
   parse: model configuration parses successfully
   forward: model executes the recorded smoke-test shape
@@ -9,6 +9,17 @@ verification_policy:
   full_model_export_roundtrip: complete model artifact reloads and matches eager output
 export_status_values: [unverified, component_roundtrip, full_model_roundtrip, blocked]
 models:
+  - name: yolo-master-v0.15-n
+    path: ultralytics/cfg/models/master/v0_15/det/yolo-master-n.yaml
+    task: detect
+    status: experimental
+    blocks: [GatedFusionMoE]
+    verified: [parse, forward, unit_tests, benchmark_smoke]
+    export: {onnx: unverified, tensorrt: unverified}
+    evidence:
+      baseline_benchmark: runs/benchmarks/baseline-20260723/report.md
+      pruning_manifest: null
+
   - name: yolo-master-v0.10-moa-n
     path: ultralytics/cfg/models/master/v0_10/det/yolo-master-moa-n.yaml
     task: detect
@@ -48,8 +59,11 @@ models:
       - VisualEnhancedAdaptiveGateMoE
       - C2fMoT
       - SceneAwareMoTRouter
-    verified: [parse, forward, unit_tests]
+    verified: [parse, forward, unit_tests, routing_smoke, scene_diagnostic_smoke]
     export: {onnx: unverified, tensorrt: unverified}
+    evidence:
+      phase5_execution: docs/governance/phase4-5-execution-20260723.md
+      routing_diagnostics: runs/benchmarks/mot_scene_diagnostics/mot_routing_scenarios.csv
 
   - name: yolo26-master-n
     path: ultralytics/cfg/models/26/yolo26-master-n.yaml

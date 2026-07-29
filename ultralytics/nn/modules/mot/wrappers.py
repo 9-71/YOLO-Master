@@ -4,6 +4,7 @@ import torch
 import torch.distributed as dist
 import torch.nn as nn
 from ultralytics.nn.modules.conv import Conv
+from ultralytics.nn.modules.utils import robust_deepcopy
 from ultralytics.nn.modules.routing_protocol import collect_aux_loss, export_capabilities as _export_routing_capabilities, publish_aux_loss, routing_snapshot as _routing_snapshot
 from ultralytics.utils import LOGGER
 from .block import MoTBlock
@@ -29,6 +30,7 @@ class C2fMoT(nn.Module):
         temperature (float): Router temperature.
         balance_loss_coeff (float): Router balance loss weight.
         e (float): Internal channel expansion ratio.
+        sparse_train_warmup_steps (int): Dense training forwards before enabled sparse dispatch begins.
 
     Shape:
         Input:  [B, c1, H, W]
@@ -52,6 +54,8 @@ class C2fMoT(nn.Module):
         scene_aware_router: bool = False,
         scene_hidden_dim: int | None = None,
         scene_consistency_coeff: float = 0.0,
+        sparse_train_warmup_steps: int = 0,
+        scene_inference_mode: str = "dynamic",
     ):
         super().__init__()
         self.c = int(c2 * e)
@@ -89,6 +93,8 @@ class C2fMoT(nn.Module):
                 scene_aware_router=scene_aware_router,
                 scene_hidden_dim=scene_hidden_dim,
                 scene_consistency_coeff=scene_consistency_coeff,
+                sparse_train_warmup_steps=sparse_train_warmup_steps,
+                scene_inference_mode=scene_inference_mode,
             )
             for i in range(n)
         )
@@ -120,6 +126,11 @@ class C2fMoT(nn.Module):
                     "expert_usage": mean_usage,
                     "mean_router_probs": mean_usage,
                     "aux_loss": float(aux_total.detach()),
+                    "finite_diagnostics": [s.get("finite_diagnostics", {}) for s in child_snaps],
+                    "dispatch": [s.get("dispatch", {}) for s in child_snaps],
+                    "scene_inference_mode": self.m[0].router.scene_inference_mode if self.m else "dynamic",
+                    "scene_aware_applied": [s.get("scene_aware_applied", False) for s in child_snaps],
+                    "scene_bypass_reason": [s.get("scene_bypass_reason") for s in child_snaps],
                 }
             else:
                 self.last_routing_snapshot = {}
@@ -149,12 +160,32 @@ class C2fMoT(nn.Module):
         return _routing_snapshot(self)
 
     def export_capabilities(self) -> dict:
-        return _export_routing_capabilities(self)
+        capabilities = _export_routing_capabilities(self)
+        eager_sparse = bool(self.m and self.m[0].top_k < MoTBlock.NUM_EXPERTS)
+        child_capabilities = self.m[0].export_capabilities() if self.m else {}
+        capabilities.update(
+            routing_kind="mot",
+            sparse_dispatch=eager_sparse,
+            eager_sparse_dispatch=eager_sparse,
+            training_sparse_dispatch=bool(child_capabilities.get("training_sparse_dispatch", False)),
+            sparse_train=child_capabilities.get("sparse_train", False),
+            sparse_train_warmup_steps=child_capabilities.get("sparse_train_warmup_steps", 0),
+            sparse_train_step=child_capabilities.get("sparse_train_step", 0),
+            sparse_train_ready=child_capabilities.get("sparse_train_ready", False),
+            dispatch_policy=child_capabilities.get("dispatch_policy", "dense_train"),
+            ddp_active=child_capabilities.get("ddp_active", False),
+            ddp_find_unused_parameters=child_capabilities.get("ddp_find_unused_parameters"),
+            ddp_sparse_train_safe=child_capabilities.get("ddp_sparse_train_safe", True),
+            ddp_contract_source=child_capabilities.get("ddp_contract_source", "unconfigured"),
+            ddp_fallback_reason=child_capabilities.get("ddp_fallback_reason"),
+            sparse_export_limitation=(
+                "C2fMoT eager execution supports Top-K sparse dispatch; ONNX and TorchScript tracing use dense blending."
+            ),
+        )
+        return capabilities
 
     def __deepcopy__(self, memo):
-        from ultralytics.nn.modules.moe._common import _robust_deepcopy
-
-        return _robust_deepcopy(self, memo)
+        return robust_deepcopy(self, memo)
 
 def _aux_loss_device(model: nn.Module) -> torch.device:
     """Best-effort device lookup for zero aux-loss fallbacks."""

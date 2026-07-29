@@ -5,6 +5,7 @@ the MoE registry, module attributes, and wrapper-specific collectors.  This
 module provides one small, weakly-referenced state channel while keeping the
 old registry available as a compatibility transport.
 """
+
 from __future__ import annotations
 
 from contextlib import contextmanager
@@ -33,14 +34,11 @@ class AuxLossRecord:
 class RoutingAuxPublisher(Protocol):
     """Protocol exposed by modules that publish routing regularisation."""
 
-    def publish_aux_loss(self, *, step: int, training: bool) -> torch.Tensor:
-        ...
+    def publish_aux_loss(self, *, step: int, training: bool) -> torch.Tensor: ...
 
-    def routing_snapshot(self) -> dict[str, Any]:
-        ...
+    def routing_snapshot(self) -> dict[str, Any]: ...
 
-    def export_capabilities(self) -> dict[str, Any]:
-        ...
+    def export_capabilities(self) -> dict[str, Any]: ...
 
 
 _RECORDS: weakref.WeakKeyDictionary[nn.Module, AuxLossRecord] = weakref.WeakKeyDictionary()
@@ -86,9 +84,78 @@ def reset_routing_runtime_state(model: nn.Module | None = None, *, step: int | N
                 setattr(module, name, value.detach().new_zeros(()))
         if hasattr(module, "last_routing_snapshot"):
             module.last_routing_snapshot = {}
+        if hasattr(module, "last_routing_diagnostics"):
+            module.last_routing_diagnostics = {}
         if hasattr(module, "_last_routing_stats"):
             module._last_routing_stats = None
     return next_step
+
+
+def anneal_mixture_temperatures(
+    model: nn.Module,
+    *,
+    factor: float = 0.97,
+    min_temp: float = 0.3,
+    families: Iterable[str] = ("moe", "moa", "mot", "latent"),
+) -> int:
+    """Anneal every enabled mixture router through one protocol-level entry point.
+
+    Router implementations historically stored temperature as either a Python
+    float or a persistent tensor, and some families nested the router under a
+    ``routing`` attribute. This helper handles both representations and filters
+    by module package, so the trainer cannot accidentally anneal unrelated model
+    temperatures. Returns the number of updated router modules.
+    """
+    if not isinstance(model, nn.Module):
+        raise TypeError(f"model must be an nn.Module, got {type(model)!r}")
+    factor = float(factor)
+    min_temp = float(min_temp)
+    if not 0.0 < factor:
+        raise ValueError(f"temperature anneal factor must be > 0, got {factor}")
+    if not 0.0 < min_temp:
+        raise ValueError(f"minimum temperature must be > 0, got {min_temp}")
+    family_tokens = tuple(str(item).lower() for item in families)
+    updated = 0
+    seen: set[int] = set()
+    for module in model.modules():
+        module_path = module.__class__.__module__.lower()
+        if not any(token in module_path for token in family_tokens):
+            continue
+        if not hasattr(module, "temperature"):
+            continue
+        module._external_temperature_schedule = True
+        temperature = getattr(module, "temperature")
+        marker = id(temperature) if isinstance(temperature, torch.Tensor) else id(module)
+        if marker in seen:
+            continue
+        seen.add(marker)
+        if isinstance(temperature, torch.Tensor):
+            with torch.no_grad():
+                temperature.fill_(max(float(temperature.detach()), min_temp) * factor)
+                temperature.clamp_(min=min_temp)
+        elif isinstance(temperature, (float, int)):
+            setattr(module, "temperature", max(float(temperature) * factor, min_temp))
+        else:
+            continue
+        updated += 1
+    return updated
+
+
+def configure_mixture_temperature_schedule(
+    model: nn.Module,
+    *,
+    external: bool = True,
+    families: Iterable[str] = ("moe", "moa", "mot", "latent"),
+) -> int:
+    """Select trainer-level scheduling and disable conflicting per-forward annealing."""
+    family_tokens = tuple(str(item).lower() for item in families)
+    configured = 0
+    for module in model.modules():
+        module_path = module.__class__.__module__.lower()
+        if any(token in module_path for token in family_tokens) and hasattr(module, "temperature"):
+            module._external_temperature_schedule = bool(external)
+            configured += 1
+    return configured
 
 
 @contextmanager
@@ -143,23 +210,99 @@ def get_aux_record(module: nn.Module) -> AuxLossRecord | None:
         return _RECORDS.get(module)
 
 
-def iter_aux_records(model: nn.Module) -> list[tuple[nn.Module, AuxLossRecord]]:
-    """Return records in model traversal order for diagnostics and collectors."""
+def iter_aux_records(
+    model: nn.Module | None,
+    modules: Iterable[nn.Module] | None = None,
+) -> list[tuple[nn.Module, AuxLossRecord]]:
+    """Return records in model traversal order, or all records when model is None."""
 
     with _RECORDS_LOCK:
-        return [(module, _RECORDS[module]) for module in model.modules() if module in _RECORDS]
+        if model is None and modules is None:
+            return list(_RECORDS.items())
+        candidates = model.modules() if modules is None else modules
+        return [(module, _RECORDS[module]) for module in candidates if module in _RECORDS]
 
 
 def export_capabilities(module: nn.Module) -> dict[str, Any]:
     """Describe conservative export capabilities for a routed module."""
 
+    eager_sparse = bool(
+        getattr(module, "_routing_sparse_dispatch", False)
+        or getattr(module, "sparse_train", False)
+        or getattr(module, "use_sparse_inference", False)
+    )
+    training_sparse = bool(getattr(module, "sparse_train", False))
     return {
         "routing_kind": getattr(module, "_routing_aux_kind", "unknown"),
+        "supported": True,
         "dynamic_routing": True,
-        "sparse_dispatch": bool(getattr(module, "sparse_train", False)),
+        "sparse_dispatch": eager_sparse,
+        "eager_sparse_dispatch": eager_sparse,
+        "training_sparse_dispatch": training_sparse,
+        "onnx_sparse_dispatch": False,
+        "torchscript_trace_sparse_dispatch": False,
+        "exact_sparse_export": False,
         "export_safe_dense_fallback": True,
+        "sparse_export_limitation": (
+            "Data-dependent expert dispatch is supported only in eager execution; "
+            "ONNX and TorchScript tracing use the dense fallback."
+            if eager_sparse
+            else "This module uses dense routed execution in eager and exported graphs."
+        ),
         "aux_loss_training_only": True,
     }
+
+
+def graph_connected_finite_zero(*values: torch.Tensor) -> torch.Tensor:
+    """Return a finite scalar zero while preserving a safe autograd connection."""
+
+    tensors = [value for value in values if isinstance(value, torch.Tensor)]
+    if not tensors:
+        return torch.tensor(0.0)
+    source = next((value for value in tensors if value.requires_grad), tensors[0])
+    safe = torch.nan_to_num(source.float(), nan=0.0, posinf=0.0, neginf=0.0)
+    return safe.sum() * 0.0
+
+
+def routing_finite_diagnostics(
+    *,
+    logits: torch.Tensor | None = None,
+    probabilities: torch.Tensor | None = None,
+    aux_loss: torch.Tensor | None = None,
+) -> dict[str, Any]:
+    """Summarize the first non-finite routing boundary without retaining graphs."""
+
+    if torch.jit.is_tracing() or torch.onnx.is_in_onnx_export():
+        return {
+            "first_nonfinite_boundary": None,
+            "logits_finite": None,
+            "logits_nonfinite_count": None,
+            "probabilities_finite": None,
+            "probabilities_nonfinite_count": None,
+            "aux_loss_finite": None,
+            "aux_loss_nonfinite_count": None,
+            "all_finite": None,
+        }
+    values = (
+        ("router_logits", "logits", logits),
+        ("router_probabilities", "probabilities", probabilities),
+        ("aux_loss", "aux_loss", aux_loss),
+    )
+    diagnostics: dict[str, Any] = {"first_nonfinite_boundary": None}
+    for boundary, key, value in values:
+        if not isinstance(value, torch.Tensor):
+            diagnostics[f"{key}_finite"] = None
+            diagnostics[f"{key}_nonfinite_count"] = None
+            continue
+        detached = value.detach()
+        finite = torch.isfinite(detached)
+        all_finite = bool(finite.all().item())
+        diagnostics[f"{key}_finite"] = all_finite
+        diagnostics[f"{key}_nonfinite_count"] = int((~finite).sum().item())
+        if not all_finite and diagnostics["first_nonfinite_boundary"] is None:
+            diagnostics["first_nonfinite_boundary"] = boundary
+    diagnostics["all_finite"] = diagnostics["first_nonfinite_boundary"] is None
+    return diagnostics
 
 
 def routing_snapshot(module: nn.Module) -> dict[str, Any]:
@@ -180,6 +323,7 @@ def collect_aux_loss(
     require_training: bool = True,
     ddp_sync: bool = False,
     return_diagnostics: bool = False,
+    modules: Iterable[nn.Module] | None = None,
 ):
     """Collect canonical losses once, rejecting stale and eval publications."""
 
@@ -200,7 +344,7 @@ def collect_aux_loss(
 
     selected: list[torch.Tensor] = []
     covered: set[int] = set()
-    for module, record in iter_aux_records(model):
+    for module, record in iter_aux_records(model, modules=modules):
         if record.kind not in kinds:
             continue
         if record.step != target_step:
@@ -248,11 +392,15 @@ __all__ = [
     "begin_aux_step",
     "clear_aux_records",
     "collect_aux_loss",
+    "anneal_mixture_temperatures",
+    "configure_mixture_temperature_schedule",
     "current_aux_step",
     "export_capabilities",
+    "graph_connected_finite_zero",
     "get_aux_record",
     "iter_aux_records",
     "publish_aux_loss",
     "reset_routing_runtime_state",
+    "routing_finite_diagnostics",
     "routing_snapshot",
 ]

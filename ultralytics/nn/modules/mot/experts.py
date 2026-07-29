@@ -5,7 +5,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from ultralytics.nn.modules.conv import Conv
-from ultralytics.nn.modules.moe.utils import get_safe_groups as _safe_groups
+from ultralytics.nn.modules.utils import get_safe_groups as _safe_groups
 from ultralytics.nn.modules.mot._constants import SDPA_EXPLICIT_MAX_TOKENS, SDPA_FALLBACK_CHUNK
 from ultralytics.utils import LOGGER
 
@@ -16,7 +16,7 @@ def _roll_via_cat(x: torch.Tensor, shift: int, dims: tuple) -> torch.Tensor:
     """ONNX-compatible alternative to ``torch.roll`` for 2-D spatial shifts.
 
     ``torch.roll`` has inconsistent ONNX Runtime support across versions.
-    This function replicates cyclic shift via ``torch.cat`` + ``index_select``,
+    This function replicates cyclic shift via slice-and-concatenate,
     which traces cleanly.  Supports symmetric shifts on dims (1, 2) and
     handles both positive and negative shift values.
     """
@@ -27,11 +27,7 @@ def _roll_via_cat(x: torch.Tensor, shift: int, dims: tuple) -> torch.Tensor:
         s = shift % n  # Python modulo handles negative shifts correctly
         if s == 0:
             continue
-        idx = torch.arange(n, device=x.device)
-        # torch.roll(x, shifts=s, dim) → result[i] = input[(i - s) % n]
-        # So select indices: [n-s, n-s+1, ..., n-1, 0, 1, ..., n-s-1]
-        rolled_idx = torch.cat([idx[n - s:], idx[:n - s]])
-        x = x.index_select(dim, rolled_idx)
+        x = torch.cat([x.narrow(dim, n - s, s), x.narrow(dim, 0, n - s)], dim=dim)
     return x
 
 def _sdpa(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor,
@@ -80,7 +76,8 @@ class _LocalConvTransformerExpert(nn.Module):
     def __init__(self, dim: int, num_heads: int, mlp_ratio: float = 2.0,
                  dropout: float = 0.0):
         super().__init__()
-        assert dim % num_heads == 0
+        if num_heads <= 0 or dim % num_heads != 0:
+            raise ValueError(f"dim ({dim}) must be divisible by positive num_heads ({num_heads})")
         self.num_heads = num_heads
         self.head_dim = dim // num_heads
         self.scale = self.head_dim ** -0.5
@@ -156,7 +153,8 @@ class _WindowTransformerExpert(nn.Module):
                  mlp_ratio: float = 2.0, dropout: float = 0.0,
                  shift_size: int = 0):
         super().__init__()
-        assert dim % num_heads == 0
+        if num_heads <= 0 or dim % num_heads != 0:
+            raise ValueError(f"dim ({dim}) must be divisible by positive num_heads ({num_heads})")
         self.num_heads = num_heads
         self.head_dim = dim // num_heads
         self.scale = self.head_dim ** -0.5
@@ -208,7 +206,8 @@ class _WindowTransformerExpert(nn.Module):
     @staticmethod
     def _window_reverse(windows: torch.Tensor, win: int, H: int, W: int) -> torch.Tensor:
         """[B*nH*nW, win*win, C] → [B, H, W, C]"""
-        B = int(windows.shape[0] / (H * W / win / win))
+        windows_per_image = (H // win) * (W // win)
+        B = windows.shape[0] // windows_per_image
         C = windows.shape[2]
         x = windows.view(B, H // win, W // win, win, win, C)
         return x.permute(0, 1, 3, 2, 4, 5).contiguous().view(B, H, W, C)
@@ -291,7 +290,8 @@ class _DeformableTransformerExpert(nn.Module):
                  mlp_ratio: float = 2.0, dropout: float = 0.0,
                  align_corners: bool = True):
         super().__init__()
-        assert dim % num_heads == 0
+        if num_heads <= 0 or dim % num_heads != 0:
+            raise ValueError(f"dim ({dim}) must be divisible by positive num_heads ({num_heads})")
         self.num_heads = num_heads
         self.head_dim = dim // num_heads
         self.n_points = n_points
@@ -350,8 +350,13 @@ class _DeformableTransformerExpert(nn.Module):
         """
         B, N, C = q.shape
         nh, np_, hd = self.num_heads, self.n_points, self.head_dim
-        # Token→coordinate mapping below assumes N == H*W with no padding.
-        assert N == H * W, f"deformable expert expects N==H*W, got N={N}, H*W={H * W}"
+        # Fall back to dense attention for callers that provide non-grid tokens.
+        if N != H * W:
+            value_proj = self.v_proj(value)
+            q_heads = q.reshape(B, N, nh, hd).transpose(1, 2)
+            value_heads = value_proj.reshape(B, value_proj.shape[1], nh, hd).transpose(1, 2)
+            dense = F.scaled_dot_product_attention(q_heads, value_heads, value_heads)
+            return self.out_proj(dense.transpose(1, 2).reshape(B, N, C))
 
         # Predict sampling offsets & attention weights from query
         offsets = self.offset_proj(q)                         # [B, N, nh*np*2]

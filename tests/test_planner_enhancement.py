@@ -11,13 +11,17 @@ Covers features added in the optimization pass:
 import json
 
 import pytest
+import torch
 import torch.nn as nn
 from torch.nn.parallel import DataParallel
 
 from ultralytics.utils.lora.planner import (
     ArchitectureFingerprint,
     DecisionAudit,
+    LOVODataCollector,
+    LOVODataPoint,
     PEFTPlanner,
+    PEFTVariantProfile,
     PlacementDecision,
     _fingerprint_cache,
 )
@@ -362,7 +366,67 @@ class TestPlannerCalibrationGates:
         assert metadata["calibration_fitted"] is True
         assert metadata["calibration_n_samples"] == 10
         assert 0 < metadata["calibration_effective_rank"] <= metadata["calibration_n_features"]
+        assert metadata["calibration_regularization"] > 0
+        assert metadata["calibration_condition_number"] >= 1
+        assert metadata["calibration_noise_variance"] >= 0
+        assert metadata["calibration_effective_dof"] > 0
+        assert metadata["calibration_rank_deficient"] is True
+        assert metadata["calibration_posterior_available"] is True
         assert metadata["low_confidence"] is True
+
+    def test_rank_deficient_large_dataset_remains_low_confidence(self):
+        planner = PEFTPlanner()
+        planner.fit(self._history(30))
+
+        metadata = planner._calibration_metadata()
+        assert metadata["calibration_n_samples"] == 30
+        assert metadata["calibration_rank_deficient"] is True
+        assert metadata["low_confidence"] is True
+
+    def test_rank_deficient_fit_shrinks_unobserved_features_to_prior(self):
+        planner = PEFTPlanner()
+        planner.fit(self._history())
+
+        assert all(abs(value) < 1e-12 for value in planner._coeffs[5:10])
+        assert all(torch.isfinite(torch.tensor(planner._coeffs)))
+
+    def test_identifiable_signal_is_preserved_by_prior_centered_ridge(self):
+        history = []
+        for i in range(40):
+            phi_attn = i / 50.0
+            fingerprint = ArchitectureFingerprint(phi_attn=phi_attn, phi_width=0.4 + 0.1 * (i % 3))
+            delta = 0.04 - 0.2 * phi_attn + PEFTVariantProfile.from_variant("lora").xi
+            history.append((fingerprint, "lora", delta))
+
+        planner = PEFTPlanner()
+        planner.fit(history)
+
+        assert planner._coeffs[1] == pytest.approx(-0.2, abs=0.03)
+
+    def test_posterior_uncertainty_grows_off_distribution(self):
+        history = [
+            (
+                ArchitectureFingerprint(
+                    phi_attn=0.18 + (i % 5) * 0.01,
+                    phi_width=0.45 + (i % 3) * 0.01,
+                    phi_depth=0.35 + (i % 2) * 0.01,
+                ),
+                "lora",
+                0.06 - 0.03 * (i % 5) * 0.01,
+            )
+            for i in range(30)
+        ]
+        planner = PEFTPlanner()
+        planner.fit(history)
+
+        _, near_uncertainty = planner.predict_with_uncertainty(
+            ArchitectureFingerprint(phi_attn=0.2, phi_width=0.46, phi_depth=0.35), "lora"
+        )
+        _, far_uncertainty = planner.predict_with_uncertainty(
+            ArchitectureFingerprint(phi_attn=0.9, phi_width=1.0, phi_depth=1.0), "lora"
+        )
+
+        assert far_uncertainty > near_uncertainty
 
     def test_small_fitted_dataset_downgrades_accept_to_adapt(self):
         from ultralytics.utils.lora.config import LoRAConfig
@@ -389,3 +453,78 @@ class TestPlannerCalibrationGates:
         assert decision.status == "REFUSE"
         assert decision.safety_overrides["uncertainty_guard"] is True
         assert decision.metadata["prediction_lower_95"] < planner.REFUSE_THRESHOLD
+
+
+class TestPlannerDecisionEvidence:
+    """Every planner outcome reports whether it used observations or a fallback rule."""
+
+    @staticmethod
+    def _model():
+        return nn.Sequential(nn.Conv2d(3, 16, 3), nn.ReLU())
+
+    @staticmethod
+    def _config(variant="lora"):
+        from ultralytics.utils.lora.config import LoRAConfig
+
+        return LoRAConfig(peft_type=variant, r=8)
+
+    def test_zero_observation_accept_is_explicit_low_confidence_cold_start(self):
+        decision = PEFTPlanner().plan(self._model(), self._config())
+
+        assert decision.status == "ACCEPT"
+        assert decision.evidence == {
+            "state": "cold_start",
+            "source": "default_prior",
+            "observation_count": 0,
+            "minimum_fit_observations": 5,
+            "confidence": "low",
+            "confidence_reasons": ["no_observations", "default_coefficients"],
+            "uses_learned_evidence": False,
+            "decision_basis": "prior_prediction",
+            "guardrails": [],
+        }
+        assert decision.metadata["low_confidence"] is True
+
+    def test_pre_fit_observations_are_counted_without_claiming_learned_evidence(self):
+        fingerprint = ArchitectureFingerprint(phi_attn=0.0, phi_dw=0.0)
+        collector = LOVODataCollector(
+            [LOVODataPoint(fingerprint=fingerprint, variant="lora", delta_mAP=0.05) for _ in range(4)]
+        )
+
+        decision = PEFTPlanner(lovo_collector=collector).plan(self._model(), self._config())
+
+        assert decision.evidence["state"] == "cold_start"
+        assert decision.evidence["observation_count"] == 4
+        assert decision.evidence["confidence_reasons"] == ["insufficient_observations", "default_coefficients"]
+        assert decision.evidence["uses_learned_evidence"] is False
+
+    def test_fitted_limited_evidence_is_distinct_from_cold_start(self):
+        planner = PEFTPlanner()
+        planner.fit(TestPlannerCalibrationGates._history())
+
+        decision = planner.plan(self._model(), self._config())
+
+        assert decision.status == "ADAPT"
+        assert decision.evidence["state"] == "limited_evidence"
+        assert decision.evidence["source"] == "learned_regression"
+        assert decision.evidence["observation_count"] == 10
+        assert decision.evidence["confidence"] == "low"
+        assert decision.evidence["uses_learned_evidence"] is True
+        assert decision.evidence["decision_basis"] == "learned_prediction"
+
+    def test_guardrail_refusal_identifies_rule_and_persists_in_audit(self, tmp_path):
+        class _RTDETR(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.conv = nn.Conv2d(3, 16, 3)
+                self.decoder = nn.Module()
+                self.decoder.__class__.__name__ = "RTDETRDecoder"
+
+        decision = PEFTPlanner(audit_dir=tmp_path).plan(_RTDETR(), self._config())
+
+        assert decision.status == "REFUSE"
+        assert decision.evidence["decision_basis"] == "guardrail_fallback"
+        assert decision.evidence["guardrails"] == ["rtdetr_lora_family"]
+        assert decision.evidence["uses_learned_evidence"] is False
+        audit = json.loads(next(tmp_path.glob("*.json")).read_text())
+        assert audit["evidence"] == decision.evidence

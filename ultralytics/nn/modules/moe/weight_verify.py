@@ -14,16 +14,30 @@ Usage:
 from __future__ import annotations
 
 import logging
-from collections import OrderedDict
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 import torch
 
+from ultralytics.utils.patches import torch_load
+
 from .utils import is_core_moe_block
 
 logger = logging.getLogger(__name__)
+
+
+def _checkpoint_model(checkpoint: Any, *, source: str | Path | None = None) -> Any:
+    """Select the EMA/model payload used by standard Ultralytics checkpoints."""
+    if not isinstance(checkpoint, dict) or not ({"model", "ema"} & checkpoint.keys()):
+        return checkpoint
+    selected = checkpoint.get("ema")
+    if selected is None:
+        selected = checkpoint.get("model")
+    if selected is None:
+        location = f" {source}" if source is not None else ""
+        raise ValueError(f"Checkpoint{location} has no loadable model or EMA state")
+    return selected
 
 
 @dataclass
@@ -53,7 +67,7 @@ class WeightVerifyReport:
     def summary(self) -> str:
         """Return a human-readable summary."""
         lines = [
-            f"MoE Weight Verification Report",
+            "MoE Weight Verification Report",
             f"  Total keys: {self.total_keys}",
             f"  Matched: {self.matched_keys}/{self.total_keys}",
             f"  MoE keys checked: {self.moe_keys_checked}",
@@ -83,9 +97,9 @@ def _load_checkpoint(path: str | Path) -> dict[str, Any]:
     path = Path(path)
     if not path.exists():
         raise FileNotFoundError(f"Checkpoint not found: {path}")
-    ckpt = torch.load(str(path), map_location="cpu", weights_only=False)
-    if isinstance(ckpt, dict) and "model" in ckpt:
-        model = ckpt["model"]
+    ckpt = torch_load(str(path), map_location="cpu", weights_only=False)
+    if isinstance(ckpt, dict) and ({"model", "ema"} & ckpt.keys()):
+        model = _checkpoint_model(ckpt, source=path)
         if hasattr(model, "state_dict"):
             return model.state_dict()
         return model
@@ -228,8 +242,8 @@ def safe_load_with_verify(
     Returns:
         WeightVerifyReport.
     """
-    ckpt = torch.load(str(checkpoint), map_location="cpu", weights_only=False)
-    ckpt_model = ckpt.get("model", ckpt) if isinstance(ckpt, dict) else ckpt
+    ckpt = torch_load(str(checkpoint), map_location="cpu", weights_only=False)
+    ckpt_model = _checkpoint_model(ckpt, source=checkpoint)
     ckpt_sd = ckpt_model.state_dict() if hasattr(ckpt_model, "state_dict") else ckpt_model
 
     report = verify_moe_weights(model, ckpt_sd, verbose=verbose)
@@ -241,7 +255,7 @@ def safe_load_with_verify(
 
     # Perform actual load (using the model's own load method if available)
     if hasattr(model, "load"):
-        model.load(ckpt, verbose=verbose)
+        model.load(ckpt_model, verbose=verbose)
     else:
         from ultralytics.utils.torch_utils import intersect_dicts
         csd = intersect_dicts(ckpt_sd, model.state_dict())

@@ -3,8 +3,15 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 from typing import Optional, Tuple
-from ultralytics.nn.modules.moe.utils import get_safe_groups as _safe_groups
-from ultralytics.nn.modules.routing_protocol import export_capabilities as _export_routing_capabilities, publish_aux_loss, routing_snapshot as _routing_snapshot
+from ultralytics.nn.modules._numeric import should_reduce_ddp
+from ultralytics.nn.modules.utils import get_safe_groups as _safe_groups, robust_deepcopy
+from ultralytics.nn.modules.routing_protocol import (
+    export_capabilities as _export_routing_capabilities,
+    graph_connected_finite_zero,
+    publish_aux_loss,
+    routing_finite_diagnostics,
+    routing_snapshot as _routing_snapshot,
+)
 from .experts import _DeformableTransformerExpert, _LocalConvTransformerExpert, _WindowTransformerExpert
 from .router import _MoTRouter, _mot_router_aux_loss
 from ultralytics.utils import LOGGER
@@ -32,6 +39,7 @@ class MoTBlock(nn.Module):
         balance_loss_coeff (float): Weight of router z-loss (0 to disable).
         dropout (float): Dropout for attention/FFN.
         exploration_eps (float): Training-only dense routing floor that keeps all experts trainable.
+        sparse_train_warmup_steps (int): Dense training forwards before enabled sparse dispatch begins.
 
     Shape:
         Input:  [B, dim, H, W]
@@ -60,12 +68,21 @@ class MoTBlock(nn.Module):
         scene_aware_router: bool = False,
         scene_hidden_dim: Optional[int] = None,
         scene_consistency_coeff: float = 0.0,
+        sparse_train_warmup_steps: int = 0,
+        scene_inference_mode: str = "dynamic",
     ):
         super().__init__()
-        assert 1 <= top_k <= self.NUM_EXPERTS
-        self.top_k = top_k
+        if not 1 <= top_k <= self.NUM_EXPERTS:
+            raise ValueError(f"top_k must be in [1, {self.NUM_EXPERTS}], got {top_k}")
+        self._top_k = int(top_k)
         self.balance_loss_coeff = balance_loss_coeff
         self.sparse_train = sparse_train
+        if int(sparse_train_warmup_steps) < 0:
+            raise ValueError("sparse_train_warmup_steps must be non-negative")
+        self.sparse_train_warmup_steps = int(sparse_train_warmup_steps)
+        self.register_buffer("_sparse_train_step", torch.tensor(0, dtype=torch.long), persistent=True)
+        self._ddp_find_unused_parameters: Optional[bool] = None
+        self._ddp_contract_source = "unconfigured"
         self.scene_consistency_coeff = max(float(scene_consistency_coeff), 0.0)
         # Legacy YAML/checkpoints used balance_loss_coeff for z-loss only; when
         # router_z_loss_coeff is omitted, keep that behaviour for the z term.
@@ -102,6 +119,7 @@ class MoTBlock(nn.Module):
             exploration_eps=exploration_eps,
             scene_aware=scene_aware_router,
             scene_hidden_dim=scene_hidden_dim,
+            scene_inference_mode=scene_inference_mode,
         )
 
         # Final output norm & projection
@@ -119,7 +137,19 @@ class MoTBlock(nn.Module):
         """Number of Transformer expert branches."""
         return self.NUM_EXPERTS
 
-    # top_k is already stored as self.top_k (instance attribute).
+    @property
+    def top_k(self) -> int:
+        """Number of Transformer experts active per forward."""
+        return self._top_k
+
+    @top_k.setter
+    def top_k(self, value: int) -> None:
+        value = int(value)
+        if not 1 <= value <= self.NUM_EXPERTS:
+            raise ValueError(f"top_k must be in [1, {self.NUM_EXPERTS}], got {value}")
+        self._top_k = value
+        if hasattr(self, "router"):
+            self.router.top_k = value
 
     @property
     def aux_loss(self) -> torch.Tensor:
@@ -134,15 +164,113 @@ class MoTBlock(nn.Module):
         return _routing_snapshot(self)
 
     def export_capabilities(self) -> dict:
-        return _export_routing_capabilities(self)
+        capabilities = _export_routing_capabilities(self)
+        eager_sparse = self.top_k < self.NUM_EXPERTS
+        sparse_train_ready = self._sparse_training_ready()
+        ddp_active, ddp_sparse_safe, ddp_fallback_reason = self._ddp_sparse_training_state()
+        capabilities.update(
+            routing_kind="mot",
+            sparse_dispatch=eager_sparse,
+            eager_sparse_dispatch=eager_sparse,
+            training_sparse_dispatch=bool(self.sparse_train),
+            sparse_train=bool(self.sparse_train),
+            sparse_train_warmup_steps=self.sparse_train_warmup_steps,
+            sparse_train_step=int(self._sparse_train_step.item()),
+            sparse_train_ready=sparse_train_ready,
+            dispatch_policy=self._training_dispatch_policy(
+                sparse_train_ready=sparse_train_ready,
+                ddp_active=ddp_active,
+                ddp_sparse_safe=ddp_sparse_safe,
+            ),
+            ddp_active=ddp_active,
+            ddp_find_unused_parameters=self._ddp_find_unused_parameters,
+            ddp_sparse_train_safe=ddp_sparse_safe,
+            ddp_contract_source=self._ddp_contract_source,
+            ddp_fallback_reason=ddp_fallback_reason,
+            sparse_export_limitation=(
+                "MoT eager execution supports Top-K sparse dispatch; ONNX and TorchScript tracing use dense blending "
+                "because expert selection is data-dependent."
+            ),
+        )
+        return capabilities
 
     def __deepcopy__(self, memo):
-        from ultralytics.nn.modules.moe._common import _robust_deepcopy
+        return robust_deepcopy(self, memo)
 
-        return _robust_deepcopy(self, memo)
+    def _load_from_state_dict(
+        self,
+        state_dict,
+        prefix,
+        local_metadata,
+        strict,
+        missing_keys,
+        unexpected_keys,
+        error_msgs,
+    ):
+        """Migrate checkpoints created before sparse-training warmup state existed."""
+        step_key = f"{prefix}_sparse_train_step"
+        if step_key not in state_dict:
+            state_dict[step_key] = self._sparse_train_step.detach().clone()
+        super()._load_from_state_dict(
+            state_dict,
+            prefix,
+            local_metadata,
+            strict,
+            missing_keys,
+            unexpected_keys,
+            error_msgs,
+        )
 
     def _init_weights(self):
         nn.init.trunc_normal_(self.out_proj.weight, std=0.02)
+
+    def _sparse_training_ready(self) -> bool:
+        """Return whether training has completed the configured dense warmup."""
+        return bool(
+            self.sparse_train and int(self._sparse_train_step.item()) >= self.sparse_train_warmup_steps
+        )
+
+    def configure_ddp_sparse_training(self, *, find_unused_parameters: bool, source: str = "external") -> None:
+        """Record the DDP unused-parameter contract required by sparse expert dispatch."""
+        self._ddp_find_unused_parameters = bool(find_unused_parameters)
+        self._ddp_contract_source = str(source)
+
+    def _ddp_sparse_training_state(self) -> Tuple[bool, bool, Optional[str]]:
+        """Return whether active DDP can safely tolerate locally unused experts."""
+        ddp_active = bool(
+            self.training
+            and torch.distributed.is_available()
+            and torch.distributed.is_initialized()
+            and torch.distributed.get_world_size() > 1
+        )
+        if not ddp_active:
+            return False, True, None
+        if self._ddp_find_unused_parameters is True:
+            return True, True, None
+        reason = (
+            "find_unused_parameters_disabled"
+            if self._ddp_find_unused_parameters is False
+            else "find_unused_parameters_not_confirmed"
+        )
+        return True, False, reason
+
+    def _training_dispatch_policy(
+        self,
+        *,
+        sparse_train_ready: bool,
+        ddp_active: bool,
+        ddp_sparse_safe: bool,
+    ) -> str:
+        """Resolve the auditable dense/sparse dispatch policy for the current state."""
+        if not self.training:
+            return "eager_sparse"
+        if not self.sparse_train:
+            return "dense_train"
+        if not sparse_train_ready:
+            return "dense_warmup"
+        if ddp_active and not ddp_sparse_safe:
+            return "dense_ddp_fallback"
+        return "sparse_train"
 
     def _blend_experts(
         self,
@@ -165,9 +293,17 @@ class MoTBlock(nn.Module):
             (not ``trace``) or set ``sparse_train=False`` and eval before export.
         """
         out = x.new_zeros(x.shape)
-        # During ONNX export always use dense blending (data-dependent control
-        # flow from nonzero/any is not trace-stable).
-        use_sparse = (not self.training or self.sparse_train) and not torch.onnx.is_in_onnx_export()
+        # Export tracing always uses dense blending because nonzero/any control flow is input-dependent.
+        exporting = torch.onnx.is_in_onnx_export() or torch.jit.is_tracing()
+        sparse_train_ready = False if exporting else self._sparse_training_ready()
+        ddp_active, ddp_sparse_safe, ddp_fallback_reason = self._ddp_sparse_training_state()
+        dispatch_policy = self._training_dispatch_policy(
+            sparse_train_ready=sparse_train_ready,
+            ddp_active=ddp_active,
+            ddp_sparse_safe=ddp_sparse_safe,
+        )
+        use_sparse = (not self.training or (sparse_train_ready and ddp_sparse_safe)) and not exporting
+        warmup_step = 0 if exporting else int(self._sparse_train_step.item())
         B = x.shape[0]
         if use_sparse:
             expert_calls = 0
@@ -189,7 +325,23 @@ class MoTBlock(nn.Module):
                         f"the input tensor shape."
                     )
                 out[batch_idx] = out[batch_idx] + expert_out * w
-            self._last_dispatch_stats = {"mode": "sample_sparse", "expert_calls": expert_calls, "selected_samples": B}
+            selected_experts = int((indices if indices is not None else weights).unique().numel())
+            self._last_dispatch_stats = {
+                "mode": "sample_sparse",
+                "expert_calls": expert_calls,
+                "selected_samples": B,
+                "selected_experts": selected_experts,
+                "sparsity_ratio": 1.0 - expert_calls / max(len(self.experts), 1),
+                "policy": dispatch_policy,
+                "warmup_step": warmup_step,
+                "warmup_steps": self.sparse_train_warmup_steps,
+                "sparse_train_ready": sparse_train_ready,
+                "ddp_active": ddp_active,
+                "ddp_find_unused_parameters": self._ddp_find_unused_parameters,
+                "ddp_sparse_train_safe": ddp_sparse_safe,
+                "ddp_contract_source": self._ddp_contract_source,
+                "ddp_fallback_reason": ddp_fallback_reason,
+            }
         else:
             for e_idx, expert in enumerate(self.experts):
                 w = weights[:, e_idx:e_idx + 1]
@@ -201,7 +353,24 @@ class MoTBlock(nn.Module):
                         f"the input tensor shape."
                     )
                 out = out + expert_out * w
-            self._last_dispatch_stats = {"mode": "dense", "expert_calls": len(self.experts), "selected_samples": B}
+            self._last_dispatch_stats = {
+                "mode": "dense",
+                "expert_calls": len(self.experts),
+                "selected_samples": B,
+                "selected_experts": len(self.experts),
+                "sparsity_ratio": 0.0,
+                "policy": "dense_export" if exporting else dispatch_policy,
+                "warmup_step": warmup_step,
+                "warmup_steps": self.sparse_train_warmup_steps,
+                "sparse_train_ready": sparse_train_ready,
+                "ddp_active": ddp_active,
+                "ddp_find_unused_parameters": self._ddp_find_unused_parameters,
+                "ddp_sparse_train_safe": ddp_sparse_safe,
+                "ddp_contract_source": self._ddp_contract_source,
+                "ddp_fallback_reason": ddp_fallback_reason,
+            }
+        if self.training and self.sparse_train and not exporting:
+            self._sparse_train_step.add_(1)
         return out
 
     def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
@@ -224,20 +393,32 @@ class MoTBlock(nn.Module):
         if self.training and (
             self.balance_loss_coeff > 0 or self.router_z_loss_coeff > 0 or self.scene_consistency_coeff > 0
         ):
-            aux = _mot_router_aux_loss(
+            aux, finite_diagnostics = _mot_router_aux_loss(
                 weights,
                 router_logits,
                 indices,
                 self.NUM_EXPERTS,
                 self.balance_loss_coeff,
                 self.router_z_loss_coeff,
+                reduce_ddp=should_reduce_ddp(self),
+                return_diagnostics=True,
             )
             scene_consistency = self.router.scene_consistency_loss(weights)
             if self.scene_consistency_coeff > 0:
                 aux = aux + self.scene_consistency_coeff * scene_consistency
+                finite_diagnostics = routing_finite_diagnostics(
+                    logits=router_logits, probabilities=weights, aux_loss=aux
+                )
         else:
             aux = x.new_zeros(())
             scene_consistency = x.new_zeros(())
+            finite_diagnostics = routing_finite_diagnostics(
+                logits=router_logits, probabilities=weights, aux_loss=aux
+            )
+
+        exporting = torch.onnx.is_in_onnx_export() or torch.jit.is_tracing()
+        if self.training and not exporting and not torch.isfinite(aux):
+            aux = graph_connected_finite_zero(weights, router_logits, aux)
 
         self.last_aux_loss = aux
         publish_aux_loss(self, aux, kind="mot", training=self.training)
@@ -254,7 +435,12 @@ class MoTBlock(nn.Module):
                 "scene_aware": self.router.scene_aware,
                 "scene_stats": self.router.last_scene_stats,
                 "scene_bias": self.router.last_scene_bias,
+                "scene_inference_mode": self.router.scene_inference_mode,
+                "scene_aware_applied": self.router.last_scene_applied,
+                "scene_bypass_reason": self.router.last_scene_bypass_reason,
                 "scene_consistency_loss": float(scene_consistency.detach()),
+                "finite_diagnostics": finite_diagnostics,
+                "dispatch": dict(self._last_dispatch_stats),
             }
 
         return out, aux

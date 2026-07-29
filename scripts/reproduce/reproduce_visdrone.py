@@ -20,7 +20,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from _reproduce_common import DatasetSpec, run_dataset  # noqa: E402
+from _reproduce_common import MODELS, VARIANTS, DatasetSpec, run_dataset  # noqa: E402
 
 DATASET = DatasetSpec(
     name="VisDrone",
@@ -30,4 +30,4 @@ DATASET = DatasetSpec(
 
 
 if __name__ == "__main__":
-    raise SystemExit(run_dataset(DATASET))
+    raise SystemExit(run_dataset(DATASET, models=MODELS + VARIANTS))

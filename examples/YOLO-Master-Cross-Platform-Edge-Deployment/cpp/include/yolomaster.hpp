@@ -10,11 +10,23 @@ struct Detection {
     int class_id = 0;
     float conf = 0.f;
     cv::Rect2f box;               // original-image pixel coords (float, sub-pixel precise)
+    std::vector<float> mask_coeffs; // segmentation mask coefficients (empty for detection models)
+};
+
+// Pre-NMS candidate (decoded to original-image px, unclipped). The GUI caches these after one forward
+// pass and re-runs nms_and_cap() on conf/IoU changes without re-inferring ("forward once, tune cheap").
+struct RawDet {
+    cv::Rect2f box;
+    float score = 0.f;
+    int cls = 0;
+    std::vector<float> mask_coeffs;
 };
 
 struct LetterboxInfo {
-    float scale = 1.f;
-    int pad_x = 0, pad_y = 0, orig_w = 0, orig_h = 0;
+    float scale = 1.f;            // uniform scale (== scale_x == scale_y for letterbox)
+    float scale_x = 1.f;         // per-axis scale (differs from scale_y only in stretch mode)
+    float scale_y = 1.f;
+    int pad_x = 0, pad_y = 0, orig_w = 0, orig_h = 0;   // pad is 0 in stretch mode
 };
 
 struct Config {
@@ -23,6 +35,7 @@ struct Config {
     float iou_thresh  = 0.50f;
     int   max_det = 300;          // cap detections after NMS (ultralytics val default)
     bool  multi_label = false;    // true = one detection per class>conf per anchor (ultralytics val); false = argmax
+    bool  stretch = false;        // preprocess: false = letterbox (aspect-preserving); true = stretch to square
     std::vector<std::string> class_names;
     int num_classes() const { return static_cast<int>(class_names.size()); }
 };
@@ -30,10 +43,30 @@ struct Config {
 const std::vector<std::string>& visdrone_classes();  // 10
 const std::vector<std::string>& sku110k_classes();   // 1
 
+// Resize to imgsz x imgsz: stretch=false letterboxes (min-scale, 114-pad, centered);
+// stretch=true resizes to square ignoring aspect (per-axis scale, no pad).
+cv::Mat preprocess(const cv::Mat& img, int imgsz, bool stretch, LetterboxInfo& info);
+// Back-compat alias: aspect-preserving letterbox (== preprocess(..., stretch=false)).
 cv::Mat letterbox(const cv::Mat& img, int imgsz, LetterboxInfo& info);
+// Decode raw model output -> pre-NMS candidates (score >= cfg.conf_thresh; pass a low floor to cache).
+std::vector<RawDet> decode_candidates(const float* out, int feat_dim, int num_anchors,
+                                      const Config& cfg, const LetterboxInfo& lb);
+// Per-class NMS + max_det cap + clip-to-frame on cached candidates (cheap; re-run on conf/IoU change).
+std::vector<Detection> nms_and_cap(const std::vector<RawDet>& cands, const Config& cfg,
+                                   int orig_w, int orig_h);
+// Full postprocess = decode_candidates + nms_and_cap (used by the CLI).
 std::vector<Detection> decode(const float* out, int feat_dim, int num_anchors,
                               const Config& cfg, const LetterboxInfo& lb);
 void draw(cv::Mat& img, const std::vector<Detection>& dets, const Config& cfg);
+
+// Segmentation: composite per-detection masks (from proto x mask_coeffs) into an RGBA overlay
+// (orig_h x orig_w, CV_8UC4, transparent where no mask), per-class tinted with soft edges.
+// `lb`/`imgsz` map original px -> mask space. Empty proto -> fully transparent. mask_alpha 0..255.
+cv::Mat seg_overlay(const std::vector<Detection>& dets, const std::vector<float>& proto,
+                    int pc, int ph, int pw, const LetterboxInfo& lb, int imgsz,
+                    int orig_w, int orig_h, int mask_alpha = 165);
+// The 10-color class palette (RGB 0..1, indexed cls%10) shared by draw/overlay/GUI.
+const float* class_color(int class_id);   // returns pointer to 3 floats
 
 // ---- model metadata (ultralytics embeds names/imgsz in the model) ----
 namespace meta {
@@ -59,7 +92,17 @@ public:
     int meta_imgsz = 0;                    // auto-read (0 = unknown)
     int fixed_imgsz = 0;                   // hard input constraint (0 = flexible)
     std::string active_ep = "cpu";         // execution provider actually in use
+    std::string ep_note;                   // why a requested GPU/accelerator EP fell back (for the UI)
     double pre_ms = 0, infer_ms = 0, post_ms = 0;
+    // "forward once, tune cheap": each infer() also stashes the pre-NMS candidates so a GUI can
+    // re-run nms_and_cap(candidates,...) on conf/IoU changes without another forward pass.
+    std::vector<RawDet> candidates;
+    int cand_orig_w = 0, cand_orig_h = 0;
+    LetterboxInfo cand_lb;              // letterbox used for `candidates` (maps orig<->mask space for seg)
+    // segmentation prototype masks [proto_c * proto_h * proto_w], plane-major; empty for detection models.
+    std::vector<float> proto;
+    int proto_c = 0, proto_h = 0, proto_w = 0;
+    bool is_seg() const { return proto_c > 0 && !proto.empty(); }
 };
 
 } // namespace yolomaster

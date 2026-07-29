@@ -5,47 +5,73 @@ This module centralizes all common infrastructure used by base.py, advanced.py,
 hybrid.py, and integration.py: device-agnostic autocast, the global auxiliary-loss
 registry, snapshot recording, robust deepcopy, and the consolidated import block.
 """
+
 import os
-import math
-import logging
+import threading as _threading
+import weakref
+from contextlib import nullcontext
+from typing import Optional, Tuple
+
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
-import copy
-import weakref
-from typing import Tuple, Dict, Optional, Union
-from .utils import FlopsUtils, get_safe_groups, BatchedExpertComputation
-from .experts import (
-    OptimizedSimpleExpert, FusedGhostExpert, SimpleExpert, GhostExpert,
-    InvertedResidualExpert, EfficientExpertGroup, SpatialExpert, SharedInvertedExpertGroup
+
+from ultralytics.nn.modules.block import A2C2f, ABlock, C3k  # noqa: F401 - preserve compatibility attributes
+from ultralytics.nn.modules.utils import robust_deepcopy as _robust_deepcopy  # noqa: F401
+
+from ..routing_protocol import get_aux_record, publish_aux_loss
+from .experts import (  # noqa: F401 - preserve compatibility attributes
+    OptimizedSimpleExpert,
+    FusedGhostExpert,
+    SimpleExpert,
+    GhostExpert,
+    InvertedResidualExpert,
+    EfficientExpertGroup,
+    SpatialExpert,
+    SharedInvertedExpertGroup,
 )
-from .routers import (
-    UltraEfficientRouter, EfficientSpatialRouter, LocalRoutingLayer,
-    AdaptiveRoutingLayer, DynamicRoutingLayer, AdvancedRoutingLayer
+from .loss import (  # noqa: F401 - preserve compatibility attributes
+    MoELoss,
+    all_reduce_mean,
+    differentiable_balance_loss,
+    gshard_balance_loss,
+    weighted_gshard_balance_loss,
 )
-from ultralytics.nn.modules.block import ABlock, A2C2f, C3k
-from torch.amp import autocast as _autocast
+from .routers import (  # noqa: F401 - preserve compatibility attributes
+    UltraEfficientRouter,
+    EfficientSpatialRouter,
+    LocalRoutingLayer,
+    AdaptiveRoutingLayer,
+    DynamicRoutingLayer,
+    AdvancedRoutingLayer,
+)
+from .scheduler import MoEDynamicScheduler, MoEDynamicSchedulerConfig  # noqa: F401
+from .utils import BatchedExpertComputation, FlopsUtils, get_safe_groups  # noqa: F401
+
+try:
+    from torch.amp import autocast as _device_autocast
+except ImportError:  # torch<1.10
+    _device_autocast = None
+from torch.cuda.amp import autocast as _cuda_autocast
+
 
 def autocast(enabled=True, **kwargs):
     """Device-agnostic autocast wrapper. Falls back gracefully on non-CUDA devices."""
     if torch.cuda.is_available():
-        return _autocast('cuda', enabled=enabled, **kwargs)
-    if torch.backends.mps.is_available():
-        return _autocast('mps', enabled=enabled, **kwargs)
+        if _device_autocast is not None:
+            return _device_autocast("cuda", enabled=enabled, **kwargs)
+        return _cuda_autocast(enabled=enabled, **kwargs)
+    mps = getattr(torch.backends, "mps", None)
+    if mps is not None and mps.is_available() and _device_autocast is not None:
+        return _device_autocast("mps", enabled=enabled, **kwargs)
     # On CPU, autocast is not fully supported; disable to avoid warnings/errors
-    from contextlib import nullcontext
-    return nullcontext() if not enabled else nullcontext()
-from .loss import MoELoss, gshard_balance_loss, weighted_gshard_balance_loss, differentiable_balance_loss, all_reduce_mean
-from .scheduler import MoEDynamicScheduler, MoEDynamicSchedulerConfig
-from ..routing_protocol import publish_aux_loss
+    return nullcontext()
+
 
 # Global registry to store auxiliary losses for MoE modules
 # This prevents storing non-leaf tensors in the module instance, avoiding deepcopy errors.
 # Guarded by a lock: WeakKeyDictionary mutation is not atomic, and concurrent
 # forward passes (e.g. multi-threaded eval / hook callbacks) could otherwise
 # corrupt its internal weakref bookkeeping.
-import threading as _threading
-
 MOE_LOSS_REGISTRY = weakref.WeakKeyDictionary()
 _MOE_LOSS_REGISTRY_LOCK = _threading.Lock()
 
@@ -60,9 +86,10 @@ def _registry_set(module: nn.Module, value: torch.Tensor) -> None:
 
 
 def _registry_get(module: nn.Module):
-    """Thread-safe read from the MoE aux-loss registry."""
-    with _MOE_LOSS_REGISTRY_LOCK:
-        return MOE_LOSS_REGISTRY.get(module)
+    """Read the canonical step-aware MoE auxiliary-loss record."""
+    record = get_aux_record(module)
+    return record.value if record is not None else None
+
 
 # Diagnostic snapshot sampling: only every Nth forward per module records the
 # latest routing summary. Tensors stay on their current device; diagnostic
@@ -73,6 +100,8 @@ MOE_SNAPSHOT_INTERVAL = max(int(os.environ.get("MOE_SNAPSHOT_INTERVAL", "10")), 
 
 def _should_record_snapshot(module: nn.Module) -> bool:
     """Per-module forward gate so snapshots are taken every Nth step only."""
+    if getattr(module, "_moe_force_snapshot", False):
+        return True
     if MOE_SNAPSHOT_INTERVAL <= 1:
         return True
     c = getattr(module, "_moe_snap_counter", 0) + 1
@@ -125,7 +154,9 @@ def _flatten_moe_topk(topk_tensor: Optional[torch.Tensor]) -> Optional[torch.Ten
     return topk_tensor.reshape(topk_tensor.shape[0], -1)
 
 
-def _compute_usage_from_topk(topk_indices: Optional[torch.Tensor], num_experts: int) -> Tuple[torch.Tensor, torch.Tensor]:
+def _compute_usage_from_topk(
+    topk_indices: Optional[torch.Tensor], num_experts: int
+) -> Tuple[torch.Tensor, torch.Tensor]:
     """Return normalized usage share and raw hit counts from Top-K indices."""
     if topk_indices is None or num_experts <= 0:
         zero = torch.zeros(max(num_experts, 0), dtype=torch.float32)
@@ -155,6 +186,7 @@ def _record_moe_snapshot(
     topk_weights: Optional[torch.Tensor] = None,
     router_probs: Optional[torch.Tensor] = None,
     aux_loss: Optional[torch.Tensor] = None,
+    finite_diagnostics: Optional[dict] = None,
 ) -> None:
     """Store a compact, detached routing snapshot for later diagnostics.
 
@@ -190,12 +222,16 @@ def _record_moe_snapshot(
 
     snapshot = {
         "num_experts": int(getattr(module, "num_experts", 0)),
-        "top_k": int(_flatten_moe_topk(topk_indices).shape[1]) if isinstance(topk_indices, torch.Tensor) else int(getattr(module, "top_k", 0)),
+        "top_k": int(_flatten_moe_topk(topk_indices).shape[1])
+        if isinstance(topk_indices, torch.Tensor)
+        else int(getattr(module, "top_k", 0)),
         "expert_usage": usage_tensor,
         "topk_counts": counts_tensor,
         "mean_router_probs": mean_probs,
         "aux_loss": aux_loss.detach().float() if isinstance(aux_loss, torch.Tensor) else float(aux_loss or 0.0),
     }
+    if finite_diagnostics is not None:
+        snapshot["finite_diagnostics"] = dict(finite_diagnostics)
 
     if isinstance(topk_weights, torch.Tensor):
         weights = _flatten_moe_topk(topk_weights.detach().float())
@@ -203,55 +239,6 @@ def _record_moe_snapshot(
             snapshot["mean_topk_weight"] = weights.mean(dim=0)
 
     module.last_routing_snapshot = snapshot
-
-def _is_readonly_property(cls, name):
-    """Check if *name* is a property on *cls* (or bases) that has no setter."""
-    for base in cls.__mro__:
-        attr = base.__dict__.get(name)
-        if isinstance(attr, property) and attr.fset is None:
-            return True
-    return False
-
-
-def _robust_deepcopy(obj, memo):
-    """
-    Robust deepcopy helper that sanitizes the object's __dict__ to remove
-    any non-leaf tensors (which cause RuntimeError in deepcopy) before copying.
-    Also skips stale __dict__ entries that shadow read-only @property descriptors
-    (e.g. ``aux_loss`` from older checkpoints) to avoid AttributeError.
-    """
-    cls = obj.__class__
-    new_obj = cls.__new__(cls)
-    memo[id(obj)] = new_obj
-
-    for k, v in obj.__dict__.items():
-        # Skip stale attributes that shadow a read-only property on the class
-        if _is_readonly_property(cls, k):
-            continue
-        # Check for non-leaf tensor (has grad_fn)
-        if isinstance(v, torch.Tensor) and v.grad_fn is not None:
-            # Replace with a safe scalar zero on the same device/dtype.
-            setattr(new_obj, k, _detached_zero_like(v))
-        else:
-            try:
-                setattr(new_obj, k, copy.deepcopy(v, memo))
-            except RuntimeError as e:
-                # Fallback: if deepcopy fails on a specific attribute, try to skip or reset it
-                if "Only Tensors created explicitly" in str(e):
-                    logging.getLogger("ultralytics").warning(f"Skipped deepcopy for attribute '{k}' in {cls.__name__} due to non-leaf tensor error.")
-                    setattr(new_obj, k, _detached_zero_like(v))
-                else:
-                    raise e
-            except Exception:
-                # Best effort copy for other errors (e.g. pickling issues)
-                # If it fails, we assume it's transient state and ignore it or shallow copy
-                try:
-                    setattr(new_obj, k, v)
-                except AttributeError:
-                    # Read-only property or descriptor — skip
-                    pass
-
-    return new_obj
 
 
 # ==========================================

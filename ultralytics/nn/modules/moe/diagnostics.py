@@ -72,6 +72,63 @@ def diagnostics_to_dict(diagnostics: list[MoELayerDiagnostic]) -> list[dict[str,
     return [diag.__dict__.copy() for diag in diagnostics]
 
 
+def _gini(values: list[float]) -> float:
+    """Compute a bounded Gini coefficient from a non-negative usage vector."""
+    if not values:
+        return 0.0
+    usage = torch.tensor(values, dtype=torch.float32).clamp_min(0)
+    total = float(usage.sum())
+    if total <= 0:
+        return 0.0
+    diff = torch.abs(usage[:, None] - usage[None, :]).sum()
+    return float((diff / (2 * usage.numel() * total)).item())
+
+
+def routing_runtime_metrics(model: torch.nn.Module, collapse_threshold: float = 0.8) -> dict[str, Any]:
+    """Return JSON-safe routing health and dispatch metrics after a forward."""
+    layers: dict[str, dict[str, Any]] = {}
+    for name, module in model.named_modules():
+        snapshot = getattr(module, "last_routing_snapshot", None)
+        if not isinstance(snapshot, dict) or not snapshot:
+            continue
+        usage = _tensor_to_list(snapshot.get("expert_usage"))
+        if not usage:
+            continue
+        usage_tensor = torch.tensor(usage, dtype=torch.float32).clamp_min(1e-12)
+        dispatch = getattr(module, "_last_dispatch_stats", {}) or {}
+        if not dispatch:
+            sparse = bool(
+                not module.training
+                and getattr(module, "use_sparse_inference", False)
+                and int(snapshot.get("top_k", 0)) < len(usage)
+            )
+            dispatch = {
+                "mode": "sparse" if sparse else "dense",
+                "expert_calls": int(snapshot.get("top_k", len(usage))) if sparse else len(usage),
+            }
+        layers[name] = {
+            "module_type": type(module).__name__,
+            "num_experts": int(snapshot.get("num_experts", len(usage))),
+            "top_k": int(snapshot.get("top_k", getattr(module, "top_k", 0))),
+            "expert_usage": usage,
+            "gini": _gini(usage),
+            "entropy": float((-usage_tensor * torch.log(usage_tensor)).sum()),
+            "dominant_share": max(usage),
+            "collapse_flag": max(usage) >= float(collapse_threshold),
+            "dispatch_mode": dispatch.get("mode"),
+            "expert_calls": dispatch.get("expert_calls"),
+        }
+    values = list(layers.values())
+    return {
+        "layers": layers,
+        "routed_layers": len(values),
+        "collapsed_layers": sum(bool(item["collapse_flag"]) for item in values),
+        "mean_gini": sum(float(item["gini"]) for item in values) / len(values) if values else 0.0,
+        "mean_dominant_share": sum(float(item["dominant_share"]) for item in values) / len(values) if values else 0.0,
+        "expert_calls": sum(int(item["expert_calls"] or 0) for item in values),
+    }
+
+
 def format_moe_diagnostics(diagnostics: list[MoELayerDiagnostic], title: str = "MoE Routing Diagnostics") -> str:
     """Render a compact text summary shared by CLI and training callbacks."""
     lines = [f"[MoE] {title}"]

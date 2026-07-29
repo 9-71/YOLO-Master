@@ -58,6 +58,27 @@ def get_quantization_plan(model: nn.Module) -> dict[str, str]:
     return plan
 
 
+def _onnx_routing_nodes(onnx_path: str | Path) -> list[str]:
+    """Return ONNX node names that belong to router/control paths.
+
+    Parameter names are not preserved one-to-one in an exported graph, so the
+    ONNX pass uses the same conservative routing tokens as the PyTorch plan.
+    Unnamed nodes are ignored rather than accidentally excluding the whole
+    graph.
+    """
+    try:
+        import onnx
+    except ImportError:
+        return []
+    try:
+        graph = onnx.load(str(onnx_path)).graph
+    except Exception as exc:
+        LOGGER.warning(f"[Quantize] Could not inspect ONNX graph for routing nodes: {exc}")
+        return []
+    tokens = tuple(token.lower() for token in _SENSITIVE_LAYERS)
+    return sorted({node.name for node in graph.node if node.name and any(token in node.name.lower() for token in tokens)})
+
+
 def quantize_moe_model(
     model: nn.Module,
     backend: str = "onnx",
@@ -130,6 +151,9 @@ def _quantize_onnx(
     temp_path = output_path.parent / "model_temp.onnx"
     buffer.seek(0)
     temp_path.write_bytes(buffer.read())
+    excluded_nodes = _onnx_routing_nodes(temp_path)
+    if excluded_nodes:
+        LOGGER.info(f"[Quantize] Preserving {len(excluded_nodes)} routing/control ONNX nodes at full precision.")
 
     if dynamic_quantize:
         # Dynamic quantization (weight-only, no calibration needed)
@@ -137,6 +161,7 @@ def _quantize_onnx(
         quantize_dynamic(
             str(temp_path), str(output_path),
             weight_type=QuantType.QInt8,
+            nodes_to_exclude=excluded_nodes,
         )
     else:
         # Static quantization with calibration
@@ -148,13 +173,18 @@ def _quantize_onnx(
                     for batch in loader:
                         if count >= max_items:
                             break
+                        if isinstance(batch, dict):
+                            batch = batch.get("img", batch.get("images", batch.get("image")))
+                        elif isinstance(batch, (tuple, list)):
+                            batch = batch[0] if batch else None
                         if isinstance(batch, torch.Tensor):
-                            self._items.append({"images": batch.numpy()})
+                            self._items.append({"images": batch.detach().cpu().float().numpy()})
                         count += 1
                 if not self._items:
-                    # Fallback to random calibration data
-                    for _ in range(10):
-                        self._items.append({"images": torch.randn(1, 3, 640, 640).numpy()})
+                    raise ValueError(
+                        "Static MoE quantization requires a non-empty representative "
+                        "calibration_loader; random calibration is disabled."
+                    )
 
             def get_next(self):
                 return self._items.pop(0) if self._items else None
@@ -163,6 +193,7 @@ def _quantize_onnx(
         quantize_static(
             str(temp_path), str(output_path),
             calibration_data_reader=reader,
+            nodes_to_exclude=excluded_nodes,
         )
 
     temp_path.unlink(missing_ok=True)

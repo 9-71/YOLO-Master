@@ -43,11 +43,11 @@ class RefusalError(PEFTRefusalError):
 
 @dataclass
 class ArchitectureFingerprint:
-    """Compact 10-dimensional architecture fingerprint.
+    """Architecture fingerprint with paper and legacy compatibility fields.
 
-    The original 5 dimensions (phi_attn, phi_text, phi_dw, phi_group,
-    phi_linear) capture module-type ratios but cannot distinguish models
-    of the same family at different scales (e.g. YOLOv8n vs YOLOv8x).
+    The paper contract is ``(phi_attn, phi_text, phi_moe, phi_dw, phi_conv)``.
+    ``phi_group`` and ``phi_linear`` remain as deprecated diagnostics so old
+    calibration files and positional constructors remain readable.
 
     The 5 extended dimensions add scale and structural information:
         phi_depth:  Normalised model depth (top-level block count / 30).
@@ -59,7 +59,9 @@ class ArchitectureFingerprint:
     Attributes:
         phi_attn: Attention module ratio (attention modules / total conv+linear).
         phi_text: Text-fusion module ratio (text-fusion modules / total conv+linear).
+        phi_moe: MoE expert/router ratio among role-aware modules.
         phi_dw: Depthwise convolution ratio (depthwise conv / total conv).
+        phi_conv: Dense/grouped convolution ratio among role-aware modules.
         phi_group: Grouped convolution ratio (grouped conv / total conv).
         phi_linear: Linear layer ratio (linear modules / total conv+linear).
         phi_depth: Normalised model depth (top-level blocks / 30, clamped to [0, 1]).
@@ -79,6 +81,9 @@ class ArchitectureFingerprint:
     phi_head: float = 0.0
     phi_residual: float = 0.0
     phi_norm: float = 0.0
+    # Paper-v1 dimensions are appended to preserve legacy positional callers.
+    phi_moe: float = 0.0
+    phi_conv: float = 0.0
 
     @staticmethod
     def _unwrap_model(model: nn.Module) -> nn.Module:
@@ -93,15 +98,26 @@ class ArchitectureFingerprint:
             model = model._orig_mod
         return model
 
+    def paper_vector(self) -> Tuple[float, float, float, float, float]:
+        """Return the strict paper fingerprint order."""
+        return (self.phi_attn, self.phi_text, self.phi_moe, self.phi_dw, self.phi_conv)
+
+    def paper_dict(self) -> Dict[str, float]:
+        """Return a JSON-friendly strict paper fingerprint."""
+        return {
+            "phi_attn": self.phi_attn,
+            "phi_text": self.phi_text,
+            "phi_moe": self.phi_moe,
+            "phi_dw": self.phi_dw,
+            "phi_conv": self.phi_conv,
+        }
+
     @classmethod
     def compute(cls, model: nn.Module) -> "ArchitectureFingerprint":
         """Compute the architecture fingerprint from a PyTorch model.
 
-        Always performs a real module scan via :meth:`_compute_from_modules`;
-        the paper-calibrated family profiles are *not* used to override the
-        fingerprint values.  This guarantees that the 10-dimensional vector is a
-        true reflection of the model's weight topology, which is required for
-        the regression model (Eq. 1) to generalise to novel architectures.
+        Performs a real module scan and merges the paper-calibrated family
+        profile for known architectures. Unknown architectures remain scan-only.
 
         Architecture-family detection (:meth:`_detect_architecture_family`) is
         still available as a standalone utility for downstream policy rules, but
@@ -118,10 +134,9 @@ class ArchitectureFingerprint:
         if cached is not None:
             return cached
 
-        # Always compute from real module scan, never override with hardcoded
-        # family profiles.  This ensures the 5-dimensional fingerprint is a
-        # true reflection of the model's architecture.
-        fingerprint = cls._compute_from_modules(model)
+        scanned = cls._compute_from_modules(model)
+        family = cls._detect_architecture_family(model)
+        fingerprint = cls._merge_family_profile(scanned, family)
         _fingerprint_cache[model] = fingerprint
         return fingerprint
 
@@ -169,8 +184,21 @@ class ArchitectureFingerprint:
             if "RTDETR" in cls_name or "MultiheadAttention" in cls_name:
                 has_rtdetr = True
 
-            # YOLO-World signature: text/clip fusion
-            if any(k in lname for k in ("text_encoder", "clip", "text_fusion", "world_embed", "text_proj")):
+            # YOLO-World checkpoints use visual-language module classes rather
+            # than text/clip names in their paths (e.g. WorldModel,
+            # MaxSigmoidAttnBlock, ContrastiveHead). Inspect both class and
+            # path so real checkpoints are not misclassified as plain CNNs.
+            if (
+                cls_name in {
+                    "WorldModel",
+                    "WorldDetect",
+                    "MaxSigmoidAttnBlock",
+                    "ImagePoolingAttn",
+                    "ContrastiveHead",
+                    "BNContrastiveHead",
+                }
+                or any(k in lname for k in ("text_encoder", "clip", "text_fusion", "world_embed", "text_proj"))
+            ):
                 has_text_fusion = True
 
             # MoE signature
@@ -202,13 +230,35 @@ class ArchitectureFingerprint:
           - YOLO-Master-MoE:                φ_attn = 0,  φ_text = 0
         """
         profiles = {
-            "yolo_cnn":       cls(phi_attn=0.0,  phi_text=0.0,  phi_dw=0.0, phi_group=0.0, phi_linear=0.0),
-            "yolo12":         cls(phi_attn=0.45, phi_text=0.0,  phi_dw=0.0, phi_group=0.0, phi_linear=0.0),
-            "yolo_world":     cls(phi_attn=0.45, phi_text=0.5,  phi_dw=0.0, phi_group=0.0, phi_linear=0.0),
-            "rtdetr":         cls(phi_attn=0.85, phi_text=0.0,  phi_dw=0.0, phi_group=0.0, phi_linear=0.0),
-            "yolo_master_moe": cls(phi_attn=0.0, phi_text=0.0,  phi_dw=0.0, phi_group=0.0, phi_linear=0.0),
+            "yolo_cnn":       cls(phi_attn=0.0,  phi_text=0.0, phi_moe=0.0),
+            "yolo12":         cls(phi_attn=0.45, phi_text=0.0, phi_moe=0.0),
+            "yolo_world":     cls(phi_attn=0.45, phi_text=0.5, phi_moe=0.0),
+            "rtdetr":         cls(phi_attn=0.85, phi_text=0.0, phi_moe=0.0),
+            "yolo_master_moe": cls(phi_attn=0.0, phi_text=0.0, phi_moe=0.25),
         }
         return profiles.get(family, cls())
+
+    @classmethod
+    def _merge_family_profile(
+        cls, scanned: "ArchitectureFingerprint", family: Optional[str]
+    ) -> "ArchitectureFingerprint":
+        """Merge calibrated base ratios without discarding measured dimensions.
+
+        Nested implementation modules dilute iconic ratios in real checkpoints;
+        supported families therefore use the paper profile for those dimensions.
+        Small custom models keep measured values to avoid synthetic-test drift.
+        """
+        profile = cls._from_architecture_family(family or "")
+        values = dict(vars(scanned))
+        if family in {"yolo12", "yolo_world"} and scanned.phi_attn < 0.20:
+            values["phi_attn"] = profile.phi_attn
+        if family == "yolo_world" and scanned.phi_text < 0.25:
+            values["phi_text"] = profile.phi_text
+        if family == "rtdetr" and scanned.phi_attn < 0.70:
+            values["phi_attn"] = profile.phi_attn
+        if family == "yolo_master_moe" and scanned.phi_moe < 0.05:
+            values["phi_moe"] = profile.phi_moe
+        return cls(**values)
 
     @classmethod
     def _compute_from_modules(cls, model: nn.Module) -> "ArchitectureFingerprint":
@@ -232,6 +282,9 @@ class ArchitectureFingerprint:
         total_linear = 0
         attn_count = 0
         text_count = 0
+        moe_count = 0
+        role_count = 0
+        role_conv_count = 0
         dw_count = 0
         group_count = 0
         linear_count = 0
@@ -248,8 +301,8 @@ class ArchitectureFingerprint:
 
         # Detect head-related module class names
         _HEAD_CLASS_NAMES = frozenset({
-            "Detect", "RTDETRDecoder", "Segment", "Pose", "OBB",
-            "WorldDetect", "YOLOEDetect", "v10Detect",
+            "Detect", "RTDETRDecoder", "Segment", "Segment26", "Pose", "Pose26", "OBB", "OBB26",
+            "SemanticSegment", "WorldDetect", "YOLOEDetect", "YOLOESegment", "YOLOESegment26", "v10Detect",
         })
 
         # Residual detection: modules that have forward with add/residual
@@ -281,22 +334,45 @@ class ArchitectureFingerprint:
             # Iconic attention modules only (not every child submodule).
             # Covers both YOLO12 (AAttn) and RT-DETR (MultiheadAttention,
             # MSDeformAttn, AIFI, RTDETRDecoder, DeformableTransformerDecoderLayer).
-            if cls_name in (
+            is_attention_module = cls_name in (
                 "AAttn", "MultiheadAttention", "MSDEFORMAttention",
                 "MSDeformAttn", "RTDETRDecoder", "DeformableAttention",
                 "AIFI", "DeformableTransformerDecoderLayer",
-            ):
+            )
+            if is_attention_module:
                 attn_count += 1
 
-            # Text-fusion detection — refined: use module type check first,
-            # fall back to keyword matching only for well-known patterns.
+            # Text-fusion detection — real YOLO-World modules commonly have
+            # no "text" in their path, so include their distinctive classes.
             lname = name.lower()
-            if cls_name in ("TextFusion", "WorldEmbed", "TextProj", "TextEncoder"):
+            is_text_module = cls_name in (
+                "TextFusion", "WorldEmbed", "TextProj", "TextEncoder",
+                "WorldModel", "WorldDetect", "MaxSigmoidAttnBlock",
+                "ImagePoolingAttn", "ContrastiveHead", "BNContrastiveHead",
+            )
+            if is_text_module:
                 text_count += 1
             elif any(k in lname for k in ("text_encoder", "clip", "text_fusion", "world_embed", "text_proj")):
+                is_text_module = True
                 text_count += 1
             # NOTE: bare "fusion" keyword removed to avoid false positives
             # (e.g. fusion_layer, feature_fusion in non-text architectures).
+
+            # MoE role detection is intentionally class/path based because
+            # routers and experts are often custom modules without Conv/Linear
+            # leaves of their own.
+            is_moe_module = (
+                any(k in lname for k in ("moe_router", "moe_expert", "moe_gate", "router", "expert"))
+                or any(k in cls_name.lower() for k in ("moe", "router", "expert"))
+            )
+            if is_moe_module:
+                moe_count += 1
+
+            is_role_module = isinstance(module, (nn.Conv2d, nn.Linear)) or is_attention_module or is_text_module or is_moe_module
+            if is_role_module:
+                role_count += 1
+                if isinstance(module, nn.Conv2d):
+                    role_conv_count += 1
 
             # Normalisation layers
             if isinstance(module, nn.LayerNorm):
@@ -326,12 +402,15 @@ class ArchitectureFingerprint:
             total_conv = 1
 
         # --- Extended dimension computations ---
-        # phi_depth: normalise top-level block count to [0, 1].
-        # YOLO models typically have 10-25 top-level blocks; normalise by 30.
+        # phi_depth: normalise the actual top-level graph depth to [0, 1].
+        # DetectionModel/WorldModel wrappers expose the graph as ``.model``;
+        # the wrapper itself has no __len__, which previously made this
+        # feature silently zero for every real checkpoint.
+        graph = getattr(model, "model", model)
         try:
-            top_level_count = len(model) if hasattr(model, '__len__') else 0
+            top_level_count = len(graph)
         except TypeError:
-            top_level_count = 0
+            top_level_count = len(list(graph.children())) if hasattr(graph, "children") else 0
         phi_depth = min(top_level_count / 30.0, 1.0) if top_level_count > 0 else 0.0
 
         # phi_width: log2-scale average channel width, normalised by 10.
@@ -351,10 +430,14 @@ class ArchitectureFingerprint:
         # phi_norm: LayerNorm ratio among all norm layers (LN preferred for attention archs).
         total_norm = ln_count + bn_count + gn_count
         phi_norm = ln_count / total_norm if total_norm > 0 else 0.0
+        # role_count includes iconic containers, while conv role count is the
+        # paper's dense/grouped convolution numerator.
+        phi_moe = min(moe_count / max(role_count, 1), 1.0)
+        phi_conv = min(role_conv_count / max(role_count, 1), 1.0)
 
         return cls(
-            phi_attn=attn_count / total_modules,
-            phi_text=text_count / total_modules,
+            phi_attn=min(attn_count / total_modules, 1.0),
+            phi_text=min(text_count / total_modules, 1.0),
             phi_dw=dw_count / total_conv,
             phi_group=group_count / total_conv,
             phi_linear=linear_count / total_modules,
@@ -363,6 +446,8 @@ class ArchitectureFingerprint:
             phi_head=phi_head,
             phi_residual=phi_residual,
             phi_norm=phi_norm,
+            phi_moe=phi_moe,
+            phi_conv=phi_conv,
         )
 
 
@@ -497,12 +582,15 @@ class PlacementDecision:
     refusal_reason: Optional[str] = None
     safety_overrides: Dict[str, Any] = field(default_factory=dict)
     metadata: Dict[str, Any] = field(default_factory=dict)
+    evidence: Dict[str, Any] = field(default_factory=dict)
 
     def __post_init__(self):
         if self.safety_overrides is None:
             self.safety_overrides = {}
         if self.metadata is None:
             self.metadata = {}
+        if self.evidence is None:
+            self.evidence = {}
         if self.status not in ("ACCEPT", "REFUSE", "ADAPT"):
             raise ValueError(f"Invalid status: {self.status}")
 
@@ -516,8 +604,25 @@ class PlacementDecision:
             "refusal_reason": self.refusal_reason,
             "safety_overrides": dict(self.safety_overrides),
             "metadata": dict(self.metadata),
+            "evidence": dict(self.evidence),
+            "target_modules_hint": list(self.target_modules_hint or []),
             "target_modules_hint_count": len(self.target_modules_hint or []),
         }
+
+    @classmethod
+    def from_dict(cls, payload: Dict[str, Any]) -> "PlacementDecision":
+        """Restore a planner decision from a DDP-safe plain dictionary."""
+        return cls(
+            status=payload.get("status", "ACCEPT"),
+            recommended_variant=payload.get("recommended_variant"),
+            recommended_rank=payload.get("recommended_rank"),
+            predicted_delta=payload.get("predicted_delta"),
+            target_modules_hint=list(payload.get("target_modules_hint") or []),
+            refusal_reason=payload.get("refusal_reason"),
+            safety_overrides=dict(payload.get("safety_overrides") or {}),
+            metadata=dict(payload.get("metadata") or {}),
+            evidence=dict(payload.get("evidence") or {}),
+        )
 
 
 @dataclass
@@ -539,6 +644,7 @@ class DecisionAudit:
     refusal_reason: Optional[str] = None
     safety_overrides: Dict[str, Any] = field(default_factory=dict)
     metadata: Dict[str, Any] = field(default_factory=dict)
+    evidence: Dict[str, Any] = field(default_factory=dict)
     target_modules_count: int = 0
 
     def to_dict(self) -> Dict[str, Any]:
@@ -556,6 +662,7 @@ class DecisionAudit:
             "refusal_reason": self.refusal_reason,
             "safety_overrides": self.safety_overrides,
             "metadata": self.metadata,
+            "evidence": self.evidence,
             "target_modules_count": self.target_modules_count,
         }
 
@@ -628,6 +735,8 @@ class LOVODataPoint:
         model_name: Optional model name for metadata.
         dataset: Optional dataset name.
         epochs: Training epochs.
+        rank: Effective adapter rank used by the training run. Rankless
+            variants use 1 so the regression's log-rank feature stays neutral.
         timestamp: ISO-8601 timestamp.
         notes: Free-form notes.
     """
@@ -638,6 +747,7 @@ class LOVODataPoint:
     model_name: str = ""
     dataset: str = ""
     epochs: int = 0
+    rank: int = 8
     timestamp: str = field(default_factory=lambda: datetime.now().isoformat())
     notes: str = ""
 
@@ -658,12 +768,15 @@ class LOVODataPoint:
                 "phi_head": self.fingerprint.phi_head,
                 "phi_residual": self.fingerprint.phi_residual,
                 "phi_norm": self.fingerprint.phi_norm,
+                "phi_moe": self.fingerprint.phi_moe,
+                "phi_conv": self.fingerprint.phi_conv,
             },
             "variant": self.variant,
             "delta_mAP": self.delta_mAP,
             "model_name": self.model_name,
             "dataset": self.dataset,
             "epochs": self.epochs,
+            "rank": self.rank,
             "timestamp": self.timestamp,
             "notes": self.notes,
         }
@@ -684,12 +797,15 @@ class LOVODataPoint:
                 phi_head=fp.get("phi_head", 0.0),
                 phi_residual=fp.get("phi_residual", 0.0),
                 phi_norm=fp.get("phi_norm", 0.0),
+                phi_moe=fp.get("phi_moe", 0.0),
+                phi_conv=fp.get("phi_conv", 0.0),
             ),
             variant=data["variant"],
             delta_mAP=data["delta_mAP"],
             model_name=data.get("model_name", ""),
             dataset=data.get("dataset", ""),
             epochs=data.get("epochs", 0),
+            rank=max(int(data.get("rank", 8) or 8), 1),
             timestamp=data.get("timestamp", ""),
             notes=data.get("notes", ""),
         )
@@ -732,6 +848,10 @@ class LOVODataCollector:
     def to_history(self) -> List[Tuple[ArchitectureFingerprint, str, float]]:
         """Convert to the ``history`` format used by :meth:`PEFTPlanner.fit`."""
         return [p.to_tuple() for p in self.data_points]
+
+    def to_ranks(self) -> List[int]:
+        """Return ranks aligned with :meth:`to_history` for rank-aware fitting."""
+        return [max(int(p.rank), 1) for p in self.data_points]
 
     def save(self, path: Union[str, Path]) -> None:
         """Serialize to JSON.
@@ -888,7 +1008,10 @@ class LOVOValidator:
                 round(p.fingerprint.phi_head, 6),
                 round(p.fingerprint.phi_residual, 6),
                 round(p.fingerprint.phi_norm, 6),
+                round(p.fingerprint.phi_moe, 6),
+                round(p.fingerprint.phi_conv, 6),
                 p.variant.lower(),
+                max(int(p.rank), 1),
                 round(p.delta_mAP, 6),
             )
             if key not in seen:
@@ -904,11 +1027,11 @@ class LOVOValidator:
         for left_out in unique_points:
             train_data = [p for p in unique_points if p is not left_out]
             train_history = [p.to_tuple() for p in train_data]
+            train_ranks = [max(int(p.rank), 1) for p in train_data]
 
             planner = PEFTPlanner()
-            planner.fit(train_history)
-            # Use default rank=8 for LOVO prediction (rank is not part of LOVO data)
-            predicted = planner.predict(left_out.fingerprint, left_out.variant, 8)
+            planner.fit(train_history, ranks=train_ranks)
+            predicted = planner.predict(left_out.fingerprint, left_out.variant, max(int(left_out.rank), 1))
             predictions.append((left_out.delta_mAP, predicted, left_out.variant))
 
         # Compute metrics
@@ -939,7 +1062,7 @@ class LOVOValidator:
         # Final fit on all unique points
         full_planner = PEFTPlanner()
         full_history = [p.to_tuple() for p in unique_points]
-        full_planner.fit(full_history)
+        full_planner.fit(full_history, ranks=[max(int(p.rank), 1) for p in unique_points])
 
         return LOVOValidationResult(
             lovo_predictions=predictions,
@@ -955,6 +1078,167 @@ class LOVOValidator:
     def validate(self, collector: LOVODataCollector) -> LOVOValidationResult:
         """Convenience wrapper that validates a collector."""
         return self.cross_validate(collector.data_points)
+
+    def cross_validate_paper(
+        self, data_points: List[LOVODataPoint]
+    ) -> Dict[str, Any]:
+        """Run LOVO using the strict five-feature paper regression.
+
+        This is intentionally separate from :meth:`cross_validate`, which
+        evaluates the implementation's scale/rank-aware 12D extension.
+        """
+        if len(data_points) < 5:
+            raise ValueError(f"Paper LOVO requires at least 5 data points, got {len(data_points)}")
+        predictions = []
+        for index, left_out in enumerate(data_points):
+            train = data_points[:index] + data_points[index + 1:]
+            planner = PEFTPlanner()
+            planner.fit([point.to_tuple() for point in train])
+            predicted = planner.predict_paper(left_out.fingerprint, left_out.variant)
+            predictions.append((left_out.delta_mAP, predicted, left_out.variant))
+        try:
+            import numpy as np
+            actual = np.asarray([item[0] for item in predictions], dtype=np.float64)
+            predicted = np.asarray([item[1] for item in predictions], dtype=np.float64)
+            residual = actual - predicted
+            mse = float(np.mean(residual ** 2))
+            mae = float(np.mean(np.abs(residual)))
+            total = float(np.sum((actual - np.mean(actual)) ** 2))
+            r2 = 1.0 - float(np.sum(residual ** 2)) / total if total > 1e-12 else 0.0
+        except ImportError:
+            mse = mae = r2 = 0.0
+        final_planner = PEFTPlanner()
+        final_planner.fit([point.to_tuple() for point in data_points])
+        return {
+            "predictions": predictions,
+            "mse": mse,
+            "rmse": mse ** 0.5,
+            "mae": mae,
+            "r2": r2,
+            "coefficients": list(final_planner._paper_coeffs),
+            "feature_order": ["intercept", "phi_attn", "phi_text", "phi_dw", "variant_xi"],
+        }
+
+    @staticmethod
+    def _grouped_predictions(
+        data_points: List[LOVODataPoint],
+        groups: Dict[str, List[LOVODataPoint]],
+        *,
+        paper: bool,
+    ) -> Dict[str, Any]:
+        """Evaluate group-held-out folds without fitting on the held-out group.
+
+        This helper is deliberately separate from point-wise LOVO: a complete
+        PEFT variant or architecture is removed from the training matrix for
+        every fold, so its variant/architecture effect cannot leak through a
+        fitted coefficient.
+        """
+        if len(data_points) < 5:
+            raise ValueError("Grouped LOVO requires at least 5 data points")
+        folds = []
+        for group_name in sorted(groups):
+            held_out = groups[group_name]
+            held_out_ids = {id(point) for point in held_out}
+            train = [point for point in data_points if id(point) not in held_out_ids]
+            if len(train) < 5:
+                raise ValueError(
+                    f"Grouped LOVO fold {group_name!r} has only {len(train)} training points"
+                )
+            planner = PEFTPlanner()
+            planner.fit(
+                [point.to_tuple() for point in train],
+                ranks=[max(int(point.rank), 1) for point in train],
+            )
+            predictions = []
+            for point in held_out:
+                predicted = (
+                    planner.predict_paper(point.fingerprint, point.variant)
+                    if paper
+                    else planner.predict(point.fingerprint, point.variant, max(int(point.rank), 1))
+                )
+                predictions.append(
+                    {
+                        "experiment": point.notes,
+                        "model": point.model_name,
+                        "variant": point.variant,
+                        "actual": point.delta_mAP,
+                        "predicted": predicted,
+                    }
+                )
+            folds.append(
+                {
+                    "held_out": group_name,
+                    "n_train": len(train),
+                    "n_test": len(held_out),
+                    "train_variants": sorted({point.variant.lower() for point in train}),
+                    "train_architectures": sorted({point.model_name for point in train if point.model_name}),
+                    "predictions": predictions,
+                }
+            )
+        flat = [prediction for fold in folds for prediction in fold["predictions"]]
+        try:
+            import numpy as np
+
+            actual = np.asarray([item["actual"] for item in flat], dtype=np.float64)
+            predicted = np.asarray([item["predicted"] for item in flat], dtype=np.float64)
+            residual = actual - predicted
+            mse = float(np.mean(residual ** 2)) if len(flat) else 0.0
+            total = float(np.sum((actual - np.mean(actual)) ** 2)) if len(flat) else 0.0
+            r2 = 1.0 - float(np.sum(residual ** 2)) / total if total > 1e-12 else 0.0
+        except ImportError:
+            mse = r2 = 0.0
+        return {
+            "folds": folds,
+            "predictions": flat,
+            "mse": mse,
+            "rmse": mse ** 0.5,
+            "r2": r2,
+            "n_samples": len(flat),
+            "n_groups": len(groups),
+            "paper_regression": paper,
+        }
+
+    def cross_validate_variant(
+        self, data_points: List[LOVODataPoint], *, paper: bool = True
+    ) -> Dict[str, Any]:
+        """Run genuine leave-one-variant-out validation.
+
+        Each fold excludes every observation of one variant before fitting;
+        this is stronger than point-wise LOVO and prevents a held-out variant's
+        fitted xi coefficient from entering its own prediction.
+        """
+        groups: Dict[str, List[LOVODataPoint]] = {}
+        for point in data_points:
+            groups.setdefault(point.variant.lower(), []).append(point)
+        if len(groups) < 3:
+            raise ValueError("Variant LOVO requires at least 3 PEFT variants")
+        result = self._grouped_predictions(data_points, groups, paper=paper)
+        result["held_out_variants"] = sorted(groups)
+        return result
+
+    def cross_validate_architecture(
+        self,
+        data_points: List[LOVODataPoint],
+        *,
+        holdout_models: Optional[List[str]] = None,
+        paper: bool = True,
+    ) -> Dict[str, Any]:
+        """Run architecture-held-out validation for complete model variants."""
+        groups: Dict[str, List[LOVODataPoint]] = {}
+        for point in data_points:
+            if point.model_name:
+                groups.setdefault(point.model_name, []).append(point)
+        if holdout_models is not None:
+            requested = set(holdout_models)
+            groups = {name: points for name, points in groups.items() if name in requested}
+        if not groups:
+            raise ValueError("Architecture LOAO requires named model architectures")
+        result = self._grouped_predictions(data_points, groups, paper=paper)
+        result["held_out_architectures"] = sorted(groups)
+        result["held_out_families"] = sorted(
+            {point.model_name for points in groups.values() for point in points if point.model_name}
+        )
+        return result
 
     def evaluate_catastrophe_detection(
         self, collector: LOVODataCollector
@@ -1035,6 +1319,7 @@ class LOVOValidator:
 
         return {
             "lovo": result.to_dict(),
+            "paper_regression": self.cross_validate_paper(collector.data_points),
             "catastrophe_detection": cat_metrics,
             "decision_boundary": decision_metrics,
             "summary": {
@@ -1094,6 +1379,9 @@ class PEFTPlanner:
         0.0,      # beta10 – log(r) rank effect
         0.0,      # beta11 – phi_attn² (non-linear catastrophe term)
     )
+    # Strict Eq. 6 contract. The extended model remains available through
+    # ``predict`` for engineering calibration, while paper claims use this.
+    PAPER_COEFFS: Tuple[float, ...] = (0.0656, 0.0026, 0.0, 0.0054, 1.0)
     # Refuse threshold calibrated as a safety net for regression-predicted
     # catastrophic degradation.  The paper's catastrophic cases (RT-DETR
     # φ_attn≈0.85 and YOLO12s LoRA+DoRA no-rs Δ=-0.0550) are primarily
@@ -1101,6 +1389,7 @@ class PEFTPlanner:
     # cases where the regression itself predicts strongly negative ΔmAP.
     # Paper Table 2 LOVO metrics: accuracy 86.7%, recall 0.944, F1=0.850.
     REFUSE_THRESHOLD: float = -0.05
+    DEFAULT_ADAPTER_BUDGET: int = 2_100_000
 
     def __init__(
         self,
@@ -1134,6 +1423,7 @@ class PEFTPlanner:
         self.lovo_validator = lovo_validator
         self.lovo_persist_path = lovo_persist_path
         self._coeffs = list(self.DEFAULT_COEFFS)
+        self._paper_coeffs = list(self.PAPER_COEFFS)
         self._history: List[
             Tuple[ArchitectureFingerprint, str, float]
         ] = []
@@ -1141,6 +1431,14 @@ class PEFTPlanner:
         self._fit_n_samples = 0
         self._fit_effective_rank = 0
         self._fit_n_features = len(self.DEFAULT_COEFFS)
+        self._fit_regularization = 0.0
+        self._fit_condition_number = 0.0
+        self._fit_noise_variance = 0.0
+        self._fit_effective_dof = 0.0
+        self._fit_feature_mean = None
+        self._fit_feature_scale = None
+        self._fit_posterior_covariance = None
+        self._fit_ranks: List[int] = []
         self._needs_refit = False  # Flag: re-fit on next plan() after new data
 
     def _maybe_fit_from_lovo(self) -> None:
@@ -1149,7 +1447,7 @@ class PEFTPlanner:
             return
         if self._history and not self._needs_refit:
             return  # Already fitted and no new data since last fit
-        self.fit(self.lovo_collector.to_history())
+        self.fit(self.lovo_collector.to_history(), ranks=self.lovo_collector.to_ranks())
         self._needs_refit = False
         if self.lovo_validator is not None:
             try:
@@ -1204,6 +1502,7 @@ class PEFTPlanner:
             model_name=model_name,
             dataset=dataset,
             epochs=epochs,
+            rank=max(int(rank), 1),
             notes=notes or f"rank={rank}",
         ))
         self._needs_refit = True
@@ -1225,10 +1524,9 @@ class PEFTPlanner:
     ) -> None:
         """Fit regression coefficients from calibration history.
 
-        Solves the least-squares problem for Eq. 1 using ridge regression
-        (L2 regularisation) to handle rank-deficient design matrices gracefully.
-        Falls back to default coefficients if the system is under-determined
-        or singular.
+        Solves a prior-centered Bayesian ridge problem for Eq. 1. Non-intercept
+        features are standardized, zero-variance columns stay at their default
+        coefficients, and generalized cross-validation selects the regularizer.
 
         The regression model uses 12 features:
             [1, phi_attn, phi_text, phi_dw, xi,
@@ -1240,10 +1538,10 @@ class PEFTPlanner:
         A quadratic allows the regression to model this sharp transition without
         requiring hard guardrails for the regression path.
 
-        Ridge regression (L2 penalty λ=0.01) addresses the rank-deficiency
-        problem (12 features, ~10-12 samples, matrix rank 6/12).  The small
-        λ stabilises the solution without significantly biasing identifiable
-        coefficients.
+        The prior mean is :attr:`DEFAULT_COEFFS`, so an under-determined fit
+        updates only directions supported by calibration evidence instead of
+        shrinking unsupported coefficients to zero. The fitted posterior
+        covariance is retained for analytic prediction uncertainty.
 
         When ``ranks`` is not provided (backward-compatible path), log(r)
         defaults to log(8) ≈ 3.0, which is a neutral mid-range value.
@@ -1253,12 +1551,22 @@ class PEFTPlanner:
             ranks: Optional list of LoRA ranks corresponding to each history
                 entry. If None, a default rank of 8 is assumed for all entries.
         """
-        import math
-
-        self._history = history
+        self._history = list(history)
+        # The paper regression is always fit independently from the extended
+        # engineering model so its coefficients and LOVO metrics stay auditable.
+        self._fit_paper_coeffs(history)
         self._fit_n_samples = len(history)
         self._fit_effective_rank = 0
+        self._fit_regularization = 0.0
+        self._fit_condition_number = 0.0
+        self._fit_noise_variance = 0.0
+        self._fit_effective_dof = 0.0
+        self._fit_feature_mean = None
+        self._fit_feature_scale = None
+        self._fit_posterior_covariance = None
+        self._fit_ranks = [max(int(ranks[i]), 1) if ranks is not None and i < len(ranks) else 8 for i in range(len(history))]
         if len(history) < 5:
+            self._coeffs = list(self.DEFAULT_COEFFS)
             LOGGER.warning(
                 "[Planner] Insufficient calibration data (%d samples). "
                 "Using default coefficients.",
@@ -1277,74 +1585,161 @@ class PEFTPlanner:
         X = []
         y = []
         for i, (fingerprint, variant, delta_map) in enumerate(history):
-            profile = PEFTVariantProfile.from_variant(variant)
-            xi = profile.xi
-            # Determine rank for this data point
-            if ranks is not None and i < len(ranks):
-                r = max(ranks[i], 1)
-            else:
-                r = 8  # default rank assumption
-            log_r = math.log2(r)
-            phi_attn_sq = fingerprint.phi_attn ** 2
-
-            X.append(
-                [
-                    1.0,
-                    fingerprint.phi_attn,
-                    fingerprint.phi_text,
-                    fingerprint.phi_dw,
-                    xi,
-                    fingerprint.phi_depth,
-                    fingerprint.phi_width,
-                    fingerprint.phi_head,
-                    fingerprint.phi_residual,
-                    fingerprint.phi_norm,
-                    log_r,
-                    phi_attn_sq,
-                ]
-            )
+            X.append(self._feature_vector(fingerprint, variant, self._fit_ranks[i]))
             y.append(delta_map)
 
         X_arr = np.array(X, dtype=np.float64)
         y_arr = np.array(y, dtype=np.float64)
 
-        # Ridge regression: (X^T X + λI)⁻¹ X^T y
-        # λ=1e-6 provides minimal regularisation that resolves the singularity
-        # without significantly biasing identifiable coefficients.
-        # The previous λ=0.01 was too aggressive — it shrunk the xi coefficient
-        # (which ranges from -0.02 to 0.0152) by 87%, breaking prediction accuracy.
-        # λ=1e-6 is sufficient because the singularity comes from zero-variance
-        # columns (extended dims are all-zero when test data only has 5-dim
-        # fingerprints), not from multicollinearity among identifiable features.
         n_features = X_arr.shape[1]
-        ridge_lambda = 1e-6
-        XtX = X_arr.T @ X_arr
-        XtX_reg = XtX + ridge_lambda * np.eye(n_features)
-        Xty = X_arr.T @ y_arr
-        try:
-            beta = np.linalg.solve(XtX_reg, Xty)
-        except np.linalg.LinAlgError:
-            # Fallback to lstsq if ridge matrix is still singular
-            beta, residuals, rank, s = np.linalg.lstsq(X_arr, y_arr, rcond=None)
+        feature_mean = X_arr[:, 1:].mean(axis=0)
+        raw_scale = X_arr[:, 1:].std(axis=0)
+        feature_scale = np.where(raw_scale > 1e-10, raw_scale, 1.0)
+        Z = np.ones_like(X_arr)
+        Z[:, 1:] = (X_arr[:, 1:] - feature_mean) / feature_scale
+
+        prior_beta = np.asarray(self.DEFAULT_COEFFS, dtype=np.float64)
+        if prior_beta.size < n_features:
+            prior_beta = np.pad(prior_beta, (0, n_features - prior_beta.size))
+        prior_beta = prior_beta[:n_features]
+        prior_theta = prior_beta.copy()
+        prior_theta[0] = prior_beta[0] + feature_mean @ prior_beta[1:]
+        prior_theta[1:] = prior_beta[1:] * feature_scale
+        centered_target = y_arr - Z @ prior_theta
+
+        active_columns = np.concatenate((np.array([True]), raw_scale > 1e-10))
+        active_design = Z[:, active_columns]
+        mat_rank = np.linalg.matrix_rank(active_design)
+        singular_values = np.linalg.svd(active_design, compute_uv=False)
+        if singular_values.size and singular_values[-1] > np.finfo(np.float64).eps:
+            condition_number = float(singular_values[0] / singular_values[-1])
+        else:
+            condition_number = 1e12
+        condition_number = min(condition_number, 1e12)
+
+        penalty = np.ones(n_features, dtype=np.float64)
+        penalty[0] = 1e-6
+        penalty_matrix = np.diag(penalty)
+        XtX = Z.T @ Z
+        spectral_scale = max(float(np.trace(XtX) / max(int(mat_rank), 1)), 1.0)
+        rank_deficit = max(n_features - int(mat_rank), 0) / max(n_features, 1)
+        candidates = spectral_scale * np.logspace(-6, 2, 25)
+        candidates = np.unique(np.concatenate((candidates, [spectral_scale * max(rank_deficit, 1e-6) * 1e-3])))
+
+        best = None
+        for candidate in candidates:
+            precision = XtX + float(candidate) * penalty_matrix
+            try:
+                precision_inv = np.linalg.inv(precision)
+            except np.linalg.LinAlgError:
+                precision_inv = np.linalg.pinv(precision)
+            delta = precision_inv @ (Z.T @ centered_target)
+            residual = centered_target - Z @ delta
+            effective_dof = float(np.trace(Z @ precision_inv @ Z.T))
+            denominator = max(len(history) - effective_dof, 1e-6)
+            gcv = float(len(history) * (residual @ residual) / (denominator * denominator))
+            if best is None or gcv < best[0]:
+                best = (gcv, float(candidate), precision_inv, delta, effective_dof)
+
+        _, ridge_lambda, precision_inv, delta, effective_dof = best
+        theta = prior_theta + delta
+        beta = theta.copy()
+        beta[1:] = theta[1:] / feature_scale
+        beta[0] = theta[0] - feature_mean @ beta[1:]
+        fitted = X_arr @ beta
+        residual = y_arr - fitted
+        residual_dof = max(len(history) - effective_dof, 1.0)
+        variance_floor = max(float(np.var(y_arr)) * 1e-4, 1e-10)
+        noise_variance = max(float(residual @ residual) / residual_dof, variance_floor)
 
         self._coeffs = beta.tolist()
-
-        # Pad coefficients list if old 11-dim data was loaded
-        if len(self._coeffs) < 12:
-            self._coeffs = list(self._coeffs) + [0.0] * (12 - len(self._coeffs))
-
-        # Compute matrix rank for diagnostic logging
-        mat_rank = np.linalg.matrix_rank(X_arr)
         self._fit_effective_rank = int(mat_rank)
         self._fit_n_features = int(n_features)
+        self._fit_regularization = float(ridge_lambda)
+        self._fit_condition_number = condition_number
+        self._fit_noise_variance = noise_variance
+        self._fit_effective_dof = effective_dof
+        self._fit_feature_mean = feature_mean
+        self._fit_feature_scale = feature_scale
+        self._fit_posterior_covariance = noise_variance * precision_inv
         LOGGER.info(
-            "[Planner] Fitted regression coefficients (12-dim, ridge λ=%.3f): %s",
+            "[Planner] Fitted prior-centered Bayesian ridge coefficients (12-dim, λ=%.6g): %s",
             ridge_lambda, self._coeffs,
         )
         LOGGER.info(
-            "[Planner] Fit matrix rank: %d / %d (features), %d samples.",
-            mat_rank, n_features, len(history),
+            "[Planner] Fit rank=%d/%d, effective_dof=%.2f, condition=%.3g, samples=%d.",
+            mat_rank, n_features, effective_dof, condition_number, len(history),
         )
+
+    def _fit_paper_coeffs(
+        self, history: List[Tuple[ArchitectureFingerprint, str, float]]
+    ) -> None:
+        """Fit the strict five-feature Eq. 6 model with a stable least square."""
+        if len(history) < 5:
+            self._paper_coeffs = list(self.PAPER_COEFFS)
+            return
+        try:
+            import numpy as np
+            X = np.asarray(
+                [self._paper_feature_vector(fp, variant) for fp, variant, _ in history],
+                dtype=np.float64,
+            )
+            y = np.asarray([delta for _, _, delta in history], dtype=np.float64)
+            prior = np.asarray(self.PAPER_COEFFS, dtype=np.float64)
+            ridge = 1e-4
+            self._paper_coeffs = np.linalg.solve(
+                X.T @ X + ridge * np.eye(X.shape[1]), X.T @ y + ridge * prior
+            ).tolist()
+        except ImportError:
+            self._paper_coeffs = list(self.PAPER_COEFFS)
+        except np.linalg.LinAlgError:
+            self._paper_coeffs = list(self.PAPER_COEFFS)
+    @staticmethod
+    def _feature_vector(
+        fingerprint: ArchitectureFingerprint,
+        variant: str,
+        rank: int,
+    ) -> List[float]:
+        """Build the canonical 12-dimensional Planner regression vector."""
+
+        import math
+
+        xi = PEFTVariantProfile.from_variant(variant).xi
+        return [
+            1.0,
+            fingerprint.phi_attn,
+            fingerprint.phi_text,
+            fingerprint.phi_dw,
+            xi,
+            fingerprint.phi_depth,
+            fingerprint.phi_width,
+            fingerprint.phi_head,
+            fingerprint.phi_residual,
+            fingerprint.phi_norm,
+            math.log2(max(rank, 1)),
+            fingerprint.phi_attn**2,
+        ]
+
+    @staticmethod
+    def _paper_feature_vector(
+        fingerprint: ArchitectureFingerprint, variant: str
+    ) -> List[float]:
+        """Return the paper Eq. 6 feature vector ``[1, attn, text, dw, xi]``."""
+        return [
+            1.0,
+            fingerprint.phi_attn,
+            fingerprint.phi_text,
+            fingerprint.phi_dw,
+            PEFTVariantProfile.from_variant(variant).xi,
+        ]
+
+    def predict_paper(
+        self, fingerprint: ArchitectureFingerprint, variant: str
+    ) -> float:
+        """Predict with the strict five-feature paper regression contract."""
+        coeffs = list(self._paper_coeffs)
+        features = self._paper_feature_vector(fingerprint, variant)
+        return float(sum(c * x for c, x in zip(coeffs, features)))
 
     def predict(
         self,
@@ -1372,35 +1767,15 @@ class PEFTPlanner:
         Returns:
             float: Predicted ΔmAP.
         """
-        import math
-
-        profile = PEFTVariantProfile.from_variant(variant)
-        xi = profile.xi
         coeffs = self._coeffs
-        log_r = math.log2(max(rank, 1))
-        phi_attn_sq = fingerprint.phi_attn ** 2
 
         # Graceful fallback: if coefficients are still <12-dim (old data),
         # pad with zeros for the new features.
         if len(coeffs) < 12:
             coeffs = list(coeffs) + [0.0] * (12 - len(coeffs))
 
-        b0, b1, b2, b3, b4, b5, b6, b7, b8, b9, b10, b11 = coeffs
-        delta = (
-            b0
-            + b1 * fingerprint.phi_attn
-            + b2 * fingerprint.phi_text
-            + b3 * fingerprint.phi_dw
-            + b4 * xi
-            + b5 * fingerprint.phi_depth
-            + b6 * fingerprint.phi_width
-            + b7 * fingerprint.phi_head
-            + b8 * fingerprint.phi_residual
-            + b9 * fingerprint.phi_norm
-            + b10 * log_r
-            + b11 * phi_attn_sq
-        )
-        return float(delta)
+        features = self._feature_vector(fingerprint, variant, rank)
+        return float(sum(coefficient * feature for coefficient, feature in zip(coeffs, features)))
 
     def predict_with_uncertainty(
         self,
@@ -1408,11 +1783,12 @@ class PEFTPlanner:
         variant: str,
         rank: int = 8,
     ) -> Tuple[float, float]:
-        """Predict ΔmAP with bootstrap uncertainty estimate.
+        """Predict ΔmAP with posterior or bootstrap uncertainty.
 
-        Uses the stored calibration history to compute a bootstrap confidence
-        interval.  When no history is available, returns a heuristic uncertainty
-        based on the fingerprint's distance from the calibration centroid.
+        A fitted Bayesian ridge model uses analytic posterior predictive
+        variance. Bootstrap remains as a compatibility fallback for older
+        planner state without posterior diagnostics. When no history exists,
+        a conservative fingerprint-distance heuristic is used.
 
         Args:
             fingerprint: The architecture fingerprint.
@@ -1435,6 +1811,18 @@ class PEFTPlanner:
         except ImportError:
             return point_pred, 0.02
 
+        if (
+            self._fit_posterior_covariance is not None
+            and self._fit_feature_mean is not None
+            and self._fit_feature_scale is not None
+        ):
+            features = np.asarray(self._feature_vector(fingerprint, variant, rank), dtype=np.float64)
+            standardized = np.ones_like(features)
+            standardized[1:] = (features[1:] - self._fit_feature_mean) / self._fit_feature_scale
+            parameter_variance = float(standardized @ self._fit_posterior_covariance @ standardized)
+            predictive_variance = max(self._fit_noise_variance + parameter_variance, 0.0)
+            return point_pred, float(np.sqrt(predictive_variance))
+
         # Bootstrap: resample history with replacement, refit, predict.
         n_boot = min(50, len(self._history))
         n_history = len(self._history)
@@ -1453,16 +1841,108 @@ class PEFTPlanner:
     def _calibration_metadata(self) -> Dict[str, Any]:
         """Return decision evidence describing the active regression calibration."""
         fitted = len(self._history) >= 5
-        n_samples = self._fit_n_samples if fitted else 0
+        collector_observations = len(self.lovo_collector) if self.lovo_collector is not None else 0
+        n_samples = max(self._fit_n_samples, len(self._history), collector_observations)
+        rank_deficient = bool(fitted and self._fit_effective_rank < self._fit_n_features)
+        confidence_reasons = []
+        if not fitted:
+            confidence_reasons.append("no_observations" if n_samples == 0 else "insufficient_observations")
+            confidence_reasons.append("default_coefficients")
+        else:
+            if n_samples < 30:
+                confidence_reasons.append("limited_sample_size")
+            if rank_deficient:
+                confidence_reasons.append("rank_deficient_fit")
+        confidence = "low" if confidence_reasons else "high"
+        evidence_state = "cold_start" if not fitted else ("limited_evidence" if confidence_reasons else "calibrated")
         return {
             "calibration_fitted": fitted,
             "calibration_n_samples": n_samples,
             "calibration_effective_rank": self._fit_effective_rank if fitted else 0,
             "calibration_n_features": self._fit_n_features,
-            "low_confidence": bool(fitted and n_samples < 30),
+            "calibration_regularization": self._fit_regularization if fitted else 0.0,
+            "calibration_condition_number": self._fit_condition_number if fitted else 0.0,
+            "calibration_noise_variance": self._fit_noise_variance if fitted else 0.0,
+            "calibration_effective_dof": self._fit_effective_dof if fitted else 0.0,
+            "calibration_rank_deficient": rank_deficient,
+            "calibration_posterior_available": bool(fitted and self._fit_posterior_covariance is not None),
+            "evidence_state": evidence_state,
+            "evidence_source": "learned_regression" if fitted else "default_prior",
+            "evidence_observation_count": n_samples,
+            "evidence_minimum_fit_observations": 5,
+            "evidence_confidence": confidence,
+            "evidence_confidence_reasons": confidence_reasons,
+            "uses_learned_evidence": fitted,
+            "low_confidence": confidence == "low",
+            "paper_regression_features": [
+                "intercept", "phi_attn", "phi_text", "phi_dw", "variant_xi"
+            ],
+            "paper_coefficients": list(self._paper_coeffs),
+            "implementation_regression_features": [
+                "intercept", "phi_attn", "phi_text", "phi_dw", "variant_xi",
+                "phi_depth", "phi_width", "phi_head", "phi_residual", "phi_norm",
+                "log2_rank", "phi_attn_squared",
+            ],
+        }
+
+    @staticmethod
+    def _attach_decision_evidence(
+        decision: PlacementDecision,
+        *,
+        decision_basis: str,
+        guardrails: Optional[List[str]] = None,
+    ) -> None:
+        """Attach the stable evidence contract used by callers and audit records."""
+        metadata = decision.metadata
+        decision.evidence = {
+            "state": metadata.get("evidence_state", "not_evaluated"),
+            "source": metadata.get("evidence_source", "runtime_fallback"),
+            "observation_count": int(metadata.get("evidence_observation_count", 0)),
+            "minimum_fit_observations": int(metadata.get("evidence_minimum_fit_observations", 5)),
+            "confidence": metadata.get("evidence_confidence", "unknown"),
+            "confidence_reasons": list(metadata.get("evidence_confidence_reasons") or []),
+            "uses_learned_evidence": bool(metadata.get("uses_learned_evidence", False)),
+            "decision_basis": decision_basis,
+            "guardrails": list(guardrails or []),
         }
 
     def plan(self, model: nn.Module, config: Any) -> PlacementDecision:
+        """Compute the planner decision on rank 0 and broadcast it to every DDP rank."""
+        if not (torch.distributed.is_available() and torch.distributed.is_initialized()):
+            return self._plan_local(model, config)
+        rank = torch.distributed.get_rank()
+        envelope = None
+        if rank == 0:
+            try:
+                envelope = {"decision": self._plan_local(model, config).to_dict(), "error": None}
+            except Exception as exc:
+                envelope = {"decision": None, "error": f"{type(exc).__name__}: {exc}"}
+        container = [envelope]
+        torch.distributed.broadcast_object_list(container, src=0)
+        envelope = container[0]
+        if not isinstance(envelope, dict) or envelope.get("error") or not envelope.get("decision"):
+            error = envelope.get("error") if isinstance(envelope, dict) else "invalid DDP planner envelope"
+            reason = f"Rank-0 PEFT Planner failed: {error}. Falling back to Full-SFT."
+            LOGGER.warning(f"[Planner] {reason}")
+            decision = PlacementDecision(
+                status="REFUSE",
+                refusal_reason=reason,
+                safety_overrides={"planner_refused": True, "planner_ddp_fallback": True},
+                metadata={
+                    "ddp_rank0_error": error,
+                    "evidence_state": "not_evaluated",
+                    "evidence_source": "runtime_fallback",
+                    "evidence_confidence": "unknown",
+                    "evidence_confidence_reasons": ["rank0_planner_failure"],
+                },
+            )
+            self._attach_decision_evidence(
+                decision, decision_basis="runtime_fallback", guardrails=["ddp_rank0_failure"]
+            )
+            return decision
+        return PlacementDecision.from_dict(envelope["decision"])
+
+    def _plan_local(self, model: nn.Module, config: Any) -> PlacementDecision:
         """Generate a placement decision for the given model and config.
 
         Architecture-conditioned decision flow (regression-dominant):
@@ -1491,12 +1971,24 @@ class PEFTPlanner:
             LOGGER.warning(
                 "[Planner] Config is not LoRAConfig, skipping planner."
             )
-            return PlacementDecision(status="ACCEPT", target_modules_hint=[])
+            decision = PlacementDecision(
+                status="ACCEPT",
+                target_modules_hint=[],
+                metadata={
+                    "evidence_state": "not_evaluated",
+                    "evidence_source": "input_bypass",
+                    "evidence_confidence": "unknown",
+                    "evidence_confidence_reasons": ["unsupported_config_type"],
+                },
+            )
+            self._attach_decision_evidence(decision, decision_basis="input_bypass")
+            return decision
 
         inner_model = getattr(model, "model", model)
         fingerprint = ArchitectureFingerprint.compute(inner_model)
         variant = _effective_peft_variant(config)
         rank = getattr(config, "r", 0)
+        paper_delta = self.predict_paper(fingerprint, variant)
         # Compute architecture-conditioned targets once for all decision paths.
         targets_hint = self.detect_targets(model, config)
 
@@ -1521,6 +2013,7 @@ class PEFTPlanner:
         # requires the model to be calibrated on catastrophic data when possible).
         self._maybe_fit_from_lovo()
         calibration_metadata = self._calibration_metadata()
+        calibration_metadata["paper_predicted_delta"] = paper_delta
 
         # === Phase 1: Regression-dominant evaluation of ALL variants ===
         ALL_VARIANTS = [
@@ -1645,6 +2138,53 @@ class PEFTPlanner:
             self._save_audit(fingerprint, variant, rank, decision, targets_hint)
             return decision
 
+        # Resolve an incompatible request before the budget stage so the
+        # selected text-capable variant is what gets costed and constrained.
+        if not requested_compatible and recommended_variant is None:
+            recommended_variant = best_variant
+            safety_overrides["variant_adapted"] = True
+
+        # Optional paper placement stage. It must run before any regression
+        # early-return so incompatible requests cannot bypass budget checks.
+        budget = getattr(config, "adapter_budget", None)
+        budget_defaulted = budget is None and bool(
+            getattr(config, "planner_enabled", False)
+            or getattr(config, "lora_planner_enabled", False)
+        )
+        if budget_defaulted:
+            budget = self.DEFAULT_ADAPTER_BUDGET
+        if budget is not None:
+            solver_variant = recommended_variant or variant
+            solver_rank = recommended_rank or (rank if rank > 0 else 16)
+            budget_result = self._solve_budgeted_targets(
+                inner_model,
+                target_modules=targets_hint,
+                variant=solver_variant,
+                rank=solver_rank,
+                budget=int(budget),
+                solver_name=str(getattr(config, "planner_solver", "ao")),
+            )
+            calibration_metadata.update(budget_result[1])
+            if budget_result[0] is None:
+                decision = PlacementDecision(
+                    status="REFUSE",
+                    refusal_reason=(
+                        f"No feasible placement under adapter budget {int(budget)} "
+                        f"for {solver_variant}."
+                    ),
+                    predicted_delta=requested_delta,
+                    target_modules_hint=[],
+                    safety_overrides={"planner_refused": True, "budget_infeasible": True},
+                    metadata=calibration_metadata,
+                )
+                self._save_audit(fingerprint, variant, rank, decision, targets_hint)
+                return decision
+            targets_hint, budget_metadata = budget_result
+            calibration_metadata.update(budget_metadata)
+            if budget_defaulted:
+                calibration_metadata["budget_defaulted"] = True
+            safety_overrides["adapter_budget"] = int(budget)
+
         # === Phase 3: Regression-dominant decision ===
 
         # Apply statistical gates only to a fitted calibration model. Default
@@ -1719,9 +2259,9 @@ class PEFTPlanner:
 
         # If a safety guardrail already triggered a variant change.
         if recommended_variant is not None:
-            new_delta = variant_scores.get(
-                recommended_variant, self.predict(fingerprint, recommended_variant, rank)
-            )
+            new_delta = variant_scores.get(recommended_variant)
+            if new_delta is None:
+                new_delta = self.predict(fingerprint, recommended_variant, rank)
             decision = PlacementDecision(
                 status="ADAPT",
                 recommended_variant=recommended_variant,
@@ -1857,7 +2397,7 @@ class PEFTPlanner:
                 safety_overrides=safety_overrides,
                 metadata=calibration_metadata,
             )
-        elif calibration_metadata["low_confidence"]:
+        elif calibration_metadata["calibration_fitted"] and calibration_metadata["low_confidence"]:
             decision = PlacementDecision(
                 status="ADAPT",
                 recommended_variant=variant,
@@ -1875,68 +2415,67 @@ class PEFTPlanner:
                 metadata=calibration_metadata,
             )
 
-        # DDP consistency: ensure all ranks reach the same decision.
-        # Under DistributedDataParallel, each rank computes the decision
-        # independently. Floating-point differences in module scanning or
-        # regression prediction can cause divergent decisions across ranks,
-        # leading to inconsistent adapter configurations. We broadcast the
-        # decision status and key overrides from rank 0 to all ranks.
-        if torch.distributed.is_available() and torch.distributed.is_initialized():
-            decision = self._sync_decision_ddp(decision)
-
         self._save_audit(fingerprint, variant, rank, decision, targets_hint)
         return decision
 
     @staticmethod
-    def _sync_decision_ddp(decision: "PlacementDecision") -> "PlacementDecision":
-        """Broadcast the decision from rank 0 to all DDP ranks.
+    def _solve_budgeted_targets(
+        model: nn.Module,
+        target_modules: List[str],
+        variant: str,
+        rank: int,
+        budget: int,
+        solver_name: str = "ao",
+    ) -> Tuple[Optional[List[str]], Dict[str, Any]]:
+        """Solve the paper placement/rank problem for planner candidates."""
+        from ultralytics.vpeft.constraints import ConstraintRegistry
+        from ultralytics.vpeft.graph import ComputationGraphBuilder
+        from ultralytics.vpeft.solver import (
+            AlternatingOptimizationSolver,
+            DifferentiableOptimizationSolver,
+            MIPRelaxationSolver,
+        )
 
-        Ensures every rank applies the same ACCEPT/ADAPT/REFUSE decision
-        and the same safety_overrides. Without this, rank-0 might ACCEPT
-        while rank-1 ADAPTs, causing gradient mismatch crashes in DDP.
-
-        Args:
-            decision: The locally-computed decision.
-
-        Returns:
-            The rank-0 decision on all ranks (if DDP is initialized).
-        """
-        import torch.distributed as dist
-        if not (dist.is_available() and dist.is_initialized()):
-            return decision
-
-        # Pack decision into a simple dict for broadcasting via dist.broadcast_object_list
-        rank = dist.get_rank()
-        payload = {
-            "status": decision.status,
-            "recommended_variant": decision.recommended_variant,
-            "recommended_rank": decision.recommended_rank,
-            "predicted_delta": decision.predicted_delta,
-            "refusal_reason": decision.refusal_reason,
-            "safety_overrides": decision.safety_overrides,
-            "metadata": decision.metadata,
-            "target_modules_hint_count": len(decision.target_modules_hint or []),
+        graph = ComputationGraphBuilder().build(model)
+        candidates = set(target_modules)
+        if not candidates:
+            return None, {"budget_solver": solver_name, "budget": int(budget)}
+        constraints = ConstraintRegistry.default(
+            {
+                "max_params": int(budget),
+                "candidate_targets": candidates,
+                "include_head": False,
+                "platform": "pytorch",
+            }
+        )
+        solver_name = solver_name.lower()
+        if solver_name == "dco":
+            solver = DifferentiableOptimizationSolver(rank_min=4, rank_max=64, rank_step=4, max_iter=40)
+        elif solver_name == "mip":
+            solver = MIPRelaxationSolver(rank_set=[4, 8, 12, 16, 32, 64], rank_max=64)
+        else:
+            solver = AlternatingOptimizationSolver(rank_min=4, rank_max=64, rank_step=4, max_iter=15)
+        try:
+            result = solver.solve(graph, int(budget), variant, constraints)
+        except ImportError:
+            # OR-Tools is optional; retain deterministic AO behavior when MIP is
+            # requested but its dependency is unavailable.
+            result = AlternatingOptimizationSolver(rank_min=4, rank_max=64, rank_step=4).solve(
+                graph, int(budget), variant, constraints
+            )
+            solver_name = "ao_fallback"
+        metadata = {
+            "budget_solver": solver_name,
+            "budget": int(budget),
+            "budget_used": int(result.budget_used),
+            "budget_remaining": int(result.budget_remaining),
+            "budget_utility": float(result.utility),
+            "budget_rank": int(rank),
+            "budget_status": result.status,
         }
-        container = [payload]
-        dist.broadcast_object_list(container, src=0)
-        synced = container[0]
-
-        if rank != 0:
-            LOGGER.info(
-                "[Planner] DDP sync: rank %d received decision '%s' from rank 0",
-                rank, synced["status"],
-            )
-            return PlacementDecision(
-                status=synced["status"],
-                recommended_variant=synced["recommended_variant"],
-                recommended_rank=synced["recommended_rank"],
-                predicted_delta=synced["predicted_delta"],
-                refusal_reason=synced["refusal_reason"],
-                safety_overrides=synced["safety_overrides"],
-                metadata=synced["metadata"],
-                target_modules_hint=decision.target_modules_hint,  # keep local targets
-            )
-        return decision
+        if result.status == "REFUSE" or not result.target_modules:
+            return None, metadata
+        return list(result.target_modules), metadata
 
     def _save_audit(
         self,
@@ -1947,6 +2486,43 @@ class PEFTPlanner:
         targets_hint: List[str],
     ) -> None:
         """Persist a decision audit record (best-effort, never raises)."""
+        guardrails = []
+        reason = decision.refusal_reason or ""
+        overrides = decision.safety_overrides
+        if "RT-DETR-like" in reason:
+            guardrails.append("rtdetr_lora_family")
+        if "No compatible PEFT variant" in reason:
+            guardrails.append("no_compatible_variant")
+        if "incompatible with this architecture" in reason or (
+            overrides.get("variant_adapted") and overrides.get("use_dora") is not False
+        ):
+            guardrails.append("variant_compatibility")
+        if overrides.get("use_dora") is False:
+            guardrails.append("dora_attention_downgrade")
+        if overrides.get("uncertainty_guard"):
+            guardrails.append("uncertainty_lower_bound")
+        if overrides.get("budget_infeasible"):
+            guardrails.append("adapter_budget")
+        if "r" in overrides:
+            guardrails.append("rank_cap")
+        if "include_attention" in overrides:
+            guardrails.append("attention_target_policy")
+        guardrails = list(dict.fromkeys(guardrails))
+
+        if overrides.get("planner_ddp_fallback"):
+            decision_basis = "runtime_fallback"
+        elif overrides.get("uncertainty_guard"):
+            decision_basis = "learned_prediction"
+        elif overrides.get("budget_infeasible"):
+            decision_basis = "constraint_guardrail"
+        elif guardrails:
+            decision_basis = "guardrail_fallback"
+        elif decision.metadata.get("uses_learned_evidence"):
+            decision_basis = "learned_prediction"
+        else:
+            decision_basis = "prior_prediction"
+        self._attach_decision_evidence(decision, decision_basis=decision_basis, guardrails=guardrails)
+
         try:
             audit = DecisionAudit(
                 timestamp=datetime.now().isoformat(),
@@ -1963,6 +2539,8 @@ class PEFTPlanner:
                     "phi_head": fingerprint.phi_head,
                     "phi_residual": fingerprint.phi_residual,
                     "phi_norm": fingerprint.phi_norm,
+                    "phi_moe": fingerprint.phi_moe,
+                    "phi_conv": fingerprint.phi_conv,
                 },
                 variant=variant,
                 requested_rank=requested_rank,
@@ -1973,6 +2551,7 @@ class PEFTPlanner:
                 refusal_reason=decision.refusal_reason,
                 safety_overrides=dict(decision.safety_overrides),
                 metadata=dict(decision.metadata),
+                evidence=dict(decision.evidence),
                 target_modules_count=len(targets_hint),
             )
             audit.save(self.audit_dir)
@@ -2046,6 +2625,10 @@ class PEFTPlanner:
         targets: List[str] = []
         include_text = fingerprint.phi_text > 0.05
 
+        from ultralytics.vpeft.graph import ComputationGraphBuilder
+
+        graph = ComputationGraphBuilder().build(inner_model)
+        annotations = {node.name: node.annotations or {} for node in graph.nodes}
         for name, module in inner_model.named_modules():
             if not name:
                 continue
@@ -2056,6 +2639,9 @@ class PEFTPlanner:
                 continue
 
             lname = name.lower()
+            structural = annotations.get(name, {})
+            if structural.get("dynamic_routing") and not bool(getattr(config, "include_moe", True)):
+                continue
 
             # YOLOv5 Focus layer: the Focus module uses a pixel-shuffle-like
             # operation followed by a Conv2d. The Focus conv has a 4× larger
@@ -2066,11 +2652,19 @@ class PEFTPlanner:
             # Text-fusion detection: use precise patterns (v2 improvement).
             # Bare "fusion" keyword removed to avoid false positives on
             # modules like feature_fusion or fusion_layer.
-            is_text_fusion = any(
+            is_text_fusion = bool(structural.get("text_fusion")) or any(
                 k in lname for k in (
                     "text_fusion", "text_proj", "clip", "lang", "world_embed",
                 )
-            )
+            ) or module.__class__.__name__ in {
+                "ContrastiveHead", "BNContrastiveHead", "TextProj", "WorldEmbed"
+            }
+
+            # Semantic text-fusion candidates remain eligible even when they
+            # live below a WorldDetect head; the paper explicitly protects the
+            # language branch by selecting a text-capable variant.
+            if structural.get("in_head") and not bool(getattr(config, "include_head", False)) and not is_text_fusion:
+                continue
 
             # Text-fusion modules are always included when detected.
             if is_text_fusion and include_text:
@@ -2117,7 +2711,8 @@ class PEFTPlanner:
             filtered = []
             for name in targets:
                 lname = name.lower()
-                if only_backbone and any(
+                structural = annotations.get(name, {})
+                if only_backbone and (structural.get("in_head") or any(
                     p in lname
                     for p in (
                         "head",
@@ -2130,10 +2725,11 @@ class PEFTPlanner:
                         "seg",
                         "pose",
                     )
-                ):
+                )):
                     continue
-                if not include_head and any(
-                    p in lname for p in ("head", "detect", "score_head", "bbox_head")
+                if not include_head and (
+                    (structural.get("in_head") and not structural.get("text_fusion"))
+                    or any(p in lname for p in ("head", "detect", "score_head", "bbox_head"))
                 ):
                     continue
                 if any(ex in name for ex in exclude_modules):

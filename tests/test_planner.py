@@ -4,10 +4,15 @@ Tests calibration of regression coefficients (Eq. 1) and hard policy rules
 against the paper's experimental data (Table 1, Fig. 4, Table 2).
 """
 
+from types import SimpleNamespace
+from unittest.mock import patch
+
 import pytest
-import torch
 import torch.nn as nn
 
+from ultralytics.engine.trainer import update_args_with_lora_runtime_metadata
+from ultralytics.nn.modules.moa import MoABlock
+from ultralytics.utils.lora.api import apply_lora
 from ultralytics.utils.lora.config import LoRAConfig
 from ultralytics.utils.lora.planner import (
     ArchitectureFingerprint,
@@ -50,6 +55,70 @@ class MockTextFusion(nn.Module):
 
     def forward(self, x):
         return x
+
+
+def test_placement_decision_round_trip_preserves_target_modules():
+    decision = PlacementDecision(
+        status="ADAPT",
+        recommended_variant="lora",
+        recommended_rank=8,
+        target_modules_hint=["stage1", "stage2"],
+        safety_overrides={"include_attention": False},
+    )
+
+    assert PlacementDecision.from_dict(decision.to_dict()) == decision
+
+
+def test_apply_lora_refusal_records_full_sft_runtime_metadata():
+    model = nn.Sequential(nn.Conv2d(3, 4, 1))
+    config = LoRAConfig(r=4, alpha=8, backend="fallback", planner_enabled=True)
+    refusal = PlacementDecision(
+        status="REFUSE",
+        refusal_reason="unsafe architecture",
+        safety_overrides={"planner_refused": True},
+    )
+
+    with patch("ultralytics.utils.lora.planner.PEFTPlanner.plan", return_value=refusal):
+        result = apply_lora(model, config)
+
+    args = SimpleNamespace()
+    update_args_with_lora_runtime_metadata(args, result)
+    assert result is model
+    assert result.lora_runtime_metadata["effective_backend"] == "full_sft"
+    assert result.lora_runtime_metadata["planner_decision"] == refusal.to_dict()
+    assert args.lora_planner_refused is True
+    assert args.planner_refusal_reason == "unsafe architecture"
+
+
+def test_apply_lora_empty_targets_with_unknown_prediction_falls_back_cleanly():
+    model = nn.Sequential(nn.Conv2d(3, 4, 1))
+    config = LoRAConfig(r=4, alpha=8, backend="fallback", planner_enabled=True)
+    decision = PlacementDecision(status="ACCEPT", predicted_delta=None, target_modules_hint=[])
+
+    with patch("ultralytics.utils.lora.planner.PEFTPlanner.plan", return_value=decision):
+        result = apply_lora(model, config)
+
+    assert result is model
+    assert result.lora_runtime_metadata["effective_backend"] == "full_sft"
+    assert result.lora_runtime_metadata["planner_decision"] == decision.to_dict()
+
+
+def test_apply_lora_fallback_preserves_adapt_decision_metadata():
+    model = nn.Sequential(nn.Conv2d(3, 4, 1))
+    config = LoRAConfig(r=4, alpha=8, backend="fallback", planner_enabled=True)
+    decision = PlacementDecision(
+        status="ADAPT",
+        recommended_variant="lora",
+        recommended_rank=2,
+        predicted_delta=0.01,
+        target_modules_hint=["0"],
+    )
+
+    with patch("ultralytics.utils.lora.planner.PEFTPlanner.plan", return_value=decision):
+        result = apply_lora(model, config)
+
+    assert result.lora_runtime_metadata["planner_decision"] == decision.to_dict()
+    assert result.lora_target_modules == ["0"]
 
 
 # =============================================================================
@@ -116,6 +185,45 @@ def _make_rtdetr_like():
     return _Model()
 
 
+def test_planner_ddp_nonzero_rank_uses_rank0_targets_without_local_scan():
+    planner = PEFTPlanner()
+    config = LoRAConfig(r=8, planner_enabled=True)
+    rank0 = PlacementDecision(status="ACCEPT", predicted_delta=0.05, target_modules_hint=["stage1"])
+
+    def broadcast_rank0(container, src):
+        assert src == 0
+        container[0] = {"decision": rank0.to_dict(), "error": None}
+
+    with patch("torch.distributed.is_available", return_value=True), patch(
+        "torch.distributed.is_initialized", return_value=True
+    ), patch("torch.distributed.get_rank", return_value=1), patch(
+        "torch.distributed.broadcast_object_list", side_effect=broadcast_rank0
+    ), patch.object(planner, "_plan_local", side_effect=AssertionError("rank 1 must not plan locally")):
+        decision = planner.plan(_make_yolo11s_like(), config)
+
+    assert decision.target_modules_hint == ["stage1"]
+
+
+def test_planner_ddp_nonzero_rank_falls_back_on_rank0_failure():
+    planner = PEFTPlanner()
+    config = LoRAConfig(r=8, planner_enabled=True)
+
+    def broadcast_rank0_failure(container, src):
+        assert src == 0
+        container[0] = {"decision": None, "error": "ValueError: invalid planner state"}
+
+    with patch("torch.distributed.is_available", return_value=True), patch(
+        "torch.distributed.is_initialized", return_value=True
+    ), patch("torch.distributed.get_rank", return_value=1), patch(
+        "torch.distributed.broadcast_object_list", side_effect=broadcast_rank0_failure
+    ):
+        decision = planner.plan(_make_yolo11s_like(), config)
+
+    assert decision.status == "REFUSE"
+    assert decision.safety_overrides["planner_ddp_fallback"] is True
+    assert "invalid planner state" in decision.refusal_reason
+
+
 def _make_yolo_world_like():
     """YOLO-World-like: text-fusion modules (φ_text > 0.05).
 
@@ -169,6 +277,46 @@ class TestArchitectureFingerprint:
         fp = ArchitectureFingerprint.compute(model)
         # 2 conv + 2 linear = 4 total; text_fusion_proj and fusion_conv names give text
         assert fp.phi_text == pytest.approx(2 / 4, abs=1e-6)
+
+    def test_depth_uses_wrapped_sequential_graph(self):
+        model = nn.Module()
+        model.model = nn.Sequential(
+            nn.Conv2d(3, 8, 3),
+            nn.ReLU(),
+            nn.Conv2d(8, 16, 3),
+            nn.ReLU(),
+        )
+        fp = ArchitectureFingerprint.compute(model)
+        assert fp.phi_depth == pytest.approx(4 / 30, abs=1e-6)
+
+    def test_real_world_module_classes_are_text_fusion(self):
+        class WorldDetect(nn.Module):
+            def forward(self, x):
+                return x
+
+        class WorldModel(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.model = nn.Sequential(nn.Conv2d(3, 8, 1), nn.Linear(8, 8), nn.Identity())
+                self.world = WorldDetect()
+
+        model = WorldModel()
+        fp = ArchitectureFingerprint.compute(model)
+        assert fp.phi_text > 0.0
+        assert ArchitectureFingerprint._detect_architecture_family(model) == "yolo_world"
+
+    def test_paper_fingerprint_dimensions_are_present(self):
+        fp = ArchitectureFingerprint.compute(_make_yolo11s_like())
+        assert hasattr(fp, "phi_moe") and hasattr(fp, "phi_conv")
+        assert 0.0 <= fp.phi_moe <= 1.0
+        assert 0.0 <= fp.phi_conv <= 1.0
+
+    def test_known_world_family_uses_paper_profile(self):
+        model = _make_yolo_world_like()
+        fp = ArchitectureFingerprint.compute(model)
+        assert fp.phi_attn == pytest.approx(0.45)
+        assert fp.phi_text == pytest.approx(0.5)
+        ArchitectureFingerprint.invalidate_cache(model)
 
     def test_depthwise_conv(self):
         class _Model(nn.Module):
@@ -266,7 +414,6 @@ class TestPEFTPlannerFit:
         predictions on the training data are accurate (which is the property
         that actually matters for downstream decisions).
         """
-        import math
         planner = PEFTPlanner()
         planner.fit(self._PAPER_HISTORY)
         assert len(planner._coeffs) == 12  # v3: 12-dimensional
@@ -331,6 +478,17 @@ class TestPEFTPlannerPlan:
         assert decision.status == "ACCEPT"
         assert decision.predicted_delta == pytest.approx(0.071, abs=0.01)
         assert "attn" not in (decision.target_modules_hint or [])
+
+    def test_budget_infeasible_refuses(self):
+        model = _make_yolo11s_like()
+        decision = PEFTPlanner().plan(model, LoRAConfig(peft_type="lora", r=8, adapter_budget=1))
+        assert decision.status == "REFUSE"
+        assert decision.safety_overrides["budget_infeasible"] is True
+
+    def test_paper_prediction_is_separate_from_extended_prediction(self):
+        planner = PEFTPlanner()
+        fp = ArchitectureFingerprint(phi_attn=0.45, phi_text=0.5, phi_dw=0.0)
+        assert planner.predict_paper(fp, "lora") == pytest.approx(0.06677, abs=1e-6)
 
     def test_yolo11s_dora_accept(self):
         """YOLO11s + DoRA r=16 → ACCEPT (Table 1: Δ=+0.0710)."""
@@ -530,6 +688,21 @@ class TestPEFTPlannerDetectTargets:
         assert any("text" in t for t in targets)
         assert any("fusion" in t or "text_proj" in t for t in targets)
 
+    def test_world_class_targets_are_not_lost_to_numeric_paths(self):
+        class ContrastiveHead(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.proj = nn.Linear(8, 8)
+
+        class WorldDetect(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.cv4 = nn.Sequential(ContrastiveHead())
+
+        model = nn.Sequential(nn.Conv2d(3, 8, 1), WorldDetect())
+        targets = PEFTPlanner().detect_targets(model, LoRAConfig(include_head=False))
+        assert "1.cv4.0.proj" in targets
+
     def test_config_filter_exclude_modules(self):
         model = _make_yolo11s_like()
         planner = PEFTPlanner()
@@ -543,6 +716,35 @@ class TestPEFTPlannerDetectTargets:
         config = LoRAConfig(only_backbone=True)
         targets = planner.detect_targets(model, config)
         assert all("head" not in t for t in targets)
+
+    def test_yolo26_specialized_head_is_explicit_opt_in(self):
+        from ultralytics.nn.tasks import DetectionModel
+
+        model = DetectionModel("yolo26.yaml", ch=3, nc=5, verbose=False)
+        head_index = len(model.model) - 1
+        planner = PEFTPlanner()
+
+        default_targets = planner.detect_targets(model, LoRAConfig())
+        head_targets = planner.detect_targets(model, LoRAConfig(include_head=True))
+
+        assert not any(name.startswith(f"{head_index}.") for name in default_targets)
+        assert any(name.startswith(f"{head_index}.") for name in head_targets)
+
+    def test_routed_ancestor_is_excluded_without_moe_path_keyword(self):
+        class RoutedStage(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.stage = MoABlock(24, num_heads=3)
+                self.tail = nn.Conv2d(24, 24, 1)
+
+        model = RoutedStage()
+        planner = PEFTPlanner()
+
+        routed_targets = planner.detect_targets(model, LoRAConfig(include_moe=True))
+        dense_targets = planner.detect_targets(model, LoRAConfig(include_moe=False))
+
+        assert any(name.startswith("stage.") for name in routed_targets)
+        assert dense_targets == ["tail"]
 
 
 # =============================================================================
@@ -675,6 +877,16 @@ class TestLOVOEngine:
         history = collector.to_history()
         assert len(history) == 10
         assert all(isinstance(h, tuple) and len(h) == 3 for h in history)
+        assert collector.to_ranks() == [8] * 10
+
+    def test_collector_preserves_rank(self, tmp_path):
+        collector = LOVODataCollector([
+            LOVODataPoint(ArchitectureFingerprint(0.0, 0.0, 0.0), "lora", 0.0710, rank=16)
+        ])
+        path = tmp_path / "ranked_lovo_data.json"
+        collector.save(path)
+        loaded = LOVODataCollector.load(path)
+        assert loaded.to_ranks() == [16]
 
     def test_collector_summary(self):
         collector = LOVODataCollector()
@@ -757,3 +969,37 @@ class TestLOVOEngine:
         validator = LOVOValidator()
         with pytest.raises(ValueError, match="at least 5"):
             validator.cross_validate([])
+
+    def test_variant_lovo_holds_out_entire_variant(self):
+        points = []
+        for model, attn in (("cnn", 0.0), ("yolo12", 0.45), ("rtdetr", 0.85)):
+            for variant, delta in (("lora", 0.06), ("dora", 0.05), ("loha", 0.04)):
+                points.append(
+                    LOVODataPoint(
+                        ArchitectureFingerprint(attn, 0.0, 0.0),
+                        variant,
+                        delta,
+                        model_name=model,
+                    )
+                )
+        result = LOVOValidator().cross_validate_variant(points)
+        assert result["held_out_variants"] == ["dora", "loha", "lora"]
+        for fold in result["folds"]:
+            assert fold["held_out"] not in fold["train_variants"]
+
+    def test_architecture_loao_holds_out_complete_model(self):
+        points = []
+        for model, attn in (("cnn", 0.0), ("yolo12", 0.45), ("rtdetr", 0.85)):
+            for variant, delta in (("lora", 0.06), ("dora", 0.05), ("loha", 0.04)):
+                points.append(
+                    LOVODataPoint(
+                        ArchitectureFingerprint(attn, 0.0, 0.0),
+                        variant,
+                        delta,
+                        model_name=model,
+                    )
+                )
+        result = LOVOValidator().cross_validate_architecture(points)
+        assert result["held_out_architectures"] == ["cnn", "rtdetr", "yolo12"]
+        for fold in result["folds"]:
+            assert fold["held_out"] not in fold["train_architectures"]

@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import platform
 import time
 import traceback
 from dataclasses import dataclass
@@ -71,10 +72,27 @@ class DatasetSpec:
     project: str       # e.g. "runs/reproduce/visdrone"
 
 
-# Both datasets train the same two models. EsMoE-N gets dense validation.
+# The two shared nano baselines. EsMoE-N gets dense validation (--no-sparse-eval).
 MODELS = (
     ModelSpec("v0.1-N", "ultralytics/cfg/models/master/v0_1/det/yolo-master-n.yaml", uses_esmoe=False),
     ModelSpec("EsMoE-N", "ultralytics/cfg/models/master/v0/det/yolo-master-n.yaml", uses_esmoe=True),
+)
+
+# The four variants derived from the two baselines, shared across every dataset script so the
+# reproducible model set stays consistent (the cfgs are dataset-agnostic -- nc is bound at build
+# time from the dataset yaml):
+#   * P2/4 head          -> EsMoE-P2-N, v0.1-P2-N  (extra stride-4 head for tiny objects)
+#   * UltraOptimizedMoE  -> UoMoE-N   (v0.1 with its ModularRouterExpertMoE blocks swapped for
+#                                      UltraOptimizedMoE: shared expert + batched sparse compute +
+#                                      ultra-light router, ~20-30% fewer GFLOPs at equal params)
+#                          UoMoE-P2-N (that swap + the P2/4 head)
+# EsMoE-P2-N contains ES_MOE blocks, so --no-sparse-eval gives it the corrected dense eval too.
+# The UoMoE models are sparse train==eval, so uses_esmoe=False (--no-sparse-eval is a no-op).
+VARIANTS = (
+    ModelSpec("EsMoE-P2-N", "ultralytics/cfg/models/master/v0/det/yolo-master-n-p2.yaml", uses_esmoe=True),
+    ModelSpec("v0.1-P2-N", "ultralytics/cfg/models/master/v0_1/det/yolo-master-n-p2.yaml", uses_esmoe=False),
+    ModelSpec("UoMoE-N", "ultralytics/cfg/models/master/v0_1/det/yolo-master-n-uomoe.yaml", uses_esmoe=False),
+    ModelSpec("UoMoE-P2-N", "ultralytics/cfg/models/master/v0_1/det/yolo-master-n-uomoe-p2.yaml", uses_esmoe=False),
 )
 
 
@@ -127,9 +145,11 @@ _WANDB_METRICS = {
     "train/box_loss": "train/box_loss",
     "train/cls_loss": "train/cls_loss",
     "train/moe_loss": "train/moe_loss",
+    "train/mixture_aux_loss": "train/mixture_aux_loss",
     "val/box_loss": "val/box_loss",
     "val/cls_loss": "val/cls_loss",
     "val/moe_loss": "val/moe_loss",
+    "val/mixture_aux_loss": "val/mixture_aux_loss",
 }
 
 
@@ -346,7 +366,12 @@ def build_parser(dataset: DatasetSpec, models=MODELS) -> argparse.ArgumentParser
     p.add_argument("--imgsz", type=int, default=640)
     p.add_argument("--batch", type=int, default=64)
     p.add_argument("--device", default="0")
-    p.add_argument("--workers", type=int, default=16)
+    p.add_argument(
+        "--workers",
+        type=int,
+        default=0 if platform.system() == "Windows" else 16,
+        help="Data-loader workers (defaults to 0 on Windows to avoid multiprocessing I/O deadlocks).",
+    )
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--patience", type=int, default=0, help="0 disables early stopping.")
     p.add_argument("--amp", action=argparse.BooleanOptionalAction, default=True)
@@ -355,8 +380,9 @@ def build_parser(dataset: DatasetSpec, models=MODELS) -> argparse.ArgumentParser
                         "omit to disable. On network-volume (MFS) pods 'ram' can hang building the val "
                         "loader; 'disk' avoids that but writes .npy back to the same volume.")
     p.add_argument("--project", default=dataset.project)
-    p.add_argument("--model", choices=[m.name for m in models] + ["both"], default="both",
-                   help=f"Which model to train: {', '.join(m.name for m in models)}, or both (default).")
+    p.add_argument("--model", choices=[m.name for m in models] + ["both", "v01", "moe"], default="both",
+                   help=f"Which model to train: {', '.join(m.name for m in models)}, both (default), "
+                        "or compact aliases v01 / moe.")
     p.add_argument("--sparse-eval", action=argparse.BooleanOptionalAction, default=True,
                    help="ES_MOE sparse inference at validation/inference. Default True reproduces "
                         "EsMoE-N as-is (its sparse-eval path collapses mAP). Pass --no-sparse-eval "
@@ -380,7 +406,9 @@ def run_dataset(dataset: DatasetSpec, models=MODELS) -> int:
     """Entry point used by the per-dataset scripts."""
     args = build_parser(dataset, models).parse_args()
     project = Path(args.project) if Path(args.project).is_absolute() else ROOT / args.project
-    specs = list(models) if args.model == "both" else [m for m in models if m.name == args.model]
+    aliases = {"v01": "v0.1-N", "moe": "EsMoE-N"}
+    selected_model = aliases.get(args.model, args.model)
+    specs = list(models) if selected_model == "both" else [m for m in models if m.name == selected_model]
 
     wandb_desc = "off" if (not args.wandb or args.wandb_mode == "disabled") else args.wandb_mode
     print(f"[reproduce:{dataset.name}] data={dataset.data}  project={project}  "

@@ -30,7 +30,6 @@ from ultralytics.nn.modules.moe.modules import (
     MOE_LOSS_REGISTRY,
     OptimizedMOE,
     OptimizedMOEImproved,
-    UltimateOptimizedMoE,
     UltraOptimizedMoE,
     _compute_usage_from_topk,
     _record_moe_snapshot,
@@ -142,8 +141,14 @@ def test_improved_moe_rejects_nonfinite_after_low_precision_output_conversion(mo
     monkeypatch.setattr(m.shared_expert, "forward", lambda x: torch.full_like(x.float(), 1e5))
     monkeypatch.setattr(m.routing, "forward", lambda x, top_k: (torch.tensor([[1.0, 0.0]], device=x.device).expand(x.shape[0], -1), torch.tensor([[0, 1]], device=x.device).expand(x.shape[0], -1), {}))
     monkeypatch.setattr(m.experts[0], "forward", lambda x: torch.zeros_like(x))
-    with pytest.raises(RuntimeError, match="dtype conversion"):
+    try:
         m(torch.randn(2, 32, 16, 16, dtype=torch.float16))
+    except RuntimeError as exc:
+        if "not implemented for 'Half'" in str(exc):
+            pytest.skip(f"CPU fp16 operator unavailable: {exc}")
+        assert "dtype conversion" in str(exc)
+    else:
+        pytest.fail("expected low-precision output conversion to reject overflow")
 
 
 def test_routing_detach_isolates_router():
@@ -322,6 +327,97 @@ def test_es_moe_aux_on_gshard_scale():
     assert aux >= 1.0, f"expected GShard-scale aux (>=1.0 at/above balance), got {aux}"
 
 
+def test_es_moe_statistics_are_nonpersistent_buffers():
+    module = ES_MOE(8, 8, num_experts=3, top_k=2)
+
+    assert "load_balancing_loss" in module._buffers
+    assert "expert_usage_counts" in module._buffers
+    assert "load_balancing_loss" not in module.state_dict()
+    assert "expert_usage_counts" not in module.state_dict()
+
+
+def test_es_moe_repairs_legacy_plain_stat_attributes():
+    module = ES_MOE(8, 8, num_experts=3, top_k=2).train()
+    del module._buffers["load_balancing_loss"]
+    del module._buffers["expert_usage_counts"]
+    module.load_balancing_loss = torch.tensor(0.0)
+    module.expert_usage_counts = torch.zeros(3)
+
+    module(torch.randn(2, 8, 4, 4))
+
+    assert "load_balancing_loss" in module._buffers
+    assert "expert_usage_counts" in module._buffers
+    assert torch.isfinite(module.load_balancing_loss)
+
+
+def test_es_moe_sparse_inference_supports_channel_projection():
+    module = ES_MOE(8, 12, num_experts=4, top_k=2, dynamic_threshold=0.0).eval()
+
+    with torch.no_grad():
+        output = module(torch.randn(2, 8, 5, 7))
+
+    assert output.shape == (2, 12, 5, 7)
+    assert torch.isfinite(output).all()
+
+
+def test_es_moe_default_no_topk_eval_matches_dense(monkeypatch):
+    """top_k=None means all experts, so eval must not apply threshold-pruned sparse dispatch."""
+    module = ES_MOE(8, 8, num_experts=3, top_k=None, use_sparse_inference=True, dynamic_threshold=0.4).eval()
+    x = torch.randn(2, 8, 5, 7)
+    routing_weights = torch.full((2, 3, 5, 7), 1.0 / 3.0)
+
+    monkeypatch.setattr(module.routing, "forward", lambda _: routing_weights)
+    monkeypatch.setattr(
+        module,
+        "_sparse_forward",
+        lambda *_: (_ for _ in ()).throw(AssertionError("default all-expert eval must stay dense")),
+    )
+    with torch.no_grad():
+        expected = module.norm(module._dense_forward(x, routing_weights))
+        output = module(x)
+
+    assert module.use_top_k is False
+    assert module.top_k == module.num_experts
+    assert torch.allclose(output, expected)
+
+
+def test_es_moe_sparse_pruning_renormalizes_retained_mass():
+    """Optional threshold pruning must not shrink activations by discarded softmax mass."""
+    module = ES_MOE(1, 1, num_experts=3, top_k=2, dynamic_threshold=0.5).eval()
+    module.experts = nn.ModuleList([nn.Identity(), nn.Identity(), nn.Identity()])
+    x = torch.ones(1, 1, 2, 2)
+    routing_weights = torch.tensor([0.6, 0.4, 0.0]).view(1, 3, 1, 1).expand(1, 3, 2, 2)
+
+    with torch.no_grad():
+        output = module._sparse_forward(x, routing_weights)
+
+    assert torch.allclose(output, x)
+
+
+@pytest.mark.parametrize(
+    ("top_k", "use_sparse_inference", "expected"),
+    ((None, True, False), (3, True, False), (2, True, True), (2, False, False)),
+)
+def test_es_moe_sparse_capability_matches_effective_eval_path(top_k, use_sparse_inference, expected):
+    module = ES_MOE(8, 8, num_experts=3, top_k=top_k, use_sparse_inference=use_sparse_inference)
+
+    assert module.export_capabilities()["eager_sparse_dispatch"] is expected
+
+
+def test_es_moe_caps_expert_kernel_sizes():
+    module = ES_MOE(8, 8, num_experts=16, top_k=2, max_kernel_size=15)
+    kernels = [expert.conv.depthwise.kernel_size[0] for expert in module.experts]
+
+    assert max(kernels) == 15
+    assert all(kernel % 2 == 1 for kernel in kernels)
+
+
+@pytest.mark.parametrize("kwargs", ({"top_k": 0}, {"top_k": 4}, {"dynamic_threshold": 1.1}))
+def test_es_moe_rejects_invalid_routing_configuration(kwargs):
+    with pytest.raises(ValueError):
+        ES_MOE(8, 8, num_experts=3, **kwargs)
+
+
 # ---------------------------------------------------------------------------
 # §3.5: last_conv_out_channels is layout-agnostic
 # ---------------------------------------------------------------------------
@@ -360,7 +456,8 @@ def test_weighted_gshard_balance_scale():
     assert abs(float(weighted_gshard_balance_loss(uni, uni, E)) - float(gshard_balance_loss(uni, E))) < 1e-4
     tgt = torch.softmax(torch.randn(E), dim=0)
     assert abs(float(weighted_gshard_balance_loss(tgt, tgt, E)) - 1.0) < 1e-4  # min at usage==target
-    col = torch.zeros(E); col[0] = 1.0
+    col = torch.zeros(E)
+    col[0] = 1.0
     assert abs(float(weighted_gshard_balance_loss(col, uni, E)) - E) < 1e-3
 
 
@@ -373,7 +470,8 @@ def test_adaptive_balance_controller_gshard_scale_and_nonneg():
     aux_late = float(ctrl({'expert_usage': bal}, torch.tensor(10 ** 6)))
     assert aux_early >= 0.0 and aux_late >= 0.0, "aux must be non-negative"
     assert aux_late >= 0.05, f"late-stage balanced aux collapsed to {aux_late} (should stay O(0.1))"
-    col = torch.zeros(E); col[0] = 1.0
+    col = torch.zeros(E)
+    col[0] = 1.0
     assert float(ctrl({'expert_usage': col}, torch.tensor(0))) > aux_early  # collapse penalized more
 
 
@@ -573,6 +671,30 @@ def test_hyperfused_progressive_sparsity_uses_current_top_k(monkeypatch):
     assert captured["routing_shape"][1] == 2
     # But current_top_k buffer is still updated for diagnostics
     assert int(m.current_top_k) >= m.top_k
+
+
+def test_optimized_moe_improved_expert_dropout_skips_only_after_warmup(monkeypatch):
+    """Expert dropout is active at its configured interval and deterministic."""
+    def run_once():
+        module = OptimizedMOEImproved(8, 8, num_experts=4, top_k=2).train()
+        module.warmup_steps = 0
+        module.dropout_interval = 1
+        module.expert_dropout_rate = 0.5
+        captured = []
+        for idx, expert in enumerate(module.experts):
+            original = expert.forward
+            def wrapped(x, _original=original, _idx=idx):
+                captured.append(_idx)
+                return _original(x)
+            expert.forward = wrapped
+        module(torch.ones(4, 8, 4, 4))
+        return captured
+
+    torch.manual_seed(123)
+    first = run_once()
+    torch.manual_seed(123)
+    second = run_once()
+    assert first == second and len(first) > 0
 
 
 def test_l02_adaptive_capacity_complexity_lower_bound():

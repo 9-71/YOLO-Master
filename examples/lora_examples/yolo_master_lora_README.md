@@ -28,7 +28,8 @@ examples/lora_examples/
   yolo_master_visdrone_lora.yaml       # VisDrone LoRA 训练配置
   yolo_master_brain_tumor_lora.yaml    # Brain Tumor LoRA 训练配置
   yolo_master_lora_README.md           # 本指南
-  yolo_master_lora_results.csv         # 完整六轮实验结果
+  yolo_master_lora_results.csv         # PR #135 汇总协议结果
+  yolo_master_lora_rank_sweep_results.csv # 历史 rank-sweep 协议结果
   run_lora_visdrone_sweep.sh           # VisDrone rank 扫描脚本 (bash)
   run_lora_brain_tumor_sweep.sh        # Brain Tumor rank 扫描脚本 (bash)
   run_yolo_master_lora_rank_sweep.py   # 统一 rank 扫描脚本 (Python)
@@ -44,6 +45,23 @@ runs/lora_examples/
 | --- | --- | ---: | ---: | ---: | ---: | --- | --- | --- |
 | Brain Tumor | `brain-tumor.yaml` | 40 | 16 | 640 | 1.0 | `auto` | 启用 | `runs/lora_examples` |
 | VisDrone | `VisDrone.yaml` | 30 | 8 | 768 | 0.2 | `auto` | 启用 | `runs/lora_examples` |
+
+### 历史结果协议
+
+仓库保留了两套独立完成的历史实验。它们使用相同的两个数据集和 `r=4,8,16`，但 VisDrone
+的数据比例和 AMP 设置不同，因此不能合并为同一组 rank 扫描，也不能把两套协议间的指标差异归因于 rank。
+
+| protocol_id | 数据集 | Epochs | Fraction | AMP | Batch | Imgsz | 结果文件 | 适用范围 |
+| --- | --- | ---: | ---: | --- | ---: | ---: | --- | --- |
+| `legacy_rank_sweep_v1` | Brain Tumor | 40 | 1.0 | True | 16 | 640 | `yolo_master_lora_rank_sweep_results.csv` | 早期统一扫描脚本结果 |
+| `legacy_rank_sweep_v1` | VisDrone | 30 | 0.25 | False | 8 | 768 | `yolo_master_lora_rank_sweep_results.csv` | 早期 25% 数据、FP32 协议 |
+| `pr135_summary_v1` | Brain Tumor | 40 | 1.0 | True | 16 | 640 | `yolo_master_lora_results.csv` | 当前 README 的详细结果 |
+| `pr135_summary_v1` | VisDrone | 30 | 0.2 | True | 8 | 768 | `yolo_master_lora_results.csv` | PR #135 的 20% 数据、AMP 协议 |
+
+两个 CSV 的协议字段来自各自提交时的 YAML、历史说明和现存结果行；原始指标没有跨协议转写。
+精确训练时间以对应 CSV 的 `train_time_min` 为准，README 不重复维护该数值，避免文档与数据漂移。
+旧 rank-sweep CSV 原先没有 `status` 字段；虽然保留了 `return_code=0`，仍将新增的 `status` 标为
+`unknown`，避免把缺失的完成状态证据推断为已验证。
 
 ## 配置文件关键差异
 
@@ -104,14 +122,14 @@ bash examples/lora_examples/run_lora_brain_tumor_sweep.sh
 
 ```bash
 # 单场景扫描
-python examples/lora_examples/run_yolo_master_lora_rank_sweep.py --scene brain_tumor --device 0
-python examples/lora_examples/run_yolo_master_lora_rank_sweep.py --scene visdrone --device 0
+python examples/lora_examples/run_yolo_master_lora_rank_sweep.py --protocol-id my_brain_v1 --scene brain_tumor --device 0
+python examples/lora_examples/run_yolo_master_lora_rank_sweep.py --protocol-id my_visdrone_v1 --scene visdrone --device 0
 
 # 全部场景
-python examples/lora_examples/run_yolo_master_lora_rank_sweep.py --scene all --device 0
+python examples/lora_examples/run_yolo_master_lora_rank_sweep.py --protocol-id my_sweep_v1 --scene all --device 0
 
 # 预览命令（dry-run）
-python examples/lora_examples/run_yolo_master_lora_rank_sweep.py --scene all --dry-run
+python examples/lora_examples/run_yolo_master_lora_rank_sweep.py --protocol-id dry_run_check --scene all --dry-run
 ```
 
 ### 方式三：手动单次训练
@@ -134,19 +152,19 @@ yolo train cfg=examples/lora_examples/yolo_master_visdrone_lora.yaml \
 
 ### Brain Tumor 结果
 
-| Run | Rank | LoRA 模块数 | 可训练参数 | Adapter 参数 | 最佳 epoch | mAP50 | mAP50-95 | 训练时间 | 峰值显存 |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| `brain_tumor_r4` | 4 | 92 | 468,290 | 123,116 | 30 | 0.43492 | 0.28312 | 39.72 min | 3.95G |
-| `brain_tumor_r8` | 8 | 94 | 596,782 | 251,608 | 35 | 0.46004 | 0.31215 | 39.84 min | 3.99G |
-| `brain_tumor_r16` | 16 | 94 | 848,390 | 503,216 | 37 | 0.48212 | 0.34044 | 40.15 min | 4.03G |
+| Run | Rank | LoRA 模块数 | 可训练参数 | Adapter 参数 | 最佳 epoch | mAP50 | mAP50-95 | 峰值显存 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `brain_tumor_r4` | 4 | 92 | 468,290 | 123,116 | 30 | 0.43492 | 0.28312 | 3.95G |
+| `brain_tumor_r8` | 8 | 94 | 596,782 | 251,608 | 35 | 0.46004 | 0.31215 | 3.99G |
+| `brain_tumor_r16` | 16 | 94 | 848,390 | 503,216 | 37 | 0.48212 | 0.34044 | 4.03G |
 
 ### VisDrone 结果
 
-| Run | Rank | LoRA 模块数 | 可训练参数 | Adapter 参数 | 最佳 epoch | mAP50 | mAP50-95 | 训练时间 | 峰值显存 |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| `visdrone_r4` | 4 | 92 | 469,850 | 123,116 | 27 | 0.04148 | 0.01670 | 52.68 min | 14.70G |
-| `visdrone_r8` | 8 | 94 | 598,342 | 251,608 | 25 | 0.05547 | 0.02340 | 48.54 min | 14.60G |
-| `visdrone_r16` | 16 | 94 | 849,950 | 503,216 | 27 | 0.07292 | 0.03197 | 48.96 min | 14.70G |
+| Run | Rank | LoRA 模块数 | 可训练参数 | Adapter 参数 | 最佳 epoch | mAP50 | mAP50-95 | 峰值显存 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `visdrone_r4` | 4 | 92 | 469,850 | 123,116 | 27 | 0.04148 | 0.01670 | 14.70G |
+| `visdrone_r8` | 8 | 94 | 598,342 | 251,608 | 25 | 0.05547 | 0.02340 | 14.60G |
+| `visdrone_r16` | 16 | 94 | 849,950 | 503,216 | 27 | 0.07292 | 0.03197 | 14.70G |
 
 ## 跨场景对比总结
 
@@ -225,11 +243,19 @@ yolo train cfg=examples/lora_examples/yolo_master_visdrone_lora.yaml \
 
 ## 完整 CSV 数据
 
-完整的六轮实验对比表格存储在：
+当前 README 对应的六轮详细结果存储在：
 
 ```text
 examples/lora_examples/yolo_master_lora_results.csv
 ```
+
+另一套历史 rank-sweep 协议保存在：
+
+```text
+examples/lora_examples/yolo_master_lora_rank_sweep_results.csv
+```
+
+读取或重新生成结果时必须检查每行的 `protocol_id`，不得跨协议聚合。
 
 该 CSV 每行记录一次运行的详细信息，包括：
 - LoRA 设置、参数计数、训练成本

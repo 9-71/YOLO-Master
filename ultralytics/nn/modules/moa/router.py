@@ -5,14 +5,21 @@ import torch
 import torch.distributed as dist
 import torch.nn as nn
 import torch.nn.functional as F
-from ultralytics.nn.modules._numeric import all_reduce_mean, fp_clamp_floor
+from ultralytics.nn.modules._numeric import (
+    FP32RouterMixin,
+    all_reduce_mean,
+    disabled_autocast,
+    fp_clamp_floor,
+)
 from ultralytics.nn.modules.moa._constants import DEFAULT_MIN_TEMPERATURE, DEFAULT_TEMPERATURE_ANNEAL_FACTOR, ROUTER_ENTROPY_FLOOR, ROUTER_LOGIT_LIMIT, ROUTER_Z_LOSS_LIMIT
-from ultralytics.nn.modules.moe.utils import get_safe_groups as _safe_groups
+from ultralytics.nn.modules.routing_protocol import graph_connected_finite_zero
+from ultralytics.nn.modules.routing_protocol import routing_finite_diagnostics
+from ultralytics.nn.modules.utils import get_safe_groups as _safe_groups
 
 _all_reduce_mean = all_reduce_mean
 _fp_min = fp_clamp_floor
 
-class _MoARouter(nn.Module):
+class _MoARouter(FP32RouterMixin, nn.Module):
     """Lightweight soft-router: assigns each spatial token a weight over M head-groups.
 
     Complexity: O(H·W·C_in / reduction).
@@ -27,7 +34,7 @@ class _MoARouter(nn.Module):
         self.router = nn.Sequential(
             nn.Conv2d(dim, hidden, 1, bias=False),
             nn.GroupNorm(_safe_groups(hidden, 4), hidden),
-            nn.SiLU(inplace=True),
+            nn.SiLU(inplace=False),
             nn.Conv2d(hidden, num_groups, 1, bias=True),
         )
         # init: near-uniform routing
@@ -39,26 +46,33 @@ class _MoARouter(nn.Module):
         # that routing entropy stays consistent across modes.  Previously eval
         # hardcoded temp=1.0, which could shift router distributions after
         # annealing and destabilise MoA (no Top-K stable set).
-        temp = self.temperature
-        logits = self.router(x) / temp           # [B, M, H, W]
-        probs = F.softmax(logits, dim=1)
+        with disabled_autocast(x.device.type):
+            temp = self.temperature
+            logits = self.router(x.float()).float() / temp  # [B, M, H, W]
+            probs = F.softmax(logits, dim=1)
+        probs = probs.to(dtype=x.dtype)
         if return_logits:
             return probs, logits
         return probs
 
-def _moa_router_aux_loss(weights: torch.Tensor, logits: torch.Tensor, coeff: float) -> torch.Tensor:
+def _moa_router_aux_loss(
+    weights: torch.Tensor,
+    logits: torch.Tensor,
+    coeff: float,
+    *,
+    reduce_ddp: bool = False,
+    return_diagnostics: bool = False,
+) -> torch.Tensor | tuple[torch.Tensor, dict]:
     """GShard-scale MoA regularization with exact DDP global-value/local-gradient semantics.
 
-    Uses moe.loss.all_reduce_mean (which handles NCCL CPU-tensor safety) for the
+    Uses the shared numerical all-reduce helper (including NCCL CPU-tensor safety) for the
     cross-rank synchronization of detached statistics, so this function never crashes
     when router outputs land on CPU under a NCCL-backed DDP group.
     """
-    from ultralytics.nn.modules.moe.loss import should_reduce_ddp
-
     num_groups = weights.shape[1]
     local_sum = weights.float().sum(dim=(0, 2, 3))
     local_count = weights.new_tensor(float(weights.shape[0] * weights.shape[2] * weights.shape[3])).float()
-    if should_reduce_ddp():
+    if reduce_ddp:
         global_sum = _all_reduce_mean(local_sum.detach().clone())
         global_count = _all_reduce_mean(local_count.detach().clone())
         # DDP averages parameter gradients by world size. Scale the local Jacobian
@@ -86,10 +100,11 @@ def _moa_router_aux_loss(weights: torch.Tensor, logits: torch.Tensor, coeff: flo
     # Lower entropy weight (0.01) avoids over-constraining the router toward
     # uniform mixing when balance_loss already encourages load balance.
     result = coeff * (balance_loss + 0.1 * z_loss + 0.01 * entropy_deficit)
+    diagnostics = routing_finite_diagnostics(logits=logits, probabilities=weights, aux_loss=result)
     # Final safety: prevent Inf/NaN aux_loss from poisoning the total loss
     if not torch.isfinite(result):
-        return weights.new_zeros(())
-    return result
+        result = graph_connected_finite_zero(weights, logits, result)
+    return (result, diagnostics) if return_diagnostics else result
 
 def anneal_moa_temperature(
     model: nn.Module,

@@ -28,7 +28,7 @@ Usage (≥ 2 GPUs; ``--workers 0`` recommended on the Python-3.14 stack — see 
     python scripts/reproduce/reproduce_ddp.py --dataset VisDrone  --model EsMoE-N --device 0,1,2,3 --batch 128 --no-sparse-eval --workers 0
     python scripts/reproduce/reproduce_ddp.py --dataset SKU-110K  --model v0.1-N  --device 0,1 --batch 64 --workers 0
     python scripts/reproduce/reproduce_ddp.py --dataset AI-TOD-v2 --model v0.1-N  --device 0,1,2,3 --batch 128 --workers 0
-    python scripts/reproduce/reproduce_ddp.py --dataset VisDrone  --model both    --device 0,1 --dry-run
+    python scripts/reproduce/reproduce_ddp.py --dataset VisDrone  --model all     --device 0,1 --dry-run
 
 Single-node convention (GPUs 0..N-1). To pin specific GPUs, set CUDA_VISIBLE_DEVICES and pass --device 0,1.
 """
@@ -54,8 +54,12 @@ DATASETS = {
 }
 # esmoe=True -> contains ES_MOE blocks (sparse eval collapses mAP; --no-sparse-eval corrects it).
 MODELS = {
-    "v0.1-N":  {"cfg": "ultralytics/cfg/models/master/v0_1/det/yolo-master-n.yaml", "esmoe": False},
-    "EsMoE-N": {"cfg": "ultralytics/cfg/models/master/v0/det/yolo-master-n.yaml",   "esmoe": True},
+    "v0.1-N":     {"cfg": "ultralytics/cfg/models/master/v0_1/det/yolo-master-n.yaml",         "esmoe": False},
+    "EsMoE-N":    {"cfg": "ultralytics/cfg/models/master/v0/det/yolo-master-n.yaml",            "esmoe": True},
+    "EsMoE-P2-N": {"cfg": "ultralytics/cfg/models/master/v0/det/yolo-master-n-p2.yaml",         "esmoe": True},
+    "v0.1-P2-N":  {"cfg": "ultralytics/cfg/models/master/v0_1/det/yolo-master-n-p2.yaml",       "esmoe": False},
+    "UoMoE-N":    {"cfg": "ultralytics/cfg/models/master/v0_1/det/yolo-master-n-uomoe.yaml",    "esmoe": False},
+    "UoMoE-P2-N": {"cfg": "ultralytics/cfg/models/master/v0_1/det/yolo-master-n-uomoe-p2.yaml", "esmoe": False},
 }
 
 # --------------------------------------------------------------------------- #
@@ -162,7 +166,7 @@ def _reexec_under_torchrun(args: argparse.Namespace, data: str, n: int) -> None:
 
 
 def _teardown_ddp() -> None:
-    """Destroy the process group between models (--model both) so the next model can re-init it."""
+    """Destroy the process group between models (--model all) so the next model can re-init it."""
     try:
         import torch.distributed as dist
 
@@ -287,8 +291,8 @@ def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description=__doc__.split("\n")[0],
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--dataset", required=True, choices=list(DATASETS))
-    p.add_argument("--model", required=True, choices=list(MODELS) + ["both"],
-                   help="A model, or 'both' for v0.1-N and EsMoE-N.")
+    p.add_argument("--model", required=True, choices=list(MODELS) + ["all"],
+                   help="A model name, or 'all' to train every model in sequence.")
     p.add_argument("--device", required=True,
                    help="Comma-separated GPU ids, >=2 (e.g. '0,1'). REQUIRED: this script is DDP-only.")
     p.add_argument("--epochs", type=int, default=300)
@@ -321,7 +325,7 @@ def build_parser() -> argparse.ArgumentParser:
 def main() -> int:
     args = build_parser().parse_args()
     ds = DATASETS[args.dataset]
-    models = list(MODELS) if args.model == "both" else [args.model]
+    models = list(MODELS) if args.model == "all" else [args.model]
     project = Path(args.project) if args.project else (ROOT / ds["project"])
     os.environ["WANDB_MODE"] = args.wandb_mode  # inherited by torchrun ranks
 

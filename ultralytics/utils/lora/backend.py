@@ -4,6 +4,7 @@ Backends intentionally stay thin: standard LoRA delegates to the existing
 PEFT/fallback IO, while MoLoRA delegates to its versioned wrapper checkpoint.
 The orchestration layer provides one stable API for the model and trainer.
 """
+
 from __future__ import annotations
 
 import json
@@ -20,20 +21,15 @@ class AdapterBackend(Protocol):
 
     name: str
 
-    def can_handle(self, model: nn.Module) -> bool:
-        ...
+    def can_handle(self, model: nn.Module) -> bool: ...
 
-    def save(self, model: nn.Module, path: str | Path) -> bool:
-        ...
+    def save(self, model: nn.Module, path: str | Path) -> bool: ...
 
-    def load(self, model: nn.Module, path: str | Path) -> bool:
-        ...
+    def load(self, model: nn.Module, path: str | Path) -> bool: ...
 
-    def merge(self, model: nn.Module, **kwargs: Any) -> bool:
-        ...
+    def merge(self, model: nn.Module, **kwargs: Any) -> bool: ...
 
-    def metadata(self, model: nn.Module) -> dict[str, Any]:
-        ...
+    def metadata(self, model: nn.Module) -> dict[str, Any]: ...
 
 
 def _unwrap(model: nn.Module) -> nn.Module:
@@ -102,7 +98,14 @@ class MoLoRABackend:
                 "format": "molora_adapter",
                 "config": getattr(config, "__dict__", dict(config) if isinstance(config, dict) else {}),
                 "structure": _molora_structure(model),
-                "state_dict": {k: v for k, v in model.state_dict().items() if any(p in k for p in ("lora_A", "lora_B", "router", "_step_count", "_usage_ema", "_domain_active_mask"))},
+                "state_dict": {
+                    k: v
+                    for k, v in model.state_dict().items()
+                    if any(
+                        p in k
+                        for p in ("lora_A", "lora_B", "router", "_step_count", "_usage_ema", "_domain_active_mask")
+                    )
+                },
             }
             torch.save(state, path / "molora_adapter.pt")
             wrapped = model
@@ -128,73 +131,59 @@ class MoLoRABackend:
         if mode not in {"ema", "uniform", "calibrated"}:
             raise ValueError("MoLoRA merge mode must be 'ema', 'uniform', or 'calibrated'")
         model = _unwrap(model)
-        from ultralytics.nn.peft.molora.layer import MoLoRALayer
-        from ultralytics.nn.peft.molora.model import (
-            MoLoRAModel,
-            _explicit_calibration_weights,
-            _validate_calibration_weights,
-            calibrate_molora_merge_weights,
-        )
+        from ultralytics.nn.peft.molora.model import MoLoRAModel, merge_molora_layers
 
         if isinstance(model, MoLoRAModel):
             model.merge(
                 mode=mode,
+                sync_ema=kwargs.get("sync_ema", False),
+                merge_authority=kwargs.get("merge_authority"),
                 calibration_data=kwargs.get("calibration_data"),
                 calibration=kwargs.get("calibration"),
                 max_batches=kwargs.get("max_batches"),
                 forward_fn=kwargs.get("forward_fn"),
+                verify_fidelity=kwargs.get("verify_fidelity", False),
+                fidelity_tolerance=kwargs.get("fidelity_tolerance"),
             )
             return True
-
-        calibration = kwargs.get("calibration")
-        calibration_result = {"weights": {}, "observed_batches": {}}
-        if mode == "calibrated":
-            calibration_data = kwargs.get("calibration_data")
-            if calibration_data is not None:
-                calibration_result = calibrate_molora_merge_weights(
-                    model,
-                    calibration_data,
-                    max_batches=kwargs.get("max_batches"),
-                    forward_fn=kwargs.get("forward_fn"),
-                )
-            elif calibration is None:
-                raise ValueError("calibrated merge requires calibration_data or explicit calibration weights")
-
-        layers = {name: module for name, module in model.named_modules() if isinstance(module, MoLoRALayer)}
-        resolved_weights = {}
-        if mode == "calibrated":
-            for name, module in layers.items():
-                weights = calibration_result["weights"].get(name)
-                if weights is None:
-                    weights = _explicit_calibration_weights(calibration, name)
-                resolved_weights[name] = _validate_calibration_weights(weights, module.num_experts, name)
-
-        for name, module in layers.items():
-            weights = resolved_weights.get(name)
-            metadata = None
-            if mode == "calibrated":
-                metadata = {
-                    "calibration_batches": calibration_result["observed_batches"].get(name, 0),
-                    "calibration_source": "data" if kwargs.get("calibration_data") is not None else "explicit",
-                }
-            module.merge_weights(mode=mode, calibration=weights, calibration_metadata=metadata)
+        merge_molora_layers(
+            model,
+            mode=mode,
+            sync_ema=kwargs.get("sync_ema", False),
+            merge_authority=kwargs.get("merge_authority"),
+            calibration_data=kwargs.get("calibration_data"),
+            calibration=kwargs.get("calibration"),
+            max_batches=kwargs.get("max_batches"),
+            forward_fn=kwargs.get("forward_fn"),
+            verify_fidelity=kwargs.get("verify_fidelity", False),
+            fidelity_tolerance=kwargs.get("fidelity_tolerance"),
+        )
         return True
 
     def metadata(self, model: nn.Module) -> dict[str, Any]:
         model = _unwrap(model)
         config = getattr(model, "molora_config", None)
-        merge_records = [getattr(module, "_merge_metadata", {}) for module in model.modules() if module.__class__.__name__ == "MoLoRALayer"]
+        merge_records = [
+            getattr(module, "_merge_metadata", {})
+            for module in model.modules()
+            if module.__class__.__name__ == "MoLoRALayer"
+        ]
         return {
             "backend": self.name,
             "variant": "molora",
             "schema_version": 1,
-            "target_modules": list(getattr(config, "target_modules", [])) if config is not None else [],
+            "target_modules": list(getattr(config, "target_modules", None) or []) if config is not None else [],
             "num_experts": getattr(config, "num_experts", None),
             "top_k": getattr(config, "top_k", None),
             "router_type": getattr(config, "router_type", None),
             "merge_mode": "dynamic",
             "exact_merge": False,
             "merge_records": merge_records,
+            "publishable_merge": bool(merge_records)
+            and all(
+                record.get("mode") == "calibrated" and bool(record.get("calibration_fingerprint"))
+                for record in merge_records
+            ),
         }
 
 
@@ -219,9 +208,20 @@ def save_adapters(model: nn.Module, path: str | Path) -> bool:
 
 def load_adapters(model: nn.Module, path: str | Path) -> bool:
     path = Path(path)
-    metadata_path = path / "runtime_metadata.json" if path.is_dir() else path.with_name("runtime_metadata.json")
-    payload = json.loads(metadata_path.read_text()) if metadata_path.exists() else {}
-    backend_name = payload.get("backend")
+    metadata_paths = (
+        (path / "runtime_metadata.json", path / "fallback_meta.json", path / "adapter_config.json")
+        if path.is_dir()
+        else (path.with_name("runtime_metadata.json"),)
+    )
+    payload = {}
+    for metadata_path in metadata_paths:
+        if metadata_path.exists():
+            payload = json.loads(metadata_path.read_text())
+            if payload.get("backend"):
+                break
+    backend_name = {"fallback": "lora", "peft": "lora"}.get(payload.get("backend"), payload.get("backend"))
+    if backend_name is None and (path / "molora_adapter.pt" if path.is_dir() else path).name == "molora_adapter.pt":
+        backend_name = "molora"
     backend = next((item for item in _BACKENDS if item.name == backend_name), discover_adapter_backend(model))
     if backend is None:
         raise ValueError(f"Cannot determine adapter backend for {path}")

@@ -15,10 +15,10 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/isLinXu">Xu Lin</a><sup>1*</sup>, 
-  <a href="https://pjl1995.github.io/">Jinlong Peng</a><sup>1*</sup>, 
-  <a href="https://scholar.google.com/citations?user=fa4NkScAAAAJ">Zhenye Gan</a><sup>1</sup>, 
-  <a href="https://scholar.google.com/citations?hl=en&user=cU0UfhwAAAAJ">Jiawen Zhu</a><sup>2</sup>, 
+  <a href="https://github.com/isLinXu">Xu Lin</a><sup>1*</sup>,
+  <a href="https://pjl1995.github.io/">Jinlong Peng</a><sup>1*</sup>,
+  <a href="https://scholar.google.com/citations?user=fa4NkScAAAAJ">Zhenye Gan</a><sup>1</sup>,
+  <a href="https://scholar.google.com/citations?hl=en&user=cU0UfhwAAAAJ">Jiawen Zhu</a><sup>2</sup>,
   <a href="https://scholar.google.com/citations?user=JIKuf4AAAAAJ&hl=zh-TW">Jun Liu</a><sup>1</sup>
   <br>
   <sup>1</sup><b>Tencent Youtu Lab</b> &nbsp;&nbsp; <sup>2</sup><b>Singapore Management University</b>
@@ -291,7 +291,7 @@ To verify the performance and resource consumption of the `YOLO-Master LoRA` fra
 
 ** Selection Suggestions & Pitfalls to Avoid:**
 
-1. **Lightweight/Simple Scenarios (e.g., Brain Tumor)**: **Rank = 4** is recommended. For datasets with single-feature profiles, lower Ranks provide better regularization and effectively mitigate overfitting. 
+1. **Lightweight/Simple Scenarios (e.g., Brain Tumor)**: **Rank = 4** is recommended. For datasets with single-feature profiles, lower Ranks provide better regularization and effectively mitigate overfitting.
    *  *Pitfall:* Medical images (MRI/CT) are physically single-channel (grayscale), whereas YOLO defaults to 3-channel (RGB) inputs. Please ensure channel alignment in your data pipeline or use customized `ch=1` convolution configurations.
 2. **Dense/Complex Scenarios (e.g., VisDrone)**: **Rank >= 16** is recommended. Complex backgrounds and high-density tiny objects require larger parameter capacities for representation. Increasing the Rank significantly improves mAP50 by **+25.4%** (with <0.1 GB VRAM overhead).
    *  *Pitfall:* Aerial imagery suffers from extreme scale variations. It is strictly advised to enable the built-in **Sparse SAHI (Sparse Inference)** or set `rect: true` during training. Furthermore, include both the Backbone's dimensionality reduction layers and MoE Experts' MLPs in `lora_target_modules` to provide sufficient degrees of freedom for spatial local features.
@@ -638,7 +638,7 @@ Validate the model accuracy on the COCO dataset.
 from ultralytics import YOLO
 
 # Load the pretrained model
-model = YOLO("yolo_master_n.pt") 
+model = YOLO("yolo_master_n.pt")
 
 # Run validation
 metrics = model.val(data="coco.yaml", save_json=True)
@@ -658,13 +658,13 @@ model = YOLO('cfg/models/master/v0/det/yolo-master-n.yaml')  # build a new model
 # Train the model
 results = model.train(
     data='coco.yaml',
-    epochs=600, 
-    batch=256, 
+    epochs=600,
+    batch=256,
     imgsz=640,
     device="0,1,2,3", # Use multiple GPUs
-    scale=0.5, 
+    scale=0.5,
     mosaic=1.0,
-    mixup=0.0, 
+    mixup=0.0,
     copy_paste=0.1
 )
 ```

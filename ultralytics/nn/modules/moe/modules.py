@@ -18,21 +18,34 @@ import os
 import sys
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
-from typing import Tuple, Dict, Optional, Union
+from typing import Dict, Tuple
 
 from .utils import FlopsUtils, get_safe_groups, BatchedExpertComputation
-from .experts import (
+from .experts import (  # noqa: F401 - preserve historical module attributes
     OptimizedSimpleExpert, FusedGhostExpert, SimpleExpert, GhostExpert,
     InvertedResidualExpert, EfficientExpertGroup, SpatialExpert, SharedInvertedExpertGroup
 )
-from .routers import (
+from .routers import (  # noqa: F401 - preserve historical module attributes
     UltraEfficientRouter, EfficientSpatialRouter, LocalRoutingLayer,
     AdaptiveRoutingLayer, DynamicRoutingLayer, AdvancedRoutingLayer
 )
 from ultralytics.nn.modules.block import ABlock, A2C2f, C3k
-from .loss import MoELoss, gshard_balance_loss, weighted_gshard_balance_loss, differentiable_balance_loss, all_reduce_mean, should_reduce_ddp
-from .scheduler import MoEDynamicScheduler, MoEDynamicSchedulerConfig
+from .loss import (  # noqa: F401 - preserve historical module attributes
+    MoELoss,
+    all_reduce_mean,
+    differentiable_balance_loss,
+    gshard_balance_loss,
+    should_reduce_ddp,
+    weighted_gshard_balance_loss,
+)
+from .scheduler import MoEDynamicScheduler, MoEDynamicSchedulerConfig  # noqa: F401 - compatibility attributes
+from ultralytics.nn.modules.routing_protocol import (
+    export_capabilities as _export_routing_capabilities,
+    graph_connected_finite_zero,
+    publish_aux_loss,
+    routing_finite_diagnostics,
+    routing_snapshot as _routing_snapshot,
+)
 
 # Re-export all helpers (backward compatibility for external imports)
 from ._helpers import (
@@ -162,6 +175,7 @@ class UltraOptimizedMoE(nn.Module):
         self.last_balance_loss = 0.0
         self.last_z_loss = 0.0
         self.last_routing_snapshot = {}
+        self.last_routing_diagnostics = {}
         # self.aux_loss is now managed via MOE_LOSS_REGISTRY property
 
     def _init_weights(self):
@@ -388,8 +402,9 @@ class AdaptiveCapacityMoE(UltraOptimizedMoE):
 class ES_MOE(nn.Module):
     """General MoE block with a routing network and multiple expert branches."""
 
-    def __init__(self, in_channels, out_channels=None, num_experts=3, reduction=8,
-                 top_k=None, use_sparse_inference=True, dynamic_threshold=0.4):
+    def __init__(self, in_channels, out_channels=None, num_experts=4, reduction=8,
+                 top_k=2, use_sparse_inference=True, dynamic_threshold=0.4,
+                 max_kernel_size=15):
         """
         Args:
             in_channels: Input channels
@@ -398,9 +413,26 @@ class ES_MOE(nn.Module):
             reduction: Channel reduction ratio for the routing network
             top_k: Number of active experts; None means use all experts
             use_sparse_inference: Enable sparse Top-K expert computation during inference
-            dynamic_threshold: Threshold for pruning low-confidence experts during inference
+            dynamic_threshold: Optional threshold for pruning low-confidence experts during inference
+            max_kernel_size: Largest odd depthwise kernel assigned to an expert
         """
         super(ES_MOE, self).__init__()
+
+        if in_channels < 1 or (out_channels is not None and out_channels < 1):
+            raise ValueError("in_channels and out_channels must be positive")
+        if num_experts < 1:
+            raise ValueError(f"num_experts must be positive, got {num_experts}")
+        if reduction < 1:
+            raise ValueError(f"reduction must be positive, got {reduction}")
+        if top_k is not None and not 1 <= top_k <= num_experts:
+            raise ValueError(f"top_k must be in [1, {num_experts}], got {top_k}")
+        if not 0.0 <= dynamic_threshold <= 1.0:
+            raise ValueError(f"dynamic_threshold must be in [0, 1], got {dynamic_threshold}")
+        if max_kernel_size < 3:
+            raise ValueError(f"max_kernel_size must be at least 3, got {max_kernel_size}")
+        max_kernel_size = int(max_kernel_size)
+        if max_kernel_size % 2 == 0:
+            max_kernel_size -= 1
 
         if out_channels is None:
             out_channels = in_channels
@@ -412,6 +444,7 @@ class ES_MOE(nn.Module):
         self.use_top_k = (top_k is not None)
         self.use_sparse_inference = use_sparse_inference
         self.dynamic_threshold = dynamic_threshold
+        self.max_kernel_size = max_kernel_size
 
         # Dynamic routing (Top-K supported)
         self.routing = DynamicRoutingLayer(in_channels, num_experts, reduction, top_k)
@@ -419,9 +452,9 @@ class ES_MOE(nn.Module):
         # Expert group (original design)
         default_kernel_sizes = [3, 5, 7]
         if num_experts <= len(default_kernel_sizes):
-            ks = default_kernel_sizes[:num_experts]
+            ks = [min(k, max_kernel_size) for k in default_kernel_sizes[:num_experts]]
         else:
-            ks = [3 + 2 * i for i in range(num_experts)]
+            ks = [min(3 + 2 * i, max_kernel_size) for i in range(num_experts)]
         self.experts = nn.ModuleList(
             [EfficientExpertGroup(in_channels, out_channels, kernel_size=k) for k in ks]
         )
@@ -432,19 +465,17 @@ class ES_MOE(nn.Module):
             nn.SiLU(inplace=True),
         )
 
-        # Load-balancing loss (original design)
-        # NOTE: these are NOT registered as nn.Module buffers to avoid DDP
-        # _sync_buffers broadcasting them across ranks (they are pure statistics
-        # and do not need gradient synchronisation).  Keeping them as plain
-        # attributes prevents "No backend type associated with device type cpu"
-        # when a buffer lands on CPU before the model is moved to CUDA.
-        self.load_balancing_loss = torch.tensor(0.0)
-        self.expert_usage_counts = torch.zeros(num_experts)
+        # Non-persistent buffers follow device moves without polluting checkpoints.
+        # The trainer disables DDP buffer broadcasts for routed models, so these
+        # rank-local diagnostics remain local statistics.
+        self.register_buffer("load_balancing_loss", torch.tensor(0.0), persistent=False)
+        self.register_buffer("expert_usage_counts", torch.zeros(num_experts), persistent=False)
         self.last_routing_snapshot = {}
+        self.last_routing_diagnostics = {}
         # Expose balance_loss_coeff for GiniBalanceScheduler / apply_balance_loss_coeff
         self.balance_loss_coeff = 1.0
 
-    def _ensure_compat_attrs(self):
+    def _ensure_compat_attrs(self, device=None):
         """One-time legacy checkpoint attribute repair (not per-forward)."""
         if not hasattr(self, "use_top_k"):
             self.use_top_k = False
@@ -454,11 +485,28 @@ class ES_MOE(nn.Module):
             self.num_experts = len(self.experts) if hasattr(self, "experts") else 1
         if not hasattr(self, "top_k"):
             self.top_k = self.num_experts
+        if not hasattr(self, "max_kernel_size"):
+            self.max_kernel_size = max(
+                (module.conv.depthwise.kernel_size[0] for module in self.experts if hasattr(module, "conv")),
+                default=15,
+            )
+        for name in ("load_balancing_loss", "expert_usage_counts"):
+            if name not in self._buffers:
+                default = torch.tensor(0.0) if name == "load_balancing_loss" else torch.zeros(self.num_experts)
+                legacy = getattr(self, name, default)
+                if hasattr(self, name):
+                    delattr(self, name)
+                value = legacy.detach() if isinstance(legacy, torch.Tensor) else default
+                self.register_buffer(name, value.to(device=device), persistent=False)
 
     def forward(self, x):
-        self._ensure_compat_attrs()
+        self._ensure_compat_attrs(x.device)
         # Get routing weights
-        routing_weights = self.routing(x)
+        try:
+            routing_weights = self.routing(x)
+        except Exception:
+            self.last_routing_diagnostics = dict(getattr(self.routing, "last_routing_diagnostics", {}))
+            raise
 
         # Compute load-balancing loss
         load_balance_loss = self._compute_load_balancing_loss(routing_weights)
@@ -470,16 +518,17 @@ class ES_MOE(nn.Module):
                 expert_usage=routing_weights.mean(dim=(0, 2, 3)),
                 router_probs=routing_weights,
                 aux_loss=load_balance_loss,
+                finite_diagnostics=self.last_routing_diagnostics,
             )
 
-        # Dense forward only during training (gradients to all experts) or when
-        # exporting/tracing (sparse control-flow breaks exporters). For normal
-        # eval/inference use the Top-K sparse path to reclaim the MoE speedup.
+        # Dense forward during training, export/tracing, or whenever Top-K was
+        # not explicitly requested. ``top_k=None`` means "use all experts" and
+        # must not silently become threshold-pruned Top-1 during evaluation.
         use_dense = (
             self.training
             or torch.onnx.is_in_onnx_export()
             or torch.jit.is_tracing()
-            or not getattr(self, "use_sparse_inference", True)
+            or not self._eager_sparse_enabled()
         )
         if use_dense:
             final_output = self._dense_forward(x, routing_weights)
@@ -504,6 +553,37 @@ class ES_MOE(nn.Module):
     def aux_loss(self):
         """Retrieve the auxiliary loss from the registry."""
         return _get_moe_aux_loss(self)
+
+    def publish_aux_loss(self, *, step: int, training: bool) -> torch.Tensor:
+        return publish_aux_loss(self, self.aux_loss, step=step, kind="moe", training=training)
+
+    def routing_snapshot(self) -> dict:
+        return _routing_snapshot(self)
+
+    def export_capabilities(self) -> dict:
+        capabilities = _export_routing_capabilities(self)
+        eager_sparse = self._eager_sparse_enabled()
+        capabilities.update(
+            routing_kind="moe",
+            sparse_dispatch=eager_sparse,
+            eager_sparse_dispatch=eager_sparse,
+            training_sparse_dispatch=False,
+            sparse_export_limitation=(
+                "ES_MOE eager inference supports sample-level Top-K dispatch; ONNX and TorchScript tracing execute "
+                "all experts through the dense fallback."
+            ),
+        )
+        return capabilities
+
+    def _eager_sparse_enabled(self) -> bool:
+        """Return whether eager evaluation can dispatch fewer than all experts."""
+        num_experts = int(getattr(self, "num_experts", len(getattr(self, "experts", ()))) or 0)
+        top_k = int(getattr(self, "top_k", num_experts) or num_experts)
+        return bool(
+            getattr(self, "use_sparse_inference", True)
+            and getattr(self, "use_top_k", False)
+            and top_k < num_experts
+        )
 
     def get_gflops(self, input_shape: Tuple[int, int, int, int]) -> Dict[str, float]:
         """Estimate GFLOPs for a single forward pass.
@@ -547,40 +627,44 @@ class ES_MOE(nn.Module):
 
     def _sparse_forward(self, x, routing_weights):
         """Sparse forward: compute only Top-K experts (used during inference)."""
+        # Selecting every expert must exactly match the dense training-time path.
+        if self.top_k >= self.num_experts:
+            return self._dense_forward(x, routing_weights)
+
         B, E, H, W = routing_weights.shape
 
         # Compute per-expert importance
         routing_weights_flat = routing_weights.view(B, E, -1)
         expert_importance = routing_weights_flat.mean(dim=2)
 
-        # Find Top-K experts
-        topk_values, topk_indices = torch.topk(expert_importance, self.top_k, dim=1)
+        # Find Top-K experts and build the retained sample/expert mask. Dynamic
+        # pruning is an optional approximation, but it must preserve the total
+        # routing mass seen by the downstream normalization layer.
+        topk_importance, topk_indices = torch.topk(expert_importance, self.top_k, dim=1)
+        retained_topk = torch.ones_like(topk_indices, dtype=torch.bool)
+        if getattr(self, "dynamic_threshold", 0.0) > 0:
+            ranks = torch.arange(self.top_k, device=topk_indices.device).view(1, -1)
+            retained_topk = (ranks == 0) | (topk_importance >= self.dynamic_threshold)
+        retained = torch.zeros(B, E, dtype=torch.bool, device=topk_indices.device)
+        retained.scatter_(1, topk_indices, retained_topk)
+
+        retained_weights = routing_weights * retained[:, :, None, None].to(routing_weights.dtype)
+        normalizer = retained_weights.sum(dim=1, keepdim=True).clamp_min(torch.finfo(routing_weights.dtype).eps)
+        retained_weights = retained_weights / normalizer
 
         # Initialize output
-        final_output = torch.zeros_like(x)
+        final_output = x.new_zeros(B, self.out_channels, H, W)
 
         # Iterate over experts (vectorized over batch)
         for expert_idx in range(self.num_experts):
-            # Find batch samples that selected this expert (avoid .any() GPU sync)
-            mask = (topk_indices == expert_idx)
-            batch_indices, k_ranks = torch.where(mask)
+            # Find batch samples that retained this expert (avoid .any() GPU sync)
+            batch_indices = torch.where(retained[:, expert_idx])[0]
             if batch_indices.numel() == 0:
                 continue
-            # === Dynamic Pruning ===
-            if hasattr(self, 'dynamic_threshold') and self.dynamic_threshold > 0:
-                current_weights = routing_weights[batch_indices, expert_idx:expert_idx + 1, :, :]
-                # Keep if (rank == 0) OR (weight >= threshold)
-                weight_means = current_weights.mean(dim=(1, 2, 3))
-                keep_mask = (k_ranks == 0) | (weight_means >= self.dynamic_threshold)
-
-                batch_indices = batch_indices[keep_mask]
-                if batch_indices.numel() == 0:
-                    continue
-            # =======================
 
             # Compute expert output for selected samples
             expert_out = self.experts[expert_idx](x[batch_indices])
-            weight = routing_weights[batch_indices, expert_idx:expert_idx + 1, :, :]
+            weight = retained_weights[batch_indices, expert_idx:expert_idx + 1, :, :]
 
             # Accumulate
             # fp16-safe: cast accumulator source to match final_output dtype (P0-2 fix)
@@ -593,20 +677,32 @@ class ES_MOE(nn.Module):
         expert_usage = routing_weights.mean(dim=(0, 2, 3))
         # reduce_ddp=should_reduce_ddp(self) → usage averaged across ranks so all GPUs share one
         # global balance target (matches MoELoss; no-op on single GPU).
-        load_balance_loss = gshard_balance_loss(expert_usage, self.num_experts, reduce_ddp=should_reduce_ddp(self))
+        raw_balance_loss = gshard_balance_loss(
+            expert_usage, self.num_experts, reduce_ddp=should_reduce_ddp(self)
+        )
+        load_balance_loss = raw_balance_loss * float(getattr(self, "balance_loss_coeff", 1.0))
+
+        router_diagnostics = getattr(self.routing, "last_routing_diagnostics", {})
+        downstream = routing_finite_diagnostics(probabilities=routing_weights, aux_loss=load_balance_loss)
+        self.last_routing_diagnostics = dict(router_diagnostics)
+        for key, value in downstream.items():
+            if key == "first_nonfinite_boundary":
+                if self.last_routing_diagnostics.get(key) is None:
+                    self.last_routing_diagnostics[key] = value
+            elif value is not None:
+                self.last_routing_diagnostics[key] = value
+        self.last_routing_diagnostics["all_finite"] = (
+            self.last_routing_diagnostics.get("first_nonfinite_boundary") is None
+        )
 
         # Guard against NaN loss (graph-safe: keep grad_fn instead of new leaf)
-        if not torch.isfinite(load_balance_loss).all():
-            load_balance_loss = torch.nan_to_num(load_balance_loss, nan=0.0, posinf=0.0, neginf=0.0)
-            
-        if not hasattr(self, "load_balancing_loss"):
-            self.register_buffer("load_balancing_loss", torch.tensor(0.0), persistent=False)
-        if not hasattr(self, "expert_usage_counts"):
-            self.register_buffer("expert_usage_counts", torch.zeros_like(expert_usage), persistent=False)
-        if self.load_balancing_loss.shape == torch.Size([]):
-            self.load_balancing_loss = self.load_balancing_loss.to(load_balance_loss.device).reshape(())
-        self.load_balancing_loss.copy_(load_balance_loss.detach())
-        self.expert_usage_counts.copy_(expert_usage.detach())
+        exporting = torch.onnx.is_in_onnx_export() or torch.jit.is_tracing()
+        if not exporting and not torch.isfinite(load_balance_loss).all():
+            load_balance_loss = graph_connected_finite_zero(routing_weights, load_balance_loss)
+
+        if not exporting:
+            self.load_balancing_loss.copy_(raw_balance_loss.detach())
+            self.expert_usage_counts.copy_(expert_usage.detach())
         
         # Store in registry (training only — avoids leaving graph-detached eval
         # tensors in the global registry that the loss collector could pick up).
@@ -978,11 +1074,6 @@ class OptimizedMOEImproved(nn.Module):
         # Only after warmup so it doesn't fight progressive-sparsity scheduling.
         active_experts = list(range(self.num_experts))
         _step = self._training_step
-        ddp_active = (
-            torch.distributed.is_available()
-            and torch.distributed.is_initialized()
-            and torch.distributed.get_world_size() > 1
-        )
         if self.training and _step >= self.warmup_steps and _step % self.dropout_interval == 0:
             num_drop = max(1, int(self.num_experts * self.expert_dropout_rate))
             # Draw the drop set on a fixed-seed generator keyed by the global
@@ -1267,6 +1358,11 @@ class HyperUltimateMoE(nn.Module):
         # Progressive Sparsity
         self.register_buffer('training_step', torch.tensor(0), persistent=False)
         self.register_buffer('current_top_k', torch.tensor(num_experts))
+        # Python mirrors drive the eager routing branch without a per-forward
+        # device-to-host synchronization. Buffers remain available for state
+        # inspection and checkpoint compatibility.
+        self._training_step_value = 0
+        self._current_top_k_value = num_experts
         self.warmup_steps = 5000
         
         # Adaptive Load Balancing (rev5: GShard-scale coeffs, see controller note)
@@ -1311,12 +1407,13 @@ class HyperUltimateMoE(nn.Module):
     
     def _update_sparsity(self):
         """Progressive Sparsity Scheduling"""
-        if self.training_step < self.warmup_steps:
-            progress = self.training_step.float() / self.warmup_steps
+        if self._training_step_value < self.warmup_steps:
+            progress = self._training_step_value / self.warmup_steps
             current_k = self.num_experts - progress * (self.num_experts - self.top_k)
-            self.current_top_k.fill_(max(self.top_k, int(current_k)))
+            self._current_top_k_value = max(self.top_k, int(current_k))
         else:
-            self.current_top_k.fill_(self.top_k)
+            self._current_top_k_value = self.top_k
+        self.current_top_k.fill_(self._current_top_k_value)
     
     def forward(self, x):
         B, C, H, W = x.shape
@@ -1324,7 +1421,8 @@ class HyperUltimateMoE(nn.Module):
         # Progressive Sparsity
         if self.training:
             self._update_sparsity()
-            self.training_step += 1
+            self._training_step_value += 1
+            self.training_step.add_(1)
         
         # 1. Channel Split
         x_static, x_dynamic = torch.split(
@@ -1339,7 +1437,7 @@ class HyperUltimateMoE(nn.Module):
         # current_top_k via a buffer); complexity now scales expert *weights*
         # rather than the discrete top_k, avoiding complexity_score.item() sync
         # that previously stalled the pipeline (esp. on multi-GPU).
-        adaptive_top_k = int(self.current_top_k.item()) if self.training else self.top_k
+        adaptive_top_k = self._current_top_k_value if self.training else self.top_k
         complexity_scale = self.complexity_estimator(x_dynamic).mean().clamp(0.3, 1.5)
         
         # 4. Routing Decision (Mixed Precision)
@@ -1482,6 +1580,8 @@ class UltimateOptimizedMoE(nn.Module):
         # Progressive Sparsity
         self.register_buffer('training_step', torch.tensor(0), persistent=False)
         self.register_buffer('current_top_k', torch.tensor(num_experts))
+        self._training_step_value = 0
+        self._current_top_k_value = num_experts
         self.warmup_steps = 5000
         
         # Adaptive Balancing (Add Entropy)
@@ -1519,21 +1619,24 @@ class UltimateOptimizedMoE(nn.Module):
     
     def _update_sparsity_and_temperature(self):
         """Progressive Sparsity + Dynamic Temperature"""
-        progress = min(1.0, self.training_step.float() / self.warmup_steps)
+        progress = min(1.0, self._training_step_value / self.warmup_steps)
         # Sparsity
         current_k = self.num_experts - progress * (self.num_experts - self.top_k)
-        self.current_top_k.fill_(max(self.top_k, int(current_k)))
+        self._current_top_k_value = max(self.top_k, int(current_k))
+        self.current_top_k.fill_(self._current_top_k_value)
         # Temperature
-        current_temp = self.initial_temperature * (1 - progress) + self.final_temperature * progress
-        # Clamp temperature to avoid division by zero or explosion
-        self.routing.temperature = max(current_temp, 0.1)
+        if not getattr(self.routing, "_external_temperature_schedule", False):
+            current_temp = self.initial_temperature * (1 - progress) + self.final_temperature * progress
+            # Clamp temperature to avoid division by zero or explosion
+            self.routing.temperature = max(current_temp, 0.1)
     
     def forward(self, x):
         B, C, H, W = x.shape
         
         if self.training:
             self._update_sparsity_and_temperature()
-            self.training_step += 1
+            self._training_step_value += 1
+            self.training_step.add_(1)
         
         # Channel Split
         x_static, x_dynamic = torch.split(x, [self.static_channels, self.dynamic_channels], dim=1)
@@ -1545,7 +1648,7 @@ class UltimateOptimizedMoE(nn.Module):
         complexity_scale = torch.nan_to_num(complexity_scale, nan=1.0, posinf=1.5, neginf=0.3).clamp(0.3, 1.5)
         out_static = self.static_net(x_static)
         
-        adaptive_top_k = int(self.current_top_k.item()) if self.training else self.top_k
+        adaptive_top_k = self._current_top_k_value if self.training else self.top_k
         
         # Routing (AMP Acceleration - only on CUDA)
         with autocast(enabled=torch.cuda.is_available()):  # New: Mixed Precision
