@@ -412,16 +412,53 @@ class MoEPruner:
         LOGGER.info("\n✅ Surgery completed")
         return new_model
     
+    def _sync_yaml_num_experts(self, pruned_model: nn.Module) -> None:
+        """Encode each ES_MOE's post-prune expert count into ``model.yaml``.
+
+        Without this, ``YOLO(pruned.pt).train()`` (the prune -> LoRA/full fine-tune
+        recovery workflow) rebuilds the model from ``model.yaml`` using ES_MOE's default
+        expert count, and ``intersect_dicts`` silently drops the reduced expert/router
+        weights on shape mismatch, re-inflating the model with randomly initialized
+        experts. Writing ``[out_channels, num_experts]`` into each pruned ES_MOE's YAML
+        args lets the pruned architecture survive the rebuild (ES_MOE clamps
+        ``top_k = min(top_k, num_experts)`` automatically).
+        """
+        from ultralytics.nn.modules.moe.modules import ES_MOE
+
+        y = getattr(pruned_model, "yaml", None)
+        if not isinstance(y, dict) or "backbone" not in y:
+            return
+        backbone, head = y["backbone"], y.get("head", [])
+        nb = len(backbone)
+        for name, mod in pruned_model.named_modules():
+            if not isinstance(mod, ES_MOE):
+                continue
+            parts = name.split(".")
+            if len(parts) < 2 or not parts[1].isdigit():
+                continue
+            idx = int(parts[1])
+            seq, j = (backbone, idx) if idx < nb else (head, idx - nb)
+            if not 0 <= j < len(seq) or len(seq[j]) < 4:
+                continue
+            args = list(seq[j][3]) if isinstance(seq[j][3], list) else [seq[j][3]]
+            out_ch = args[0] if args else getattr(mod, "out_channels", None)
+            seq[j][3] = [out_ch, int(mod.num_experts)]
+        LOGGER.info("   Synced post-prune expert counts into model.yaml")
+
     def _save_model(self, pruned_model: nn.Module, output_path: str) -> None:
         """
         Save pruned model to file
-        
+
         Args:
             pruned_model: Pruned model
             output_path: Output file path
         """
         LOGGER.info("\n[Phase 4] Saving Pruned Model...")
-        
+
+        # Keep model.yaml consistent with the pruned architecture so retraining
+        # (LoRA / full fine-tune recovery) does not silently re-inflate experts.
+        self._sync_yaml_num_experts(pruned_model)
+
         # Update YOLO wrapper
         self.model.model = pruned_model
         
