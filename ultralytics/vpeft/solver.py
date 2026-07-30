@@ -10,6 +10,7 @@ Implements three solvers for the combinatorial PEFT placement problem:
 from __future__ import annotations
 
 import math
+import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Sequence, Tuple, Union
@@ -163,9 +164,14 @@ class PlacementDecision:
     variants: Optional[List[str]] = None
     """Per-node variants; defaults to the global ``variant`` for compatibility."""
 
+    metadata: Optional[Dict[str, object]] = None
+    """Solver diagnostics such as candidate count, elapsed time, and objective."""
+
     def __post_init__(self) -> None:
         if self.variants is None:
             self.variants = [self.variant] * int(self.placement.numel())
+        if self.metadata is None:
+            self.metadata = {}
 
 
 # ---------------------------------------------------------------------------
@@ -344,6 +350,7 @@ class AlternatingOptimizationSolver(ConstraintSolver):
         variant: str,
         constraints: ConstraintRegistry,
     ) -> PlacementDecision:
+        started_at = time.perf_counter()
         n = graph.n_nodes
         utilities = graph.get_node_importances()
         hard_mask = constraints.get_hard_mask(graph, variant, candidate_ranks=self.rank_set).bool()
@@ -407,7 +414,7 @@ class AlternatingOptimizationSolver(ConstraintSolver):
                 break
 
         # --- post-processing -----------------------------------------------
-        pi, r = _project_discrete_solution(graph, pi, r, xi, constraints, self.rank_set)
+        pi, r = _project_discrete_solution(graph, pi, r, variant, constraints, self.rank_set)
         pi, r, xi = constraints.enforce_moe_consistency(graph, pi, r, xi, self.rank_set)
         pi, r = _project_budget(graph, pi, r, budget, xi, utilities)
         budget_used = int(constraints.get_budget_usage(graph, pi, r, xi))
@@ -438,6 +445,20 @@ class AlternatingOptimizationSolver(ConstraintSolver):
             reason=reason,
             utility=utility,
             variants=list(xi),
+            metadata={
+                "solver": self.__class__.__name__,
+                "n_nodes": n,
+                "n_variant_candidates": len(set([variant, "lora", "ia3"])),
+                "variant_candidates": sorted(set([variant, "lora", "ia3"])),
+                "optimize_variant": True,
+                "max_iter": int(self.max_iter),
+                "elapsed_seconds": time.perf_counter() - started_at,
+                "final_utility": float(utility),
+                "budget_used": int(budget_used),
+                "budget_remaining": int(budget_remaining),
+                "target_module_count": len(target_modules),
+                "status": status,
+            },
         )
 
 
@@ -543,6 +564,7 @@ class DifferentiableOptimizationSolver(ConstraintSolver):
         variant: str,
         constraints: ConstraintRegistry,
     ) -> PlacementDecision:
+        started_at = time.perf_counter()
         n = graph.n_nodes
         utilities = graph.get_node_importances()
         hard_mask = constraints.get_hard_mask(graph, variant, candidate_ranks=self.rank_set).bool()
@@ -617,7 +639,9 @@ class DifferentiableOptimizationSolver(ConstraintSolver):
                 ]
             else:
                 xi_for_constraints = [variant] * n
-            soft_violations = constraints.evaluate_soft(graph, pi_hat, r_cont, xi_for_constraints)
+            soft_violations = constraints.evaluate_soft(
+                graph, pi_hat, r_cont, xi_for_constraints, differentiable=True
+            )
             total_penalty = penalty
             for key in soft_keys:
                 if key == "C_budget":
@@ -723,6 +747,20 @@ class DifferentiableOptimizationSolver(ConstraintSolver):
             reason=reason,
             utility=utility,
             variants=list(xi_selected),
+            metadata={
+                "solver": self.__class__.__name__,
+                "n_nodes": n,
+                "n_variant_candidates": self.n_variants if self.optimize_variant else 1,
+                "variant_candidates": list(self.variant_candidates) if self.optimize_variant else [variant],
+                "optimize_variant": bool(self.optimize_variant),
+                "max_iter": int(self.max_iter),
+                "elapsed_seconds": time.perf_counter() - started_at,
+                "final_utility": float(utility),
+                "budget_used": int(budget_used),
+                "budget_remaining": int(budget_remaining),
+                "target_module_count": len(target_modules),
+                "status": status,
+            },
         )
 
 

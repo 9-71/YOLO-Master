@@ -145,7 +145,7 @@ class _RegionalAttnHead(nn.Module):
     """
 
     def __init__(self, dim: int, num_heads: int, head_dim: Optional[int] = None,
-                 pool_stride: int = 2):
+                 pool_stride: int = 2, max_kv_tokens: Optional[int] = 4096):
         super().__init__()
         self.num_heads = num_heads
         self.head_dim = head_dim or max(dim // num_heads, 16)
@@ -154,7 +154,10 @@ class _RegionalAttnHead(nn.Module):
         # P0-3 fix: validate pool_stride at construction time.
         if pool_stride < 1:
             raise ValueError(f"pool_stride must be ≥ 1, got {pool_stride}")
+        if max_kv_tokens is not None and max_kv_tokens < 1:
+            raise ValueError(f"max_kv_tokens must be positive or None, got {max_kv_tokens}")
         self.pool_stride = pool_stride
+        self.max_kv_tokens = None if max_kv_tokens is None else int(max_kv_tokens)
 
         self.q_proj = nn.Conv2d(dim, inner, 1, bias=False)
         # P2-6 fix: use adaptive_avg_pool2d instead of AvgPool2d so that when
@@ -176,8 +179,14 @@ class _RegionalAttnHead(nn.Module):
         if min(H, W) <= 1:
             kv = self.kv_proj(x)                    # conv-only, skip pool
         else:
-            target_h = max(1, H // self.pool_stride)
-            target_w = max(1, W // self.pool_stride)
+            stride = self.pool_stride
+            if self.max_kv_tokens is not None:
+                # Increase pooling only when the configured stride would leave
+                # too many KV tokens for a quadratic attention kernel.
+                while (max(1, H // stride) * max(1, W // stride)) > self.max_kv_tokens:
+                    stride *= 2
+            target_h = max(1, H // stride)
+            target_w = max(1, W // stride)
             pooled = F.adaptive_avg_pool2d(x, (target_h, target_w))
             kv = self.kv_proj(pooled)               # [B, 2*inner, H', W']
         H2, W2 = kv.shape[2], kv.shape[3]
@@ -287,10 +296,6 @@ class _GlobalAttnHead(nn.Module):
 
         # kv = k^T @ v → [B*nh, eff_nb, hd]
         kv = k_flat.transpose(1, 2) @ v_flat
-        # L2-normalize kv accumulator to keep matmul chain stable in float16
-        # fp16-safe floor: 1e-6 underflows in half precision
-        kv_norm = kv.norm(dim=-1, keepdim=True).clamp(min=_fp_min(1e-6, kv.dtype))
-        kv = kv / kv_norm
         # normalizer: sum of k features over N → [B*nh, eff_nb]
         # fp16-safe: accumulate in float32 (P0-2 fix) — at N=25600 (1280×1280 P3),
         # raw k_sum can reach ~2.5e8 which overflows to inf in float16.

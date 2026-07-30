@@ -216,3 +216,45 @@ def test_moa_global_head_linear_vs_softmax_correlated():
         approx_centered.square().sum().sqrt() * exact_centered.square().sum().sqrt()
     )
     assert corr > 0.1, f"linear attn should correlate with softmax attn, got {corr:.3f}"
+
+
+def test_moa_regional_head_respects_kv_token_budget():
+    """Regional attention increases pooling stride when the KV map is too large."""
+    from ultralytics.nn.modules.moa.heads import _RegionalAttnHead
+
+    head = _RegionalAttnHead(32, num_heads=2, head_dim=16, pool_stride=2, max_kv_tokens=16).eval()
+    pooled_shapes = []
+    hook = head.kv_proj.register_forward_hook(lambda _, inputs, __: pooled_shapes.append(tuple(inputs[0].shape[-2:])))
+    try:
+        with torch.no_grad():
+            out = head(torch.randn(1, 32, 16, 16))
+    finally:
+        hook.remove()
+    assert out.shape == (1, 32, 16, 16)
+    assert pooled_shapes == [(4, 4)]
+
+
+def test_moa_linear_attention_uses_raw_kv_accumulator():
+    """The linear attention numerator must not apply an extra KV L2 scale."""
+    from ultralytics.nn.modules.moa.heads import _GlobalAttnHead
+
+    torch.manual_seed(0)
+    head = _GlobalAttnHead(16, num_heads=1, head_dim=16).eval()
+    q = torch.randn(1, 1, 7, 16)
+    k = torch.randn(1, 1, 7, 16)
+    v = torch.randn(1, 1, 7, 16)
+    with torch.no_grad():
+        actual = head._linear_attn(q, k, v)
+        rf = head._get_rf(q.device, q.dtype)
+        scale = rf.shape[0] ** -0.5
+        q_feat = head._relu_kernel(q @ rf.T * scale).clamp(max=1e4)
+        k_feat = head._relu_kernel(k @ rf.T * scale).clamp(max=1e4)
+        q_flat = q_feat.reshape(-1, 7, rf.shape[0])
+        k_flat = k_feat.reshape(-1, 7, rf.shape[0])
+        v_flat = v.reshape(-1, 7, 16)
+        kv = k_flat.transpose(1, 2) @ v_flat
+        k_sum = k_flat.float().sum(dim=1)
+        expected = ((q_flat @ kv).clamp(-1e4, 1e4)
+                    / (q_flat @ k_sum.to(q_flat.dtype).unsqueeze(-1)).clamp_min(1e-6))
+        expected = expected.reshape_as(actual)
+    assert torch.allclose(actual, expected, atol=1e-5, rtol=1e-5)

@@ -13,6 +13,7 @@ from ultralytics.nn.modules.utils import get_safe_groups as _safe_groups, robust
 from ultralytics.nn.modules.routing_protocol import (
     collect_aux_loss,
     export_capabilities as _export_routing_capabilities,
+    is_export_or_tracing,
     publish_aux_loss,
     routing_finite_diagnostics,
     routing_snapshot as _routing_snapshot,
@@ -71,9 +72,8 @@ class C2fMoA(nn.Module):
         e: float = 0.5,
         aux_loss_coeff: float = 0.01,
         local_window_size: int = 7,
-        sequential_heads: bool = False,
-        sparse_inference: bool = False,
-        sparse_inference_threshold: float = 0.02,
+        sequential_heads: bool = True,
+        regional_max_kv_tokens: int | None = 4096,
     ):
         super().__init__()
         self.sparse_inference = bool(sparse_inference)
@@ -110,19 +110,15 @@ class C2fMoA(nn.Module):
         eff_heads = max(eff_heads, MoABlock.NUM_GROUPS)
 
         self.m = nn.ModuleList(
-            MoABlock(
-                self.c,
-                num_heads=eff_heads,
-                mlp_ratio=mlp_ratio,
-                temperature=temperature,
-                shortcut=shortcut,
-                aux_loss_coeff=aux_loss_coeff,
-                block_index=i,
-                local_window_size=local_window_size,
-                sequential_heads=sequential_heads,
-                sparse_inference=sparse_inference,
-                sparse_inference_threshold=sparse_inference_threshold,
-            )
+            MoABlock(self.c, num_heads=eff_heads,
+                     mlp_ratio=mlp_ratio,
+                     temperature=temperature,
+                     shortcut=shortcut,
+                     aux_loss_coeff=aux_loss_coeff,
+                     block_index=i,
+                     local_window_size=local_window_size,
+                     sequential_heads=sequential_heads,
+                     regional_max_kv_tokens=regional_max_kv_tokens)
             for i in range(n)
         )
         self.last_aux_loss: torch.Tensor = torch.zeros((), requires_grad=False)
@@ -137,24 +133,29 @@ class C2fMoA(nn.Module):
             if isinstance(aux_loss, torch.Tensor):
                 aux_total = aux_total + aux_loss
         self.last_aux_loss = aux_total
-        publish_aux_loss(self, aux_total, kind="moa", training=self.training, covered_modules=self.m)
+        exporting = is_export_or_tracing()
+        if not exporting:
+            publish_aux_loss(self, aux_total, kind="moa", training=self.training, covered_modules=self.m)
 
         # ── Routing snapshot (aggregated from child MoABlocks) ──────────
-        with torch.no_grad():
-            child_snaps = [getattr(m, "last_routing_snapshot", {}) for m in self.m]
-            if child_snaps:
-                usages = [s["expert_usage"] for s in child_snaps if "expert_usage" in s]
-                mean_usage = sum(usages) / len(usages) if usages else x.new_zeros(3)
-                self.last_routing_snapshot = {
-                    "num_experts": MoABlock.NUM_GROUPS,
-                    "top_k": MoABlock.NUM_GROUPS,
-                    "expert_usage": mean_usage,
-                    "mean_router_probs": mean_usage,
-                    "aux_loss": float(aux_total.detach()),
-                    "finite_diagnostics": [s.get("finite_diagnostics", {}) for s in child_snaps],
-                }
-            else:
-                self.last_routing_snapshot = {}
+        if not exporting:
+            with torch.no_grad():
+                child_snaps = [getattr(m, "last_routing_snapshot", {}) for m in self.m]
+                if child_snaps:
+                    usages = [s["expert_usage"] for s in child_snaps if "expert_usage" in s]
+                    mean_usage = sum(usages) / len(usages) if usages else x.new_zeros(3)
+                    self.last_routing_snapshot = {
+                        "num_experts": MoABlock.NUM_GROUPS,
+                        "top_k": MoABlock.NUM_GROUPS,
+                        "expert_usage": mean_usage,
+                        "mean_router_probs": mean_usage,
+                        "aux_loss": float(aux_total.detach()),
+                        "finite_diagnostics": [s.get("finite_diagnostics", {}) for s in child_snaps],
+                    }
+                else:
+                    self.last_routing_snapshot = {}
+        else:
+            self.last_routing_snapshot = {}
 
         return self.cv2(torch.cat(y, dim=1))
 
@@ -295,8 +296,9 @@ class NeckMoAFusion(nn.Module):
             self_out = self.self_out_proj(self_out)
 
         # ── Router blend ─────────────────────────────────────────────────
-        weights, router_logits = self.router(hi, return_logits=True)  # [B, 2, H, W]
-        if self.training and self.aux_loss_coeff > 0:
+        weights, router_logits = self.router(hi, return_logits=True)         # [B, 2, H, W]
+        exporting = is_export_or_tracing()
+        if not exporting and self.training and self.aux_loss_coeff > 0:
             self.last_aux_loss, finite_diagnostics = _moa_router_aux_loss(
                 weights,
                 router_logits,
@@ -304,26 +306,33 @@ class NeckMoAFusion(nn.Module):
                 reduce_ddp=should_reduce_ddp(self),
                 return_diagnostics=True,
             )
+        elif exporting:
+            self.last_aux_loss = hi.new_zeros(())
+            finite_diagnostics = {}
         else:
             self.last_aux_loss = hi.new_zeros(())
             finite_diagnostics = routing_finite_diagnostics(
                 logits=router_logits, probabilities=weights, aux_loss=self.last_aux_loss
             )
-        publish_aux_loss(self, self.last_aux_loss, kind="moa", training=self.training)
+        if not exporting:
+            publish_aux_loss(self, self.last_aux_loss, kind="moa", training=self.training)
         w_cross = weights[:, 0:1]
         w_self = weights[:, 1:2]
 
         # ── Routing snapshot ─────────────────────────────────────────────
-        with torch.no_grad():
-            mean_w = weights.detach().float().mean(dim=(0, 2, 3))  # [2]
-            self.last_routing_snapshot = {
-                "num_experts": 2,
-                "top_k": 2,
-                "expert_usage": mean_w,
-                "mean_router_probs": mean_w,
-                "aux_loss": float(self.last_aux_loss.detach()),
-                "finite_diagnostics": finite_diagnostics,
-            }
+        if not exporting:
+            with torch.no_grad():
+                mean_w = weights.detach().float().mean(dim=(0, 2, 3))  # [2]
+                self.last_routing_snapshot = {
+                    "num_experts": 2,
+                    "top_k": 2,
+                    "expert_usage": mean_w,
+                    "mean_router_probs": mean_w,
+                    "aux_loss": float(self.last_aux_loss.detach()),
+                    "finite_diagnostics": finite_diagnostics,
+                }
+        else:
+            self.last_routing_snapshot = {}
 
         if self_out.shape[1] != cross_out.shape[1]:
             raise RuntimeError(

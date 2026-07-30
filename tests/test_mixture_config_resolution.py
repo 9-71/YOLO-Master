@@ -21,6 +21,7 @@ def _args(**overrides):
         moe_temperature=0.6,
         moe_weight_threshold=0.03,
         moa_local_window_size=9,
+        moa_regional_max_kv_tokens=8192,
         moa_aux_loss_coeff=0.2,
         mot_balance_loss=0.4,
         mot_router_z_loss=0.5,
@@ -51,6 +52,7 @@ def test_yaml_explicit_values_override_cli_and_are_inherited_by_children():
     apply_mixture_config(model, resolved)
     assert model.m[0].router.temperature == 1.0
     assert model.m[0].local_head.window_size == 11
+    assert model.m[0].region_head.max_kv_tokens == 8192
 
 
 def test_mot_cli_values_apply_to_wrapper_and_nested_blocks():

@@ -434,6 +434,14 @@ def test_regional_attn_head_invalid_pool_stride():
         _RegionalAttnHead(32, num_heads=4, pool_stride=0)
 
 
+def test_regional_attn_head_default_and_unlimited_kv_budgets():
+    """The compatibility default is bounded while None preserves unlimited KV pooling."""
+    bounded = _RegionalAttnHead(32, num_heads=4)
+    unlimited = _RegionalAttnHead(32, num_heads=4, max_kv_tokens=None)
+    assert bounded.max_kv_tokens == 4096
+    assert unlimited.max_kv_tokens is None
+
+
 def test_local_attn_head_window_size_clamping():
     """_LocalAttnHead clamps window_size >= 1 for extreme inputs."""
     torch.manual_seed(0)

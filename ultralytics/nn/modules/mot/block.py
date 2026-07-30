@@ -40,6 +40,7 @@ class MoTBlock(nn.Module):
         dropout (float): Dropout for attention/FFN.
         exploration_eps (float): Training-only dense routing floor that keeps all experts trainable.
         sparse_train_warmup_steps (int): Dense training forwards before enabled sparse dispatch begins.
+        local_attn_window (int): LocalConv attention window; 0 keeps global attention.
 
     Shape:
         Input:  [B, dim, H, W]
@@ -70,6 +71,7 @@ class MoTBlock(nn.Module):
         scene_consistency_coeff: float = 0.0,
         sparse_train_warmup_steps: int = 0,
         scene_inference_mode: str = "dynamic",
+        local_attn_window: int = 0,
     ):
         super().__init__()
         if not 1 <= top_k <= self.NUM_EXPERTS:
@@ -103,7 +105,9 @@ class MoTBlock(nn.Module):
 
         # Three Transformer experts
         self.experts = nn.ModuleList([
-            _LocalConvTransformerExpert(dim, expert_heads, mlp_ratio, dropout),
+            _LocalConvTransformerExpert(
+                dim, expert_heads, mlp_ratio, dropout, local_window_size=local_attn_window
+            ),
             _WindowTransformerExpert(dim, expert_heads, window_size, mlp_ratio, dropout,
                                      shift_size=window_size // 2 if window_shift else 0),
             _DeformableTransformerExpert(

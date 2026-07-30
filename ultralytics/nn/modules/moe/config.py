@@ -26,6 +26,7 @@ MIXTURE_DEFAULTS: dict[str, dict[str, Any]] = {
     "moa": {
         "temperature": 1.0,
         "local_window_size": 7,
+        "regional_max_kv_tokens": 4096,
         "aux_loss_coeff": 0.01,
         "aux_gain": 1.0,
         "aux_budget": 3.0,
@@ -42,6 +43,7 @@ MIXTURE_DEFAULTS: dict[str, dict[str, Any]] = {
         "scene_hidden_dim": None,
         "scene_consistency_coeff": 0.0,
         "scene_inference_mode": "dynamic",
+        "local_attn_window": 0,
         "aux_gain": 1.0,
         "aux_budget": 3.0,
     },
@@ -75,6 +77,7 @@ CLI_FIELDS: dict[str, dict[str, str]] = {
     "moa": {
         "temperature": "moa_temperature",
         "local_window_size": "moa_local_window_size",
+        "regional_max_kv_tokens": "moa_regional_max_kv_tokens",
         "aux_loss_coeff": "moa_aux_loss_coeff",
         "aux_gain": "moa_aux_gain",
         "aux_budget": "mixture_aux_budget",
@@ -91,6 +94,7 @@ CLI_FIELDS: dict[str, dict[str, str]] = {
         "scene_hidden_dim": "mot_scene_hidden_dim",
         "scene_consistency_coeff": "mot_scene_consistency",
         "scene_inference_mode": "mot_scene_inference_mode",
+        "local_attn_window": "mot_local_attn_window",
         "aux_gain": "mot_aux_gain",
         "aux_budget": "mixture_aux_budget",
     },
@@ -137,7 +141,12 @@ def annotate_mixture_yaml_config(module: nn.Module, module_name: str, yaml_args:
     kind = None
     if name == "C2fMoA":
         kind = "moa"
-        for index, key in ((3, "temperature"), (6, "aux_loss_coeff"), (7, "local_window_size")):
+        for index, key in (
+            (3, "temperature"),
+            (6, "aux_loss_coeff"),
+            (7, "local_window_size"),
+            (9, "regional_max_kv_tokens"),
+        ):
             if len(yaml_args) > index:
                 explicit[key] = yaml_args[index]
     elif name == "C2fMoT":
@@ -151,12 +160,18 @@ def annotate_mixture_yaml_config(module: nn.Module, module_name: str, yaml_args:
             (12, "scene_consistency_coeff"),
             (13, "sparse_train_warmup_steps"),
             (14, "scene_inference_mode"),
+            (15, "local_attn_window"),
         ):
             if len(yaml_args) > index:
                 explicit[key] = yaml_args[index]
     elif name == "MoABlock":
         kind = "moa"
-        for index, key in ((3, "temperature"), (6, "aux_loss_coeff"), (8, "local_window_size")):
+        for index, key in (
+            (3, "temperature"),
+            (6, "aux_loss_coeff"),
+            (8, "local_window_size"),
+            (10, "regional_max_kv_tokens"),
+        ):
             if len(yaml_args) > index:
                 explicit[key] = yaml_args[index]
     elif name == "MoTBlock":
@@ -171,6 +186,7 @@ def annotate_mixture_yaml_config(module: nn.Module, module_name: str, yaml_args:
             (17, "scene_consistency_coeff"),
             (18, "sparse_train_warmup_steps"),
             (19, "scene_inference_mode"),
+            (20, "local_attn_window"),
         ):
             if len(yaml_args) > index:
                 explicit[key] = yaml_args[index]
@@ -318,6 +334,14 @@ def apply_mixture_config(model: nn.Module, resolved: ResolvedMixtureConfig) -> i
                 and "local_window_size" not in inherited_explicit
             ):
                 local_head.window_size = max(1, int(config["local_window_size"]))
+            regional_head = getattr(module, "region_head", None)
+            if (
+                regional_head is not None
+                and hasattr(regional_head, "max_kv_tokens")
+                and "regional_max_kv_tokens" not in inherited_explicit
+            ):
+                budget = config["regional_max_kv_tokens"]
+                regional_head.max_kv_tokens = None if budget in (None, 0) else max(1, int(budget))
             if hasattr(module, "aux_loss_coeff") and "aux_loss_coeff" not in inherited_explicit:
                 module.aux_loss_coeff = config["aux_loss_coeff"]
             if hasattr(module, "sparse_inference") and "sparse_inference" not in inherited_explicit:
@@ -354,6 +378,11 @@ def apply_mixture_config(model: nn.Module, resolved: ResolvedMixtureConfig) -> i
                     router.temperature.fill_(float(config["temperature"]))
                 else:
                     router.temperature = float(config["temperature"])
+            if "local_attn_window" not in inherited_explicit:
+                experts = getattr(module, "experts", None)
+                if experts and hasattr(experts[0], "local_window_size"):
+                    experts[0].local_window_size = max(0, int(config["local_attn_window"]))
+                    applied += 1
         elif kind == "molora":
             loss_fn = getattr(module, "loss_fn", None)
             if loss_fn is not None:
