@@ -260,9 +260,11 @@ mot_scene_aware_router: False # (bool) Enable the experimental scene-aware resid
 mot_scene_hidden_dim: # (int, optional) Hidden size of the MoT scene-statistics projector (null=3)
 mot_scene_consistency: 0.0 # (float) Scene/expert consistency auxiliary-loss coefficient (0 disables)
 mot_scene_inference_mode: dynamic # (str) Scene-aware eval policy: dynamic or bypass
+mot_local_attn_window: 0 # (int) Optional LocalConv expert attention window; 0 keeps global attention
 moa_temperature: 1.0 # (float) Initial MoA router temperature
 moa_aux_loss_coeff: 0.01 # (float) MoA router auxiliary-loss coefficient
 moa_local_window_size: 7 # (int) Window size for MoA local attention head
+moa_regional_max_kv_tokens: 4096 # (int, 0=unlimited) Maximum Regional Head KV tokens
 moa_mot_temperature_factor: 0.97 # (float) Per-epoch router temperature multiplier for MoA/MoT
 moa_mot_min_temperature: 0.3 # (float) Minimum router temperature after annealing
 moe_aux_gain: 1.0 # (float) Gain for MoE balance/z-loss auxiliary loss

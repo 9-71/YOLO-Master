@@ -320,6 +320,7 @@ MIXTURE_INT_KEYS = frozenset(
         "lora_sensitivity_num_batches",
         "lora_sensitivity_max_layers",
         "moa_local_window_size",
+        "moa_regional_max_kv_tokens",
         "moe_expert_warmup_epochs",
         "moe_map_saturation_window_size",
         "moe_num_experts",
@@ -330,6 +331,7 @@ MIXTURE_INT_KEYS = frozenset(
         "molora_top_k",
         "molora_warmup_steps",
         "mot_sparse_train_warmup_steps",
+        "mot_local_attn_window",
         "slice_size",
     }
 )
@@ -355,6 +357,8 @@ CFG_INT_MIN = {  # minimum valid values for integer arguments used as divisors, 
     "vid_stride": 1,
     "seed": 0,
     "mot_sparse_train_warmup_steps": 0,
+    "mot_local_attn_window": 0,
+    "moa_regional_max_kv_tokens": 0,
 }
 MIXTURE_BOOL_KEYS = frozenset(
     {

@@ -7,6 +7,7 @@ from ultralytics.nn.modules._numeric import should_reduce_ddp
 from ultralytics.nn.modules.utils import robust_deepcopy
 from ultralytics.nn.modules.routing_protocol import (
     export_capabilities as _export_routing_capabilities,
+    is_export_or_tracing,
     publish_aux_loss,
     routing_finite_diagnostics,
     routing_snapshot as _routing_snapshot,
@@ -54,7 +55,8 @@ class MoABlock(nn.Module):
         aux_loss_coeff: float = 0.01,
         block_index: int = 0,
         local_window_size: int = 7,
-        sequential_heads: bool = False,
+        sequential_heads: bool = True,
+        regional_max_kv_tokens: int | None = 4096,
     ):
         super().__init__()
         self.sequential_heads = sequential_heads
@@ -70,7 +72,9 @@ class MoABlock(nn.Module):
         # Three attention head-groups (global head uses a per-block RF seed).
         global_rf_seed = block_index * 7919 + 2 * 65537
         self.local_head   = _LocalAttnHead(dim, heads_per_group, head_dim, window_size=local_window_size)
-        self.region_head  = _RegionalAttnHead(dim, heads_per_group, head_dim)
+        self.region_head  = _RegionalAttnHead(
+            dim, heads_per_group, head_dim, max_kv_tokens=regional_max_kv_tokens
+        )
         self.global_head  = _GlobalAttnHead(dim, heads_per_group, head_dim, rf_seed=global_rf_seed)
 
         # Router
@@ -144,7 +148,8 @@ class MoABlock(nn.Module):
 
         # ── Routing weights ──────────────────────────────────────────────
         weights, router_logits = self.router(x, return_logits=True)   # [B, 3, H, W]
-        if self.training and self.aux_loss_coeff > 0:
+        exporting = is_export_or_tracing()
+        if not exporting and self.training and self.aux_loss_coeff > 0:
             self.last_aux_loss, finite_diagnostics = _moa_router_aux_loss(
                 weights,
                 router_logits,
@@ -152,24 +157,31 @@ class MoABlock(nn.Module):
                 reduce_ddp=should_reduce_ddp(self),
                 return_diagnostics=True,
             )
+        elif exporting:
+            self.last_aux_loss = x.new_zeros(())
+            finite_diagnostics = {}
         else:
             self.last_aux_loss = x.new_zeros(())
             finite_diagnostics = routing_finite_diagnostics(
                 logits=router_logits, probabilities=weights, aux_loss=self.last_aux_loss
             )
-        publish_aux_loss(self, self.last_aux_loss, kind="moa", training=self.training)
+        if not exporting:
+            publish_aux_loss(self, self.last_aux_loss, kind="moa", training=self.training)
 
         # ── Routing snapshot (detached diagnostics) ──────────────────────
-        with torch.no_grad():
-            mean_w = weights.detach().float().mean(dim=(0, 2, 3))  # [3]
-            self.last_routing_snapshot = {
-                "num_experts": self.NUM_GROUPS,
-                "top_k": self.NUM_GROUPS,
-                "expert_usage": mean_w,
-                "mean_router_probs": mean_w,
-                "aux_loss": float(self.last_aux_loss.detach()),
-                "finite_diagnostics": finite_diagnostics,
-            }
+        if not exporting:
+            with torch.no_grad():
+                mean_w = weights.detach().float().mean(dim=(0, 2, 3))  # [3]
+                self.last_routing_snapshot = {
+                    "num_experts": self.NUM_GROUPS,
+                    "top_k": self.NUM_GROUPS,
+                    "expert_usage": mean_w,
+                    "mean_router_probs": mean_w,
+                    "aux_loss": float(self.last_aux_loss.detach()),
+                    "finite_diagnostics": finite_diagnostics,
+                }
+        else:
+            self.last_routing_snapshot = {}
 
         w_l = weights[:, 0:1]     # [B, 1, H, W]
         w_r = weights[:, 1:2]

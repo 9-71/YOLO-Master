@@ -93,6 +93,32 @@ def test_mot_temperature_anneal():
     assert after == [max(t * 0.5, 0.3) for t in before]
 
 
+def test_localconv_window_attention_is_opt_in_and_shape_preserving():
+    """LocalConv keeps global attention by default and supports padded windows."""
+    from ultralytics.nn.modules.mot.experts import _LocalConvTransformerExpert
+
+    torch.manual_seed(0)
+    x = torch.randn(1, 24, 7, 9)
+    global_expert = _LocalConvTransformerExpert(24, 3).eval()
+    window_expert = _LocalConvTransformerExpert(24, 3, local_window_size=4).eval()
+    assert global_expert.local_window_size == 0
+    assert window_expert.local_window_size == 4
+    with torch.no_grad():
+        out = window_expert(x)
+    assert out.shape == x.shape
+
+
+def test_mot_local_window_config_applies_to_nested_expert():
+    model = C2fMoT(64, 64, n=1, num_heads=4)
+    resolved = __import__("ultralytics.nn.modules.moe.config", fromlist=["resolve_mixture_config"]).resolve_mixture_config(
+        SimpleNamespace(mot_local_attn_window=4), model
+    )
+    from ultralytics.nn.modules.moe.config import apply_mixture_config
+
+    apply_mixture_config(model, resolved)
+    assert model.m[0].experts[0].local_window_size == 4
+
+
 def test_trainer_detects_and_anneals_moa_mot_temperatures():
     trainer = object.__new__(BaseTrainer)
     trainer.args = SimpleNamespace(moa_mot_temperature_factor=0.5, moa_mot_min_temperature=0.3)
