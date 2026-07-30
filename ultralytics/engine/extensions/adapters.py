@@ -164,8 +164,10 @@ class AdapterRuntimeController:
             return
         from ultralytics.utils.lora import resolve_adalora_total_step
 
-        requested = None if getattr(self, "_adalora_total_step_pending", False) else getattr(
-            self.trainer.args, "lora_total_step", None
+        requested = (
+            None
+            if getattr(self, "_adalora_total_step_pending", False)
+            else getattr(self.trainer.args, "lora_total_step", None)
         )
         total_step = resolve_adalora_total_step("adalora", requested, iterations)
         if total_step is None:
@@ -248,9 +250,7 @@ class AdapterRuntimeController:
             return loss
         from ultralytics.utils.lora import LoraTrainingStrategy
 
-        regularizer = LoraTrainingStrategy.compute_orthogonal_loss(
-            self.trainer.model, weight=self.ortho_weight
-        )
+        regularizer = LoraTrainingStrategy.compute_orthogonal_loss(self.trainer.model, weight=self.ortho_weight)
         regularizer = regularizer.to(device=loss.device, dtype=loss.dtype)
         if loss.ndim == 0:
             return loss + regularizer
@@ -269,7 +269,6 @@ class AdapterRuntimeController:
             update = getattr(module, "update_and_allocate", None)
             if callable(update):
                 update(self.optimizer_steps)
-                return
 
     def compute_prediction_entropy(self, predictions):
         """Compute normalized channel entropy for adaptive distillation temperature."""
@@ -297,11 +296,14 @@ class AdapterRuntimeController:
                     teacher, size=student.shape[2:], mode="bilinear", align_corners=False
                 )
             if student.shape[1] == teacher.shape[1]:
-                return torch.nn.functional.kl_div(
-                    torch.nn.functional.log_softmax(student / temperature, dim=1),
-                    torch.nn.functional.softmax(teacher / temperature, dim=1),
-                    reduction="batchmean",
-                ) * temperature**2
+                return (
+                    torch.nn.functional.kl_div(
+                        torch.nn.functional.log_softmax(student / temperature, dim=1),
+                        torch.nn.functional.softmax(teacher / temperature, dim=1),
+                        reduction="batchmean",
+                    )
+                    * temperature**2
+                )
         if student.ndim == teacher.ndim == 3 and student.shape[-1] == teacher.shape[-1]:
             length = min(student.shape[1], teacher.shape[1])
             return torch.nn.functional.mse_loss(student[:, :length], teacher[:, :length])
@@ -344,11 +346,15 @@ class AdapterRuntimeController:
         for index in layers:
             if hasattr(student, "model") and index < len(student.model):
                 cache["student_hooks"].append(
-                    student.model[index].register_forward_hook(partial(_hierarchical_hook, cache["student_features"], index))
+                    student.model[index].register_forward_hook(
+                        partial(_hierarchical_hook, cache["student_features"], index)
+                    )
                 )
             if teacher is not None and hasattr(teacher, "model") and index < len(teacher.model):
                 cache["teacher_hooks"].append(
-                    teacher.model[index].register_forward_hook(partial(_hierarchical_hook, cache["teacher_features"], index))
+                    teacher.model[index].register_forward_hook(
+                        partial(_hierarchical_hook, cache["teacher_features"], index)
+                    )
                 )
         self.trainer._hierarchical_cache = cache
         return cache
