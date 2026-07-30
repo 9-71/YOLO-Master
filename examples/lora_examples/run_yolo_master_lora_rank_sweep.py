@@ -8,7 +8,6 @@ import csv
 import os
 import re
 import subprocess
-import sys
 import time
 from pathlib import Path
 from typing import Iterable
@@ -33,6 +32,28 @@ SCENES = {
         "fraction": 1.0,
     },
 }
+
+SUMMARY_FIELDS = [
+    "protocol_id",
+    "dataset",
+    "rank",
+    "alpha",
+    "epochs",
+    "fraction",
+    "amp",
+    "batch",
+    "imgsz",
+    "mAP50_95",
+    "best_epoch",
+    "trainable_params",
+    "adapter_params",
+    "train_time_min",
+    "peak_gpu_memory_gb",
+    "status",
+    "return_code",
+    "log",
+    "run_dir",
+]
 
 
 def run_command(cmd: list[str], dry_run: bool) -> float:
@@ -129,23 +150,38 @@ def _peak_gpu_mem_from_log(text: str) -> str:
     return f"{max(values):.3f}" if values else ""
 
 
-def summarize_run(scene: str, rank: int, run_dir: Path, minutes: float, return_code: int, log_path: Path) -> dict:
-    args = read_yaml(run_dir / "args.yaml")
+def summarize_run(
+    protocol_id: str,
+    scene: str,
+    rank: int,
+    run_dir: Path,
+    minutes: float,
+    return_code: int,
+    log_path: Path,
+    cfg_path: Path,
+) -> dict:
+    args = {**read_yaml(cfg_path), **read_yaml(run_dir / "args.yaml")}
     metrics = read_results(run_dir / "results.csv")
     log_info = parse_log(log_path)
     return {
-        "scene": scene,
+        "protocol_id": protocol_id,
+        "dataset": scene,
         "rank": rank,
         "alpha": rank * 2,
         "epochs": args.get("epochs", ""),
         "fraction": args.get("fraction", ""),
-        "map50_95": metrics.get("map50_95", ""),
+        "amp": args.get("amp", ""),
+        "batch": args.get("batch", ""),
+        "imgsz": args.get("imgsz", ""),
+        "mAP50_95": metrics.get("map50_95", ""),
         "best_epoch": metrics.get("best_epoch", ""),
         "trainable_params": log_info.get("trainable_params", ""),
         "adapter_params": log_info.get("adapter_params", ""),
         "train_time_min": f"{minutes:.2f}" if minutes else "",
-        "peak_vram_gb": log_info.get("peak_vram_gb", ""),
-        "status": "completed" if log_info.get("completed") else "incomplete",
+        "peak_gpu_memory_gb": log_info.get("peak_vram_gb", ""),
+        "status": "dry_run"
+        if not metrics and return_code == 0
+        else ("completed" if log_info.get("completed") else "incomplete"),
         "return_code": return_code,
         "log": str(log_path),
         "run_dir": str(run_dir),
@@ -155,25 +191,8 @@ def summarize_run(scene: str, rank: int, run_dir: Path, minutes: float, return_c
 def write_summary(rows: Iterable[dict], output: Path) -> None:
     rows = list(rows)
     output.parent.mkdir(parents=True, exist_ok=True)
-    fieldnames = [
-        "scene",
-        "rank",
-        "alpha",
-        "epochs",
-        "fraction",
-        "map50_95",
-        "best_epoch",
-        "trainable_params",
-        "adapter_params",
-        "train_time_min",
-        "peak_vram_gb",
-        "status",
-        "return_code",
-        "log",
-        "run_dir",
-    ]
     with output.open("w", newline="", encoding="utf-8") as handle:
-        writer = csv.DictWriter(handle, fieldnames=fieldnames)
+        writer = csv.DictWriter(handle, fieldnames=SUMMARY_FIELDS)
         writer.writeheader()
         writer.writerows(rows)
 
@@ -184,10 +203,26 @@ def main() -> None:
     parser.add_argument("--ranks", nargs="+", type=int, default=[4, 8, 16])
     parser.add_argument("--device", default="0")
     parser.add_argument("--project", default="runs/lora_rank_sweeps")
-    parser.add_argument("--output", default="examples/lora_examples/yolo_master_lora_rank_sweep_results.csv")
+    parser.add_argument(
+        "--protocol-id",
+        required=True,
+        help="Stable identifier for the exact training protocol, stored in every output row.",
+    )
+    parser.add_argument(
+        "--output",
+        help="Summary CSV path. Defaults to a protocol-specific filename under examples/lora_examples/.",
+    )
+    parser.add_argument("--overwrite", action="store_true", help="Explicitly allow replacing an existing output CSV.")
     parser.add_argument("--log-dir", default="runs/lora_rank_sweeps/logs")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
+
+    safe_protocol = re.sub(r"[^A-Za-z0-9_.-]+", "_", args.protocol_id).strip("._")
+    if not safe_protocol:
+        parser.error("--protocol-id must contain at least one filename-safe character")
+    output = Path(args.output or f"examples/lora_examples/yolo_master_lora_rank_sweep_results_{safe_protocol}.csv")
+    if output.exists() and not args.overwrite:
+        parser.error(f"output already exists: {output}; pass --overwrite to replace it explicitly")
 
     selected = SCENES if args.scene == "all" else {args.scene: SCENES[args.scene]}
     rows = []
@@ -210,13 +245,24 @@ def main() -> None:
             ]
             log_path = Path(args.log_dir) / f"{name}.log"
             minutes, return_code = run_command_with_log(cmd, log_path, args.dry_run)
-            rows.append(summarize_run(scene, rank, run_dir, minutes, return_code, log_path))
-            write_summary(rows, Path(args.output))
+            rows.append(
+                summarize_run(
+                    args.protocol_id,
+                    scene,
+                    rank,
+                    run_dir,
+                    minutes,
+                    return_code,
+                    log_path,
+                    Path(spec["cfg"]),
+                )
+            )
+            write_summary(rows, output)
             if return_code != 0:
                 raise SystemExit(return_code)
 
-    write_summary(rows, Path(args.output))
-    print(f"Wrote summary to {args.output}")
+    write_summary(rows, output)
+    print(f"Wrote summary to {output}")
 
 
 if __name__ == "__main__":

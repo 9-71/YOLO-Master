@@ -242,6 +242,7 @@ MIXTURE_FLOAT_KEYS = frozenset(
         "moe_router_z_loss",
         "moe_temperature",
         "moe_weight_threshold",
+        "moe_prune_threshold",
         "molora_balance_loss",
         "molora_capacity_factor",
         "molora_diversity_loss",
@@ -330,6 +331,8 @@ MIXTURE_INT_KEYS = frozenset(
         "molora_r",
         "molora_top_k",
         "molora_warmup_steps",
+        "moe_prune_keep_top_m",
+        "moe_prune_calibration_steps",
         "mot_sparse_train_warmup_steps",
         "mot_local_attn_window",
         "slice_size",
@@ -434,6 +437,7 @@ CFG_BOOL_KEYS = frozenset(
         "dynamic",
         "simplify",
         "nms",
+        "pre_export_prune",
         "profile",
         "end2end",
         "cls_remap",
@@ -454,6 +458,7 @@ MIXTURE_STR_KEYS = frozenset(
         "lora_planner_backend",
         "molora_expert_init",
         "molora_router_type",
+        "molora_export_mode",
         "mot_scene_inference_mode",
     }
 )

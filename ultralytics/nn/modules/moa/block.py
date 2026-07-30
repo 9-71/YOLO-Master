@@ -1,4 +1,5 @@
 """Core Mixture-of-Attention block."""
+
 from __future__ import annotations
 import torch
 import torch.nn as nn
@@ -14,6 +15,7 @@ from ultralytics.nn.modules.routing_protocol import (
 )
 from .heads import _GlobalAttnHead, _LocalAttnHead, _RegionalAttnHead, _init_conv_weights
 from .router import _MoARouter, _moa_router_aux_loss
+
 
 class MoABlock(nn.Module):
     """Mixture-of-Attention Block.
@@ -60,6 +62,10 @@ class MoABlock(nn.Module):
     ):
         super().__init__()
         self.sequential_heads = sequential_heads
+        self.sparse_inference = bool(sparse_inference)
+        self.sparse_inference_threshold = float(sparse_inference_threshold)
+        if not 0.0 <= self.sparse_inference_threshold < 1.0:
+            raise ValueError("sparse_inference_threshold must be in [0, 1)")
         if num_heads <= 0 or num_heads % self.NUM_GROUPS != 0:
             raise ValueError(
                 f"num_heads ({num_heads}) must be positive and divisible by NUM_GROUPS ({self.NUM_GROUPS})"
@@ -131,12 +137,18 @@ class MoABlock(nn.Module):
 
     def export_capabilities(self) -> dict:
         capabilities = _export_routing_capabilities(self)
+        eager_sparse = bool(self.sparse_inference)
         capabilities.update(
             routing_kind="moa",
-            sparse_dispatch=False,
-            eager_sparse_dispatch=False,
+            sparse_dispatch=eager_sparse,
+            eager_sparse_dispatch=eager_sparse,
             training_sparse_dispatch=False,
-            sparse_export_limitation="MoA uses dense soft routing in eager and exported graphs.",
+            sparse_export_limitation=(
+                "MoA optional eager inference skips low-weight head groups; ONNX and TorchScript tracing use "
+                "the dense fallback."
+                if eager_sparse
+                else "MoA uses dense soft routing in eager and exported graphs."
+            ),
         )
         return capabilities
 
@@ -183,12 +195,31 @@ class MoABlock(nn.Module):
         else:
             self.last_routing_snapshot = {}
 
-        w_l = weights[:, 0:1]     # [B, 1, H, W]
+        w_l = weights[:, 0:1]  # [B, 1, H, W]
         w_r = weights[:, 1:2]
         w_g = weights[:, 2:3]
 
         # ── Attention head outputs ────────────────────────────────────────
-        if self.sequential_heads:
+        exporting = torch.jit.is_tracing() or torch.onnx.is_in_onnx_export()
+        sparse_eval = not self.training and self.sparse_inference and not exporting
+        active = None
+        if sparse_eval:
+            # Skip a group only when it contributes less than the configured
+            # threshold for every token in this batch.  The decision is batch-
+            # level, so no per-token Python control flow enters exported graphs.
+            active = weights.detach().amax(dim=(0, 2, 3)) > self.sparse_inference_threshold
+            if bool(active.all()):
+                active = None
+
+        if active is not None:
+            mixed = x.new_zeros(x.shape)
+            if bool(active[0]):
+                mixed = mixed + w_l * self.local_head(x)
+            if bool(active[1]):
+                mixed = mixed + w_r * self.region_head(x)
+            if bool(active[2]):
+                mixed = mixed + w_g * self.global_head(x)
+        elif self.sequential_heads:
             # Sequential path: compute and accumulate one head at a time.
             # Mathematically identical to the default path; useful for
             # memory-constrained environments and ONNX export validation.
@@ -199,7 +230,7 @@ class MoABlock(nn.Module):
             out_l = self.local_head(x)
             out_r = self.region_head(x)
             out_g = self.global_head(x)
-            mixed = w_l * out_l + w_r * out_r + w_g * out_g   # [B, C, H, W]
+            mixed = w_l * out_l + w_r * out_r + w_g * out_g  # [B, C, H, W]
         mixed = self.attn_drop(self.fusion(mixed))
 
         # ── Residual + layer-scale ────────────────────────────────────────
@@ -215,5 +246,6 @@ class MoABlock(nn.Module):
             x = self.ls_ffn * self.ffn(x)
 
         return x
+
 
 __all__ = ("MoABlock",)

@@ -85,6 +85,7 @@ class MoTBlock(nn.Module):
         self.register_buffer("_sparse_train_step", torch.tensor(0, dtype=torch.long), persistent=True)
         self._ddp_find_unused_parameters: Optional[bool] = None
         self._ddp_contract_source = "unconfigured"
+        self._ddp_sparse_state_cache: Optional[Tuple[tuple, Tuple[bool, bool, Optional[str]]]] = None
         self.scene_consistency_coeff = max(float(scene_consistency_coeff), 0.0)
         # Legacy YAML/checkpoints used balance_loss_coeff for z-loss only; when
         # router_z_loss_coeff is omitted, keep that behaviour for the z term.
@@ -238,25 +239,31 @@ class MoTBlock(nn.Module):
         """Record the DDP unused-parameter contract required by sparse expert dispatch."""
         self._ddp_find_unused_parameters = bool(find_unused_parameters)
         self._ddp_contract_source = str(source)
+        self._ddp_sparse_state_cache = None
 
     def _ddp_sparse_training_state(self) -> Tuple[bool, bool, Optional[str]]:
         """Return whether active DDP can safely tolerate locally unused experts."""
-        ddp_active = bool(
-            self.training
-            and torch.distributed.is_available()
-            and torch.distributed.is_initialized()
-            and torch.distributed.get_world_size() > 1
-        )
+        dist_available = torch.distributed.is_available()
+        dist_initialized = dist_available and torch.distributed.is_initialized()
+        world_size = torch.distributed.get_world_size() if dist_initialized else 1
+        cache_key = (self.training, dist_available, dist_initialized, world_size, self._ddp_find_unused_parameters)
+        if self._ddp_sparse_state_cache is not None and self._ddp_sparse_state_cache[0] == cache_key:
+            return self._ddp_sparse_state_cache[1]
+
+        ddp_active = bool(self.training and dist_initialized and world_size > 1)
         if not ddp_active:
-            return False, True, None
-        if self._ddp_find_unused_parameters is True:
-            return True, True, None
-        reason = (
-            "find_unused_parameters_disabled"
-            if self._ddp_find_unused_parameters is False
-            else "find_unused_parameters_not_confirmed"
-        )
-        return True, False, reason
+            state = (False, True, None)
+        elif self._ddp_find_unused_parameters is True:
+            state = (True, True, None)
+        else:
+            reason = (
+                "find_unused_parameters_disabled"
+                if self._ddp_find_unused_parameters is False
+                else "find_unused_parameters_not_confirmed"
+            )
+            state = (True, False, reason)
+        self._ddp_sparse_state_cache = (cache_key, state)
+        return state
 
     def _training_dispatch_policy(
         self,

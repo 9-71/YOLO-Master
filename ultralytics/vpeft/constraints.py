@@ -906,6 +906,7 @@ class ConstraintRegistry:
         variants = variant if isinstance(variant, (list, tuple)) else [variant] * graph.n_nodes
         if len(variants) != graph.n_nodes:
             raise ValueError("per-node variant list must match graph.n_nodes")
+        differentiable = bool(placement.requires_grad or ranks.requires_grad)
         # Aggregate per-node penalties for placed modules
         total_penalties: Dict[str, float] = {}
         for c in self._soft_constraints:

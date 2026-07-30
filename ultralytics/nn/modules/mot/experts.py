@@ -322,6 +322,9 @@ class _DeformableTransformerExpert(nn.Module):
         self.head_dim = dim // num_heads
         self.n_points = n_points
         self.align_corners = align_corners
+        # Reference coordinates depend only on the spatial shape and device;
+        # cache them to avoid rebuilding an N-element grid on every forward.
+        self._reference_grid_cache: dict[tuple, torch.Tensor] = {}
 
         # Query projection
         self.q_proj = nn.Linear(dim, dim, bias=False)
@@ -392,13 +395,20 @@ class _DeformableTransformerExpert(nn.Module):
         attn_w = self.attn_proj(q).reshape(B, N, nh, np_)     # [B, N, nh, np]
         attn_w = F.softmax(attn_w, dim=-1)                    # normalize over points
 
-        # Build reference grid: each token's own position (normalised to [-1,1])
-        # Token index → (row, col) → (x_norm, y_norm)
-        idx = torch.arange(N, device=q.device)
-        row = (idx // W).float() / max(H - 1, 1) * 2 - 1    # y in [-1,1]
-        col = (idx %  W).float() / max(W - 1, 1) * 2 - 1    # x in [-1,1]
-        ref = torch.stack([col, row], dim=-1)                 # [N, 2]
-        ref = ref[None, :, None, None, :].expand(B, -1, nh, np_, -1)  # [B,N,nh,np,2]
+        # Build/reference cache: each token's own position (normalised to
+        # [-1,1]).  The singleton dimensions are expanded without copying.
+        cache_key = (N, H, W, q.device.type, q.device.index)
+        ref = self._reference_grid_cache.get(cache_key)
+        if ref is None:
+            idx = torch.arange(N, device=q.device)
+            row = (idx // W).float() / max(H - 1, 1) * 2 - 1
+            col = (idx % W).float() / max(W - 1, 1) * 2 - 1
+            ref = torch.stack([col, row], dim=-1)[None, :, None, None, :]
+            # Keep the cache bounded for workloads that sweep many resolutions.
+            if len(self._reference_grid_cache) >= 8:
+                self._reference_grid_cache.pop(next(iter(self._reference_grid_cache)))
+            self._reference_grid_cache[cache_key] = ref
+        ref = ref.expand(B, -1, nh, np_, -1)
 
         # Sampling locations = reference + learned offsets (scaled, clamped to valid range)
         sample_locs = (ref + offsets * 0.25).clamp(-1.0, 1.0)   # [B, N, nh, np, 2]

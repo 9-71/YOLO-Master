@@ -995,6 +995,9 @@ class BaseTrainer:
                 - metrics (dict | None): Dictionary of validation metrics, or None if validation was skipped.
                 - fitness (float | None): Fitness score for the validation, or None if validation was skipped.
         """
+        adapter_controller = getattr(self, "adapter_controller", None)
+        if adapter_controller is not None:
+            adapter_controller.sync_ema_treatment()
         self._sync_ema_buffers_for_validation()
         ema_model = getattr(getattr(self, "ema", None), "ema", None)
         if ema_model is not None and not self._state_is_finite(unwrap_model(ema_model)):
@@ -1420,6 +1423,9 @@ class BaseTrainer:
             unwrap_model(self.model).criterion.updates = start_epoch - 1
             unwrap_model(self.model).criterion.update()
         self.start_epoch = start_epoch
+        adapter_controller = getattr(self, "adapter_controller", None)
+        if adapter_controller is not None:
+            adapter_controller.restore_after_resume(start_epoch)
         if start_epoch > (self.epochs - self.args.close_mosaic):
             self._close_dataloader_mosaic()
 

@@ -5,6 +5,7 @@ the MoE registry, module attributes, and wrapper-specific collectors.  This
 module provides one small, weakly-referenced state channel while keeping the
 old registry available as a compatibility transport.
 """
+
 from __future__ import annotations
 
 from contextlib import contextmanager
@@ -33,14 +34,11 @@ class AuxLossRecord:
 class RoutingAuxPublisher(Protocol):
     """Protocol exposed by modules that publish routing regularisation."""
 
-    def publish_aux_loss(self, *, step: int, training: bool) -> torch.Tensor:
-        ...
+    def publish_aux_loss(self, *, step: int, training: bool) -> torch.Tensor: ...
 
-    def routing_snapshot(self) -> dict[str, Any]:
-        ...
+    def routing_snapshot(self) -> dict[str, Any]: ...
 
-    def export_capabilities(self) -> dict[str, Any]:
-        ...
+    def export_capabilities(self) -> dict[str, Any]: ...
 
 
 _RECORDS: weakref.WeakKeyDictionary[nn.Module, AuxLossRecord] = weakref.WeakKeyDictionary()
@@ -219,12 +217,14 @@ def get_aux_record(module: nn.Module) -> AuxLossRecord | None:
 
 
 def iter_aux_records(
-    model: nn.Module,
+    model: nn.Module | None,
     modules: Iterable[nn.Module] | None = None,
 ) -> list[tuple[nn.Module, AuxLossRecord]]:
-    """Return records in model traversal order for diagnostics and collectors."""
+    """Return records in model traversal order, or all records when model is None."""
 
     with _RECORDS_LOCK:
+        if model is None and modules is None:
+            return list(_RECORDS.items())
         candidates = model.modules() if modules is None else modules
         return [(module, _RECORDS[module]) for module in candidates if module in _RECORDS]
 
@@ -329,6 +329,8 @@ def collect_aux_loss(
     require_training: bool = True,
     ddp_sync: bool = False,
     return_diagnostics: bool = False,
+    return_tensor_values: bool = False,
+    return_value_scalars: bool = True,
     modules: Iterable[nn.Module] | None = None,
 ):
     """Collect canonical losses once, rejecting stale and eval publications."""
@@ -368,7 +370,10 @@ def collect_aux_loss(
         covered.add(id(module))
         covered.update(record.covered_modules)
         diagnostics["counts_by_kind"][record.kind] = diagnostics["counts_by_kind"].get(record.kind, 0) + 1
-        diagnostics["values_by_kind"].setdefault(record.kind, []).append(float(record.value.detach()))
+        if return_value_scalars:
+            diagnostics["values_by_kind"].setdefault(record.kind, []).append(float(record.value.detach()))
+        if return_tensor_values:
+            diagnostics.setdefault("_tensor_values_by_kind", {}).setdefault(record.kind, []).append(record.value)
         diagnostics["modules"].append(module.__class__.__name__)
 
     if selected:

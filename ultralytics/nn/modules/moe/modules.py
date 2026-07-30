@@ -402,8 +402,8 @@ class AdaptiveCapacityMoE(UltraOptimizedMoE):
 class ES_MOE(nn.Module):
     """General MoE block with a routing network and multiple expert branches."""
 
-    def __init__(self, in_channels, out_channels=None, num_experts=3, reduction=8,
-                 top_k=None, use_sparse_inference=True, dynamic_threshold=0.4,
+    def __init__(self, in_channels, out_channels=None, num_experts=4, reduction=8,
+                 top_k=2, use_sparse_inference=True, dynamic_threshold=0.4,
                  max_kernel_size=15):
         """
         Args:
@@ -627,6 +627,10 @@ class ES_MOE(nn.Module):
 
     def _sparse_forward(self, x, routing_weights):
         """Sparse forward: compute only Top-K experts (used during inference)."""
+        # Selecting every expert must exactly match the dense training-time path.
+        if self.top_k >= self.num_experts:
+            return self._dense_forward(x, routing_weights)
+
         B, E, H, W = routing_weights.shape
 
         # Compute per-expert importance
