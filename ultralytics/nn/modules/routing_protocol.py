@@ -323,6 +323,8 @@ def collect_aux_loss(
     require_training: bool = True,
     ddp_sync: bool = False,
     return_diagnostics: bool = False,
+    return_tensor_values: bool = False,
+    return_value_scalars: bool = True,
     modules: Iterable[nn.Module] | None = None,
 ):
     """Collect canonical losses once, rejecting stale and eval publications."""
@@ -362,7 +364,10 @@ def collect_aux_loss(
         covered.add(id(module))
         covered.update(record.covered_modules)
         diagnostics["counts_by_kind"][record.kind] = diagnostics["counts_by_kind"].get(record.kind, 0) + 1
-        diagnostics["values_by_kind"].setdefault(record.kind, []).append(float(record.value.detach()))
+        if return_value_scalars:
+            diagnostics["values_by_kind"].setdefault(record.kind, []).append(float(record.value.detach()))
+        if return_tensor_values:
+            diagnostics.setdefault("_tensor_values_by_kind", {}).setdefault(record.kind, []).append(record.value)
         diagnostics["modules"].append(module.__class__.__name__)
 
     if selected:

@@ -66,6 +66,25 @@ def test_latent_mixture_preserves_first_input_when_residual_zero():
     assert torch.allclose(y, xs[0])
 
 
+def test_latent_mixture_optional_sparse_inference_dispatches_top_k(monkeypatch):
+    module = LatentMixture([8, 8], 8, num_experts=4, inference_top_k=2, residual_init=0.1).eval()
+    calls = [0] * module.num_experts
+    for index, expert in enumerate(module.experts):
+        original = expert.forward
+
+        def wrapped(value, *, _index=index, _original=original):
+            calls[_index] += 1
+            return _original(value)
+
+        monkeypatch.setattr(expert, "forward", wrapped)
+
+    with torch.no_grad():
+        module([torch.randn(2, 8, 4, 4), torch.randn(2, 8, 4, 4)])
+
+    assert sum(call > 0 for call in calls) <= 2
+    assert module.export_capabilities()["eager_sparse_dispatch"] is True
+
+
 def test_latent_mixture_publishes_single_train_aux_and_snapshot():
     module = LatentMixture([16, 8], 16, residual_init=0.01, balance_loss_coeff=0.01, router_z_loss_coeff=0.001)
     module.train()

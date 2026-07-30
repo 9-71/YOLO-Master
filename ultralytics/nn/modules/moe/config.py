@@ -29,6 +29,8 @@ MIXTURE_DEFAULTS: dict[str, dict[str, Any]] = {
         "aux_loss_coeff": 0.01,
         "aux_gain": 1.0,
         "aux_budget": 3.0,
+        "sparse_inference": False,
+        "sparse_inference_threshold": 0.02,
     },
     "mot": {
         "balance_loss_coeff": 0.01,
@@ -46,6 +48,7 @@ MIXTURE_DEFAULTS: dict[str, dict[str, Any]] = {
     "latent": {
         "aux_gain": 0.1,
         "aux_budget": 3.0,
+        "inference_top_k": None,
     },
     "molora": {
         "balance_loss_coef": 0.01,
@@ -75,6 +78,8 @@ CLI_FIELDS: dict[str, dict[str, str]] = {
         "aux_loss_coeff": "moa_aux_loss_coeff",
         "aux_gain": "moa_aux_gain",
         "aux_budget": "mixture_aux_budget",
+        "sparse_inference": "moa_sparse_inference",
+        "sparse_inference_threshold": "moa_sparse_inference_threshold",
     },
     "mot": {
         "balance_loss_coeff": "mot_balance_loss",
@@ -92,6 +97,7 @@ CLI_FIELDS: dict[str, dict[str, str]] = {
     "latent": {
         "aux_gain": "latent_aux_gain",
         "aux_budget": "mixture_aux_budget",
+        "inference_top_k": "latent_inference_top_k",
     },
     "molora": {
         "balance_loss_coef": "molora_balance_loss",
@@ -225,10 +231,7 @@ def resolve_mixture_config(args: Any = None, model: nn.Module | None = None) -> 
     if model is None:
         return ResolvedMixtureConfig(values=values, audit=audit)
 
-    explicit_by_path = {
-        path: getattr(module, "_mixture_config_explicit", {})
-        for path, module in model.named_modules()
-    }
+    explicit_by_path = {path: getattr(module, "_mixture_config_explicit", {}) for path, module in model.named_modules()}
 
     for path, module in model.named_modules():
         kind = _module_kind(module)
@@ -309,10 +312,24 @@ def apply_mixture_config(model: nn.Module, resolved: ResolvedMixtureConfig) -> i
             if router is not None and hasattr(router, "temperature") and "temperature" not in inherited_explicit:
                 router.temperature = config["temperature"]
             local_head = getattr(module, "local_head", None)
-            if local_head is not None and hasattr(local_head, "window_size") and "local_window_size" not in inherited_explicit:
+            if (
+                local_head is not None
+                and hasattr(local_head, "window_size")
+                and "local_window_size" not in inherited_explicit
+            ):
                 local_head.window_size = max(1, int(config["local_window_size"]))
             if hasattr(module, "aux_loss_coeff") and "aux_loss_coeff" not in inherited_explicit:
                 module.aux_loss_coeff = config["aux_loss_coeff"]
+            if hasattr(module, "sparse_inference") and "sparse_inference" not in inherited_explicit:
+                module.sparse_inference = bool(config["sparse_inference"])
+                for child in module.modules():
+                    if child is not module and hasattr(child, "sparse_inference"):
+                        child.sparse_inference = module.sparse_inference
+            if hasattr(module, "sparse_inference_threshold") and "sparse_inference_threshold" not in inherited_explicit:
+                module.sparse_inference_threshold = float(config["sparse_inference_threshold"])
+                for child in module.modules():
+                    if child is not module and hasattr(child, "sparse_inference_threshold"):
+                        child.sparse_inference_threshold = module.sparse_inference_threshold
         elif kind == "mot":
             if hasattr(module, "balance_loss_coeff") and "balance_loss_coeff" not in inherited_explicit:
                 module.balance_loss_coeff = config["balance_loss_coeff"]
@@ -320,10 +337,7 @@ def apply_mixture_config(model: nn.Module, resolved: ResolvedMixtureConfig) -> i
                 module.router_z_loss_coeff = config["router_z_loss_coeff"]
             if hasattr(module, "sparse_train") and "sparse_train" not in inherited_explicit:
                 module.sparse_train = bool(config["sparse_train"])
-            if (
-                hasattr(module, "sparse_train_warmup_steps")
-                and "sparse_train_warmup_steps" not in inherited_explicit
-            ):
+            if hasattr(module, "sparse_train_warmup_steps") and "sparse_train_warmup_steps" not in inherited_explicit:
                 module.sparse_train_warmup_steps = max(0, int(config["sparse_train_warmup_steps"]))
             router = getattr(module, "router", None)
             if router is not None and "scene_aware_router" not in inherited_explicit:
@@ -351,9 +365,12 @@ def apply_mixture_config(model: nn.Module, resolved: ResolvedMixtureConfig) -> i
                     if hasattr(loss_fn, attr) and key not in inherited_explicit:
                         setattr(loss_fn, attr, config[key])
         elif kind == "latent":
-            # The gain is consumed by CompositeCriterion, but keeping it in
-            # the audit makes YAML/CLI precedence visible for latent layers.
-            continue
+            if (
+                hasattr(module, "inference_top_k")
+                and config["inference_top_k"] is not None
+                and "inference_top_k" not in inherited_explicit
+            ):
+                module.inference_top_k = max(1, min(int(config["inference_top_k"]), int(module.num_experts)))
         # Keep a compact runtime audit on the model for logging/checkpoints.
     model.mixture_config_audit = resolved.audit
     return applied

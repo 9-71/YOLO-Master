@@ -370,12 +370,18 @@ class _LatentAuxMixin:
 
     def export_capabilities(self) -> dict[str, Any]:
         capabilities = _export_routing_capabilities(self)
+        eager_sparse = bool(getattr(self, "inference_top_k", self.num_experts) < self.num_experts)
         capabilities.update(
             routing_kind="latent",
-            sparse_dispatch=False,
-            eager_sparse_dispatch=False,
+            sparse_dispatch=eager_sparse,
+            eager_sparse_dispatch=eager_sparse,
             training_sparse_dispatch=False,
-            sparse_export_limitation="Latent mixture uses dense expert execution only.",
+            sparse_export_limitation=(
+                "Latent mixture optional eager inference dispatches image-level Top-K experts; ONNX and TorchScript "
+                "tracing use the dense fallback."
+                if eager_sparse
+                else "Latent mixture uses dense expert execution only."
+            ),
         )
         return capabilities
 
@@ -396,6 +402,7 @@ class LatentMixture(_LatentAuxMixin, nn.Module):
         residual_init: float = 0.0,
         noise_std: float = 0.0,
         router_init_std: float = 0.0,
+        inference_top_k: int | None = None,
     ):
         super().__init__()
         if isinstance(in_channels, int):
@@ -407,6 +414,9 @@ class LatentMixture(_LatentAuxMixin, nn.Module):
         self.num_inputs = len(self.in_channels)
         self.num_experts = _positive_int(num_experts, "num_experts")
         self.top_k = self.num_experts
+        self.inference_top_k = self.num_experts if inference_top_k is None else int(inference_top_k)
+        if not 1 <= self.inference_top_k <= self.num_experts:
+            raise ValueError(f"inference_top_k must be in [1, {self.num_experts}]")
         self.balance_loss_coeff = _non_negative_float(balance_loss_coeff, "balance_loss_coeff")
         self.router_z_loss_coeff = _non_negative_float(router_z_loss_coeff, "router_z_loss_coeff")
         self.base_proj = (
@@ -448,10 +458,32 @@ class LatentMixture(_LatentAuxMixin, nn.Module):
 
     def forward(self, xs: Sequence[torch.Tensor]) -> torch.Tensor:
         base, context = self._build_context(xs)
-        mixed = torch.zeros_like(base)
-        for e, expert in enumerate(self.experts):
-            gate = context.probs[:, e].to(device=base.device, dtype=base.dtype).view(-1, 1, 1, 1)
-            mixed = mixed + expert(base) * gate
+        sparse_eval = (
+            not self.training
+            and self.inference_top_k < self.num_experts
+            and not torch.jit.is_tracing()
+            and not torch.onnx.is_in_onnx_export()
+        )
+        if sparse_eval:
+            top_probs, top_indices = context.probs.topk(self.inference_top_k, dim=-1)
+            top_probs = top_probs / top_probs.sum(dim=-1, keepdim=True).clamp_min(1e-6)
+            mixed = torch.zeros_like(base)
+            # Image-level routing permits one expert call for the subset of
+            # samples that selected it, rather than evaluating all experts.
+            for expert_idx, expert in enumerate(self.experts):
+                selected = (top_indices == expert_idx).any(dim=1)
+                batch_indices = torch.nonzero(selected, as_tuple=True)[0]
+                if batch_indices.numel() == 0:
+                    continue
+                gates = (top_probs[batch_indices] * (top_indices[batch_indices] == expert_idx)).sum(dim=1)
+                mixed[batch_indices] = mixed[batch_indices] + expert(base[batch_indices]) * gates.to(
+                    device=base.device, dtype=base.dtype
+                ).view(-1, 1, 1, 1)
+        else:
+            mixed = torch.zeros_like(base)
+            for e, expert in enumerate(self.experts):
+                gate = context.probs[:, e].to(device=base.device, dtype=base.dtype).view(-1, 1, 1, 1)
+                mixed = mixed + expert(base) * gate
         output = base + self.residual_gain.to(device=base.device, dtype=base.dtype) * mixed
         aux, balance, z_loss = self._compute_aux(context.logits, context.probs)
         published = _publish_aux_loss(self, aux, kind="latent", training=self.training)
