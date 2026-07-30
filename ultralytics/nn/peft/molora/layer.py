@@ -619,6 +619,25 @@ class MoLoRALayer(nn.Module):
         B = x.shape[0]
         K = top_k_indices.shape[1]
         expert_out = torch.zeros_like(out_template)
+        # When every expert participates, a single batched low-rank matmul is
+        # cheaper than launching one Linear pair per expert.  Keep sparse
+        # routing and export semantics on the existing path; this optimization
+        # is limited to the shape/backend combination with exact semantics.
+        if (
+            K == self.num_experts
+            and x.ndim == 2
+            and not torch.jit.is_tracing()
+            and not torch.onnx.is_in_onnx_export()
+            and self._can_batch_linear_experts()
+        ):
+            expert_out = self._compute_sparse_experts_batched(x, top_k_weights, top_k_indices)
+            self._last_dispatch_stats = {
+                "mode": "batched_dense_linear",
+                "expert_calls": self.num_experts,
+                "selected_samples": B,
+                "top_k": K,
+            }
+            return expert_out
         if torch.jit.is_tracing() or torch.onnx.is_in_onnx_export():
             assignments = F.one_hot(top_k_indices, num_classes=self.num_experts).to(top_k_weights.dtype)
             dense_weights = (assignments * top_k_weights.unsqueeze(-1)).sum(dim=1)
@@ -648,6 +667,40 @@ class MoLoRALayer(nn.Module):
             "top_k": K,
         }
         return expert_out
+
+    def _can_batch_linear_experts(self) -> bool:
+        """Return whether the dense Linear expert batch path is semantics-safe."""
+        if not self.experts or self.experts[0].is_conv:
+            return False
+        ranks = {expert.r for expert in self.experts}
+        if len(ranks) != 1:
+            return False
+        # Independent dropout masks would not be preserved by stacked matmul.
+        return all(isinstance(expert.dropout, nn.Identity) for expert in self.experts)
+
+    def _compute_sparse_experts_batched(
+        self,
+        x: torch.Tensor,
+        top_k_weights: torch.Tensor,
+        top_k_indices: torch.Tensor,
+    ) -> torch.Tensor:
+        """Compute all same-rank Linear experts with batched low-rank matmuls."""
+        parameter_dtype = self.experts[0].lora_A.weight.dtype
+        x_param = x.to(parameter_dtype)
+        a = torch.stack([expert.lora_A.weight for expert in self.experts])
+        b = torch.stack([expert.lora_B.weight for expert in self.experts])
+        hidden = torch.einsum("eri,bi->ebr", a, x_param)
+        outputs = torch.einsum("eor,ebr->ebo", b, hidden)
+        scales = torch.as_tensor(
+            [expert.scaling for expert in self.experts], dtype=outputs.dtype, device=outputs.device
+        ).view(-1, 1, 1)
+        outputs = outputs * scales
+        # Gather the Top-K order because torch.topk returns expert indices
+        # sorted by router probability rather than expert id.
+        batch_outputs = outputs.permute(1, 0, 2)
+        gather_index = top_k_indices.unsqueeze(-1).expand(-1, -1, outputs.shape[-1])
+        selected = batch_outputs.gather(1, gather_index)
+        return (selected * top_k_weights.to(selected.dtype).unsqueeze(-1)).sum(dim=1).to(x.dtype)
 
     def _expert_usage(self, expert_indices: torch.Tensor) -> torch.Tensor:
         """Normalized expert usage histogram."""
