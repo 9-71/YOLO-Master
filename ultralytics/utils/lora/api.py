@@ -382,7 +382,12 @@ def _build_vpeft_placement_plan(model: nn.Module, config: "LoRAConfig") -> Any:
         confidence=None,
         status=status,
         refusal_reason=reason,
-        metadata={"utility": float(decision.utility), "reason": decision.reason, "graph_nodes": graph.n_nodes},
+        metadata={
+            "utility": float(decision.utility),
+            "reason": decision.reason,
+            "graph_nodes": graph.n_nodes,
+            "solver_diagnostics": dict(decision.metadata or {}),
+        },
     )
 
 
