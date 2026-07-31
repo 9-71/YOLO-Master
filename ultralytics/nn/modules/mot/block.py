@@ -217,7 +217,7 @@ class MoTBlock(nn.Module):
                         f"→ output {tuple(expert_out.shape)}. All experts must preserve "
                         f"the input tensor shape."
                     )
-                out[batch_idx] = out[batch_idx] + expert_out * w
+                out[batch_idx] = out[batch_idx] + (expert_out * w).to(out.dtype)
             self._last_dispatch_stats = {"mode": "sample_sparse", "expert_calls": expert_calls, "selected_samples": B}
         else:
             for e_idx, expert in enumerate(self.experts):
@@ -229,7 +229,7 @@ class MoTBlock(nn.Module):
                         f"→ output {tuple(expert_out.shape)}. All experts must preserve "
                         f"the input tensor shape."
                     )
-                out = out + expert_out * w
+                out = out + (expert_out * w).to(out.dtype)
             self._last_dispatch_stats = {"mode": "dense", "expert_calls": len(self.experts), "selected_samples": B}
         return out
 
