@@ -316,6 +316,18 @@ class MoTBlock(nn.Module):
         use_sparse = (not self.training or (sparse_train_ready and ddp_sparse_safe)) and not exporting
         warmup_step = 0 if exporting else int(self._sparse_train_step.item())
         B = x.shape[0]
+        route_ids = indices if indices is not None else weights.argmax(dim=1, keepdim=True)
+        route_mask = torch.zeros_like(weights, dtype=torch.bool)
+        route_mask.scatter_(1, route_ids, True)
+        token_mask_sparsity = 1.0 - float(route_mask.float().mean())
+        experts_per_sample = route_mask.reshape(B, self.NUM_EXPERTS, -1).any(dim=2).sum(dim=1)
+        batch_expert_union = int(route_mask.any(dim=(0, 2, 3)).sum())
+        routing_metrics = {
+            "token_mask_sparsity": token_mask_sparsity,
+            "experts_per_sample": experts_per_sample.detach().cpu(),
+            "mean_experts_per_sample": float(experts_per_sample.float().mean()),
+            "batch_expert_union": batch_expert_union,
+        }
         if use_sparse:
             expert_calls = 0
             for e_idx, expert in enumerate(self.experts):
@@ -340,6 +352,8 @@ class MoTBlock(nn.Module):
             self._last_dispatch_stats = {
                 "mode": "sample_sparse",
                 "expert_calls": expert_calls,
+                "actual_expert_calls": expert_calls,
+                **routing_metrics,
                 "selected_samples": B,
                 "selected_experts": selected_experts,
                 "sparsity_ratio": 1.0 - expert_calls / max(len(self.experts), 1),
@@ -367,6 +381,8 @@ class MoTBlock(nn.Module):
             self._last_dispatch_stats = {
                 "mode": "dense",
                 "expert_calls": len(self.experts),
+                "actual_expert_calls": len(self.experts),
+                **routing_metrics,
                 "selected_samples": B,
                 "selected_experts": len(self.experts),
                 "sparsity_ratio": 0.0,
