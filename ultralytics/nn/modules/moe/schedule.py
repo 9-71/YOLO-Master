@@ -9,29 +9,7 @@ from typing import Iterable
 
 import torch
 
-
-def usage_gini(usage: Iterable[float] | torch.Tensor) -> float:
-    """Return the Gini coefficient for a non-negative expert-usage vector."""
-    if isinstance(usage, torch.Tensor):
-        values = usage.detach().float().reshape(-1)
-    else:
-        values = torch.tensor([float(v) for v in usage], dtype=torch.float32)
-
-    if values.numel() == 0:
-        return 0.0
-    values = values.clamp_min(0)
-    total = values.sum()
-
-    # Sorted cumulative form is O(n log n) and keeps the reduction on the
-    # source device until one final scalar conversion.
-    sorted_values = torch.sort(values).values
-    index = torch.arange(1, sorted_values.numel() + 1, device=sorted_values.device, dtype=sorted_values.dtype)
-    gini = (2 * torch.sum(index * sorted_values) / (sorted_values.numel() * total.clamp_min(1e-12))) - (
-        (sorted_values.numel() + 1) / sorted_values.numel()
-    )
-    gini = torch.where(total > 0, gini, torch.zeros_like(gini))
-    value = float(gini.clamp(0.0, 1.0).item())
-    return 0.0 if value != value else value
+from .protocol import usage_gini
 
 
 def mean_usage_gini_from_model(model: torch.nn.Module) -> float:
