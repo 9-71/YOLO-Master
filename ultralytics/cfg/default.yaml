@@ -162,10 +162,11 @@ lora_planner_enabled: False # (bool) Enable architecture-conditioned PEFT Planne
 lora_adapter_budget: # (int, optional) Maximum adapter parameters for planner placement
 lora_planner_solver: "ao" # (str) Planner budget solver: ao, dco, mip
 lora_planner_backend: "legacy" # (str) Planner backend: legacy or vpeft (opt-in)
+lora_vpeft_strict: False # (bool) Raise unexpected internal V-PEFT errors instead of compatibility fallback
 lora_include_head: False # (bool) Include YOLO detection head layers in LoRA targeting
 lora_freeze_bn: False # (bool) Freeze BatchNorm layers during LoRA training
 lora_target_modules: # (list[str], optional) LoRA target modules
-lora_rank_pattern: # (dict[str, int], optional) Per-target LoRA rank overrides
+lora_rank_pattern: # (dict[str, int], optional) Per-target LoRA ranks produced by placement planning
 lora_save_adapters: True # (bool) Save LoRA adapters
 lora_adapter_dir: "lora_adapter" # (str) Directory name for adapters
 lora_auto_r_ratio: 0.0 # (float) Auto calculate LoRA rank based on params ratio
