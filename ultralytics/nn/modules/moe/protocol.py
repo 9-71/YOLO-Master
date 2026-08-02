@@ -57,10 +57,18 @@ def normalize_routing_snapshot(
 def usage_gini(usage: Iterable[float] | torch.Tensor) -> float:
     """Return one canonical bounded Gini coefficient for expert usage."""
     values = torch.as_tensor(_float_list(usage), dtype=torch.float32).clamp_min(0.0)
-    if values.numel() == 0 or float(values.sum()) <= 0.0:
+    if values.numel() == 0:
         return 0.0
-    diff = torch.abs(values[:, None] - values[None, :]).sum()
-    return float((diff / (2 * values.numel() * values.sum())).item())
+    total = values.sum()
+    # Sorted cumulative form is O(n log n) instead of the pairwise O(n^2).
+    sorted_values = torch.sort(values).values
+    index = torch.arange(1, sorted_values.numel() + 1, dtype=sorted_values.dtype)
+    gini = (2 * torch.sum(index * sorted_values) / (sorted_values.numel() * total.clamp_min(1e-12))) - (
+        (sorted_values.numel() + 1) / sorted_values.numel()
+    )
+    gini = torch.where(total > 0, gini, torch.zeros_like(gini))
+    value = float(gini.clamp(0.0, 1.0).item())
+    return 0.0 if value != value else value
 
 
 def routing_metrics(snapshot: Mapping[str, Any] | None, *, num_experts: int = 0, top_k: int = 0) -> RoutingMetrics:
