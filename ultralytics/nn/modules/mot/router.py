@@ -153,11 +153,12 @@ class _MoTRouter(FP32RouterMixin, nn.Module):
             hidden = int(hidden_dim or self.scene_hidden_dim or 3)
             if hidden <= 0:
                 raise ValueError("scene_hidden_dim must be positive")
+            reference = next(self.router.parameters())
             self.scene_projector = nn.Sequential(
                 nn.Linear(3, hidden),
                 nn.SiLU(inplace=False),
                 nn.Linear(hidden, self.num_experts),
-            )
+            ).to(device=reference.device, dtype=torch.float32)
             nn.init.zeros_(self.scene_projector[-1].weight)
             nn.init.zeros_(self.scene_projector[-1].bias)
             self.scene_hidden_dim = hidden

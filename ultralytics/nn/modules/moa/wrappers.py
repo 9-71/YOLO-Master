@@ -74,6 +74,8 @@ class C2fMoA(nn.Module):
         local_window_size: int = 7,
         sequential_heads: bool = True,
         regional_max_kv_tokens: int | None = 4096,
+        sparse_inference: bool = False,
+        sparse_inference_threshold: float = 0.02,
     ):
         super().__init__()
         self.sparse_inference = bool(sparse_inference)
