@@ -331,6 +331,16 @@ class _LatentAuxMixin:
                 "family": "latent",
                 "num_experts": int(self.num_experts),
                 "top_k": int(self.top_k),
+                "training_top_k": int(self.top_k),
+                "inference_top_k": int(self.top_k),
+                "configured_top_k": int(self.top_k),
+                "executed_experts": int(self.num_experts),
+                "active_experts_per_sample": torch.full(
+                    (p.shape[0],), int(self.num_experts), dtype=torch.long
+                ),
+                "mean_active_experts_per_sample": float(self.num_experts),
+                "batch_expert_union": int(self.num_experts),
+                "kernel_calls": int(self.num_experts),
                 "mean_router_probs": mean_probs.cpu(),
                 "expert_usage": mean_probs.cpu(),
                 "entropy": float(entropy.cpu()),
@@ -357,6 +367,9 @@ class _LatentAuxMixin:
                 snapshot["scale_mean_probs"] = p.mean(dim=0).cpu()
             else:
                 snapshot["routing_axis"] = "expert"
+            if hasattr(self, "value_fusion_mode"):
+                snapshot["value_fusion_mode"] = self.value_fusion_mode
+                snapshot["value_fusion_weights"] = self.value_fusion_weights.detach().float().cpu()
             if hasattr(self, "residual_gain"):
                 snapshot["residual_gain"] = self.residual_gain.detach().float().cpu()
             self.last_routing_snapshot = snapshot
@@ -403,6 +416,8 @@ class LatentMixture(_LatentAuxMixin, nn.Module):
         noise_std: float = 0.0,
         router_init_std: float = 0.0,
         inference_top_k: int | None = None,
+        value_fusion_mode: str = "router_only",
+        value_fusion_weights: Sequence[float] | None = None,
     ):
         super().__init__()
         if isinstance(in_channels, int):
@@ -412,6 +427,22 @@ class LatentMixture(_LatentAuxMixin, nn.Module):
             raise ValueError("LatentMixture requires at least one input channel")
         self.out_channels = _positive_int(out_channels, "out_channels")
         self.num_inputs = len(self.in_channels)
+        self.value_fusion_mode = str(value_fusion_mode)
+        if self.value_fusion_mode not in {"router_only", "weighted_sum"}:
+            raise ValueError(
+                f"value_fusion_mode must be 'router_only' or 'weighted_sum', got {self.value_fusion_mode!r}"
+            )
+        if value_fusion_weights is None:
+            weights = torch.ones(self.num_inputs, dtype=torch.float32)
+        else:
+            if len(value_fusion_weights) != self.num_inputs:
+                raise ValueError(
+                    f"value_fusion_weights must contain {self.num_inputs} values, got {len(value_fusion_weights)}"
+                )
+            weights = torch.as_tensor(value_fusion_weights, dtype=torch.float32)
+            if not bool(torch.isfinite(weights).all()) or bool((weights < 0).any()) or float(weights.sum()) <= 0.0:
+                raise ValueError("value_fusion_weights must be finite, non-negative, and have a positive sum")
+        self.register_buffer("value_fusion_weights", weights / weights.sum(), persistent=False)
         self.num_experts = _positive_int(num_experts, "num_experts")
         self.top_k = self.num_experts
         self.inference_top_k = self.num_experts if inference_top_k is None else int(inference_top_k)
@@ -445,11 +476,13 @@ class LatentMixture(_LatentAuxMixin, nn.Module):
 
     def _build_context(self, xs: Sequence[torch.Tensor]) -> tuple[torch.Tensor, LatentRoutingContext]:
         checked = _validate_inputs(xs, self.in_channels, require_same_spatial=True)
-        base = self.base_proj(checked[0])
-        tokens = []
-        for x, proj in zip(checked, self.token_projs):
-            token = proj(x)
-            tokens.append(F.adaptive_avg_pool2d(token, 1).flatten(1).float())
+        projected = [proj(x) for x, proj in zip(checked, self.token_projs)]
+        if self.value_fusion_mode == "weighted_sum":
+            weights = self.value_fusion_weights.to(device=projected[0].device, dtype=projected[0].dtype)
+            base = sum(value * weights[i] for i, value in enumerate(projected))
+        else:
+            base = self.base_proj(checked[0])
+        tokens = [F.adaptive_avg_pool2d(token, 1).flatten(1).float() for token in projected]
         scale_tokens = torch.stack(tokens, dim=1)
         logits, probs = self.router(scale_tokens)
         return base, LatentRoutingContext(
