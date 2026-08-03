@@ -11,7 +11,6 @@
       --output experiments_zviolin\runs\routing_compare
 """
 import argparse
-import csv
 import json
 import sys
 from pathlib import Path
@@ -19,23 +18,81 @@ from typing import Dict, List
 
 import torch
 
-ROOT = Path(__file__).resolve().parent.parent
-sys.path.insert(0, str(ROOT))
+# ── 修复 1: sys.path 指向 scripts/ 而非项目根 ─────────────────────────
+# 原代码写的是 Path(__file__).resolve().parent.parent, 会把 YOLO-Master-new/
+# 加入 sys.path, 但 diagnose_mot_routing.py 在 scripts/ 下, 找不到.
+SCRIPTS_DIR = Path(__file__).resolve().parent
+sys.path.insert(0, str(SCRIPTS_DIR))
 
-from diagnose_mot_routing import (
+from diagnose_mot_routing import (  # noqa: E402
     EXPERT_NAMES,
-    build_model_from_pt,
-    compute_entropy,
-    make_hook,
-    register_hooks,
+    load_model,
+    normalize_torch_device,
 )
 
-import matplotlib
+import matplotlib  # noqa: E402
 matplotlib.use("Agg")
-import matplotlib.pyplot as plt
-import numpy as np
+import matplotlib.pyplot as plt  # noqa: E402
+import numpy as np  # noqa: E402
 
 
+# ── 修复 2: register_hooks 改为本地实现 ────────────────────────────────
+# 原代码调用不存在的 register_hooks(), 这里自己注册 hook 收集 records.
+# router.forward() 返回 (weights, indices, router_logits);
+#  - weights  [B, E, H, W]  sparse, top-K 非零
+#  - indices  [B, K, H, W]  top-K expert 索引
+# 我们用 weights 的 argmax 算 top-1, 用 indices 算 top-K (K=2).
+def register_hooks(model):
+    """注册 hook 并返回 (records, handles). records 字段保持原算法期望的
+    `activation_ratio` 与 `topk_activation_ratio`.
+    """
+    from ultralytics.nn.modules.mot import MoTBlock
+
+    records: List[Dict] = []
+    handles = []
+
+    def make_hook(layer_name: str):
+        def hook(_module, _inputs, output):
+            if not isinstance(output, tuple) or len(output) < 2:
+                return
+            weights, indices = output[0], output[1]
+            if weights.ndim != 4 or indices.ndim != 4:
+                return
+            weights = weights.detach().float().cpu()
+            indices = indices.detach().long().cpu()
+            B, E, H, W = weights.shape
+            K = indices.shape[1]
+            token_count = H * W
+
+            for b in range(B):
+                # Top-1: argmax 沿 expert 维
+                top1 = weights[b].argmax(dim=0).reshape(-1)  # [H*W]
+                # Top-K 累计: 每个 token 被 K 个 expert 覆盖, 统计每个 expert
+                # 在 top-K 中出现的次数, 再除以 (K * H * W) 得到 top-K 占比
+                for expert_id in range(E):
+                    cnt_top1 = int((top1 == expert_id).sum().item())
+                    cnt_topk = 0
+                    for k in range(K):
+                        top_at_k = indices[b, k].reshape(-1)
+                        cnt_topk += int((top_at_k == expert_id).sum().item())
+                    records.append({
+                        "layer": layer_name,
+                        "expert": EXPERT_NAMES[expert_id],
+                        # 原算法期望的字段名 (保持不变)
+                        "activation_ratio": cnt_top1 / token_count,
+                        "topk_activation_ratio": cnt_topk / (K * token_count),
+                    })
+
+        return hook
+
+    for name, module in model.named_modules():
+        if isinstance(module, MoTBlock):
+            handles.append(module.router.register_forward_hook(make_hook(name)))
+    return records, handles
+
+
+# ── 修复 3: 字段名保持原算法的 activation_ratio / topk_activation_ratio ──
+# 原 aggregate() 直接照搬, 不变.
 def aggregate(rows: List[Dict]) -> Dict[str, Dict[str, float]]:
     """聚合行数据为每个专家的 top1/top-k 激活率字典。"""
     agg = {e: {"top1": [], "topk": []} for e in EXPERT_NAMES}
@@ -76,19 +133,16 @@ def load_real_batch(data_cfg: str, num_samples: int, imgsz: int):
     try:
         from ultralytics.data.utils import check_det_dataset
         import cv2
-        import numpy as np
     except Exception as e:
         print(f"[compare_routing] ⚠️ 无法导入依赖: {e}")
         return None
     try:
         data_dict = check_det_dataset(data_cfg)
         train_path = Path(data_dict["train"])
-        # train_path 可能是 "path/to/train.txt" 或 "path/to/images/train"
         if train_path.is_file() and train_path.suffix == ".txt":
             with open(train_path, encoding="utf-8") as f:
                 image_paths = [line.strip() for line in f if line.strip()]
         else:
-            # 扫描图像目录
             image_paths = []
             for ext in ("*.jpg", "*.png", "*.jpeg"):
                 image_paths.extend(sorted(train_path.glob(ext)))
@@ -103,7 +157,6 @@ def load_real_batch(data_cfg: str, num_samples: int, imgsz: int):
                 continue
             img = cv2.resize(img, (imgsz, imgsz))
             img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
-            # 归一化到 [0, 1]，转 tensor [1, 3, H, W]
             img_t = torch.from_numpy(img).permute(2, 0, 1).float() / 255.0
             samples.append(img_t.unsqueeze(0))
         if not samples:
@@ -120,7 +173,7 @@ def run_real(model, x: torch.Tensor) -> List[Dict]:
     for i in range(x.shape[0]):
         rows, hooks = register_hooks(model)
         with torch.no_grad():
-            _ = model(x[i:i+1])
+            _ = model(x[i:i + 1])
         for h in hooks:
             h.remove()
         rows_all.extend(rows)
@@ -140,14 +193,15 @@ def main():
                         help="激活率差异阈值（< 5% 视为可靠）")
     args = parser.parse_args()
 
-    device = args.device
-    if device == "0":
-        device = "cuda:0"
+    device = normalize_torch_device(args.device)
 
     out = Path(args.output)
     out.mkdir(parents=True, exist_ok=True)
 
-    model = build_model_from_pt(args.model)
+    # ── 修复 2 续: build_model_from_pt → load_model ─────────────────
+    # 原代码调不存在的 build_model_from_pt(args.model),
+    # 实际 API 是 load_model(path, device, nc), nc 写死 80 (COCO 检测)
+    model = load_model(Path(args.model), device, nc=80)
     model = model.to(device).eval()
 
     # 1) 合成输入
@@ -212,8 +266,8 @@ def main():
 
         s_top1 = [synth_agg[e]["top1"] for e in EXPERT_NAMES]
         r_top1 = [real_agg[e]["top1"] for e in EXPERT_NAMES]
-        axes[0].bar(x_pos - width/2, s_top1, width, label="Synthetic", color="#4472c4")
-        axes[0].bar(x_pos + width/2, r_top1, width, label="Real (VisDrone)", color="#ed7d31")
+        axes[0].bar(x_pos - width / 2, s_top1, width, label="Synthetic", color="#4472c4")
+        axes[0].bar(x_pos + width / 2, r_top1, width, label="Real (VisDrone)", color="#ed7d31")
         axes[0].set_xticks(x_pos)
         axes[0].set_xticklabels([e.replace("Transformer", "") for e in EXPERT_NAMES])
         axes[0].set_ylabel("Top-1 Activation Ratio")
@@ -224,8 +278,8 @@ def main():
 
         s_topk = [synth_agg[e]["topk"] for e in EXPERT_NAMES]
         r_topk = [real_agg[e]["topk"] for e in EXPERT_NAMES]
-        axes[1].bar(x_pos - width/2, s_topk, width, label="Synthetic", color="#4472c4")
-        axes[1].bar(x_pos + width/2, r_topk, width, label="Real (VisDrone)", color="#ed7d31")
+        axes[1].bar(x_pos - width / 2, s_topk, width, label="Synthetic", color="#4472c4")
+        axes[1].bar(x_pos + width / 2, r_topk, width, label="Real (VisDrone)", color="#ed7d31")
         axes[1].set_xticks(x_pos)
         axes[1].set_xticklabels([e.replace("Transformer", "") for e in EXPERT_NAMES])
         axes[1].set_ylabel("Top-2 Activation Ratio")

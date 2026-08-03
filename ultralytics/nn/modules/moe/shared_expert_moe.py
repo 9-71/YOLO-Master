@@ -15,16 +15,12 @@
     - [-1, 1, SharedExpertMoE, [512, 4, 2, 0.5, "shared_512"]]  # 复用 pool
   ```
 """
-import os
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-from typing import Optional, Dict
-from .modules import LowRankHybridAdaptiveGateMoE, _registry_set
-from .utils import FlopsUtils
+from typing import Dict
+
+from .modules import LowRankHybridAdaptiveGateMoE
 
 # 全局 expert pool 注册表
-# Key: pool_id, Value: (num_experts, num_groups, top_k, bottleneck_ratio, fused_experts_module)
+# Key: pool_id, Value: dict{fused_experts, in_channels, out_channels, num_experts, top_k, bottleneck_ratio}
 _SHARED_EXPERT_POOLS: Dict[str, dict] = {}
 
 
