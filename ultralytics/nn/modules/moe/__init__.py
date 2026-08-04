@@ -77,6 +77,7 @@ from .diagnostics import MoELayerDiagnostic, collect_moe_diagnostics, diagnostic
 from .history import MoEDiagnosticsRecorder, export_moe_history_plots
 from .protocol import RoutingMetrics, normalize_routing_snapshot, routing_metrics, usage_gini
 from .pruning import prune_moe_model, prune_moe_module
+from .shared_expert_moe import SharedExpertMoE, _SHARED_EXPERT_POOLS  # Issue #54: Cross-Scale Expert Pool Sharing
 from .scheduler import (
     MoEDynamicScheduler,
     MoEDynamicSchedulerConfig,
@@ -143,6 +144,7 @@ EXPERIMENTAL_MOE_CLASSES = frozenset(
         "DetailAwareLowRankHybridAdaptiveGateMoE",
         "ContextRefinedLowRankHybridAdaptiveGateMoE",
         "VisualEnhancedAdaptiveGateMoE",
+        "SharedExpertMoE",  # Issue #54: Cross-Scale Expert Pool Sharing
     }
 )
 
@@ -228,6 +230,7 @@ __all__ = [
     "VisualEnhancedAdaptiveGateMoE",
     "A2C2fMoE",
     "ABlockMoE",
+    "SharedExpertMoE",  # Issue #54: Cross-Scale Expert Pool Sharing
     "OptimizedSimpleExpert",
     "FusedGhostExpert",
     "SimpleExpert",

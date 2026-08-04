@@ -125,6 +125,7 @@ from .moe import (
     MultiHeadRouterMoE,
     OptimalHybridGateMoE,
     RefinedLowRankHybridAdaptiveGateMoE,
+    SharedExpertMoE,  # Issue #54: Cross-Scale Expert Pool Sharing
     UltimateOptimizedMoE,
     UltraOptimizedMoE,
     VisualEnhancedAdaptiveGateMoE,
@@ -236,6 +237,7 @@ __all__ = (
     "NeckMoAFusion",
     "OptimalHybridGateMoE",
     "RefinedLowRankHybridAdaptiveGateMoE",
+    "SharedExpertMoE",  # Issue #54: Cross-Scale Expert Pool Sharing
     "UltimateOptimizedMoE",
     "UltraOptimizedMoE",
     "VisualEnhancedAdaptiveGateMoE",

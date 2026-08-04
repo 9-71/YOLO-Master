@@ -24,6 +24,7 @@ from ultralytics.nn.modules.moe import (
     MultiHeadRouterMoE,
     OptimalHybridGateMoE,
     RefinedLowRankHybridAdaptiveGateMoE,
+    SharedExpertMoE,  # Issue #54: Cross-Scale Expert Pool Sharing
     UltimateOptimizedMoE,
     UltraOptimizedMoE,
     VisualEnhancedAdaptiveGateMoE,
@@ -54,6 +55,7 @@ MIXTURE_MODULES = {
     "MultiHeadRouterMoE": MultiHeadRouterMoE,
     "OptimalHybridGateMoE": OptimalHybridGateMoE,
     "RefinedLowRankHybridAdaptiveGateMoE": RefinedLowRankHybridAdaptiveGateMoE,
+    "SharedExpertMoE": SharedExpertMoE,  # Issue #54: Cross-Scale Expert Pool Sharing
     "UltimateOptimizedMoE": UltimateOptimizedMoE,
     "UltraOptimizedMoE": UltraOptimizedMoE,
     "VisualEnhancedAdaptiveGateMoE": VisualEnhancedAdaptiveGateMoE,
