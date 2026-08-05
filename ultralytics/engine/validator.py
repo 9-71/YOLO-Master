@@ -203,6 +203,7 @@ class BaseValidator:
                 "pose",
                 "obb",
                 "semantic",
+                "multitask",
             }:
                 self.data = check_det_dataset(self.args.data, split=self.args.split)
             else:

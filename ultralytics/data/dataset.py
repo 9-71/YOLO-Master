@@ -83,11 +83,12 @@ class YOLODataset(BaseDataset):
             *args (Any): Additional positional arguments for the parent class.
             **kwargs (Any): Additional keyword arguments for the parent class.
         """
-        self.use_segments = task == "segment"
+        self.use_segments = task in ("segment", "multitask")
         self.use_keypoints = task == "pose"
         self.use_obb = task == "obb"
         self.data = data
-        assert not (self.use_segments and self.use_keypoints), "Can not use both segments and keypoints."
+        if self.use_segments and self.use_keypoints:
+            LOGGER.warning("Both segments and keypoints enabled for multitask. Label format may be mixed.")
         super().__init__(*args, channels=self.data.get("channels", 3), **kwargs)
 
     def cache_labels(self, path: Path = Path("./labels.cache")) -> dict:

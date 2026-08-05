@@ -1397,3 +1397,216 @@ class SemanticSegmentationLoss(nn.Module):
 
         loss_items = torch.stack([ce_loss, dice_loss, aux_loss]).detach()
         return total * preds.shape[0], loss_items
+
+
+class MultiTaskLoss(nn.Module):
+    """Combined multi-task loss: detection + segmentation + pose + classification.
+
+    MOT-inspired weighting: each task's loss is treated like a track confidence
+    score — high-quality predictions contribute more to the total loss gradient,
+    while noisy task predictions are down-weighted adaptively.
+
+    Attributes:
+        model (torch.nn.Module): The multi-task YOLO model.
+        det_loss (v8DetectionLoss): Detection branch loss.
+        seg_loss (v8SegmentationLoss | None): Segmentation branch loss.
+        pose_loss (v8PoseLoss | PoseLoss26 | None): Pose estimation loss.
+        cls_loss (v8ClassificationLoss | None): Classification loss.
+        task_weights (dict): Static per-task loss weights.
+        moe_loss_coeff (float): MoE/MoT auxiliary loss coefficient.
+    """
+
+    def __init__(self, model):
+        """Initialize the multi-task combined loss.
+
+        Args:
+            model (MultiTaskModel): Multi-task model instance.
+        """
+        super().__init__()
+        self.model = model
+        head = model.model[-1]
+        self.nc = head.nc
+
+        # Patch model.args to IterableSimpleNamespace if it's a plain dict
+        # (happens when init_criterion is called before the trainer sets args)
+        if isinstance(model.args, dict):
+            from ultralytics.utils import IterableSimpleNamespace
+            model.args = IterableSimpleNamespace(**model.args)
+
+        # Detection loss (always present)
+        from ultralytics.utils.loss import v8DetectionLoss, E2ELoss
+        end2end = getattr(model, "end2end", False)
+        det_cls = E2ELoss if end2end else v8DetectionLoss
+        self.det_loss = det_cls(model) if end2end else det_cls(model)
+
+        # Segmentation loss
+        self.seg_loss = None
+        if head.has_task("segment"):
+            from ultralytics.utils.loss import v8SegmentationLoss
+            self.seg_loss = v8SegmentationLoss(model)
+
+        # Pose loss
+        self.pose_loss = None
+        if head.has_task("pose"):
+            from ultralytics.utils.loss import v8PoseLoss
+            self.pose_loss = v8PoseLoss(model)
+
+        # Classification loss
+        self.cls_loss = None
+        if head.has_task("classify"):
+            self.cls_loss = v8ClassificationLoss()
+
+        # Task weights (from model or defaults)
+        self.task_weights = getattr(model, "task_weights", {
+            "detect": 1.0, "segment": 0.5, "pose": 1.0,
+            "classify": 0.3, "depth": 0.3, "obb": 0.5,
+        })
+
+        # MoT auxiliary loss coefficient
+        self.moe_loss_coeff = 0.01
+
+    def forward(self, preds: dict, batch: dict) -> tuple[torch.Tensor, torch.Tensor]:
+        """Compute combined multi-task loss.
+
+        Args:
+            preds: Model predictions (dict with one2many, one2one sub-dicts)
+            batch: Training batch with images, labels, masks, keypoints, etc.
+
+        Returns:
+            (total_loss, loss_items): Scalar total loss and per-task loss breakdown.
+        """
+        # Handle eval-mode formats:
+        #   - Tensor from raw head output
+        #   - Tuple (tensor, dict) from standard Detect pattern
+        #   - Dict with one2many/one2one from training
+        if isinstance(preds, dict):
+            one2many = preds.get("one2many", preds)
+            one2one = preds.get("one2one", None)
+        elif isinstance(preds, (list, tuple)):
+            # eval mode: first element is detection tensor, second is raw preds dict
+            one2many = preds[1] if len(preds) > 1 and isinstance(preds[1], dict) else {}
+            one2one = None
+        elif isinstance(preds, torch.Tensor):
+            one2many = {}
+            one2one = None
+        else:
+            one2many = {}
+            one2one = None
+
+        # Validate one2many has required keys for detection
+        if not isinstance(one2many, dict) or "boxes" not in one2many:
+            return torch.tensor(0.0), torch.zeros(6)
+
+        device = one2many["boxes"].device
+        total_loss = torch.tensor(0.0, device=device, requires_grad=False)
+        loss_items = {}
+
+        # Extract predictions for each head
+        one2many = preds.get("one2many", preds)
+        one2one = preds.get("one2one", None)
+
+        # ── Detection loss ───────────────────────────────────────────────
+        # E2ELoss needs full one2many/one2one structure; v8DetectionLoss uses
+        # boxes/scores directly.
+        det_preds = {
+            "one2many": {
+                "boxes": one2many["boxes"],
+                "scores": one2many["scores"],
+                "feats": one2many.get("feats", []),
+            },
+        }
+        if one2one is not None:
+            det_preds["one2one"] = {
+                "boxes": one2one["boxes"],
+                "scores": one2one["scores"],
+                "feats": one2one.get("feats", []),
+            }
+        det_loss_val, det_items = self.det_loss(det_preds, batch)
+        w = self.task_weights.get("detect", 1.0)
+        total_loss = total_loss + w * det_loss_val.sum()
+        loss_items["box_loss"] = det_items[0].detach() if len(det_items) > 0 else torch.tensor(0.0)
+        loss_items["cls_loss"] = det_items[1].detach() if len(det_items) > 1 else torch.tensor(0.0)
+        loss_items["dfl_loss"] = det_items[2].detach() if len(det_items) > 2 else torch.tensor(0.0)
+
+        # ── Segmentation loss (flat format: v8SegmentationLoss accesses keys directly) ──
+        if self.seg_loss is not None and "mask_coefficient" in one2many and batch.get("masks") is not None:
+            seg_preds = {
+                "boxes": one2many["boxes"],
+                "scores": one2many["scores"],
+                "mask_coefficient": one2many["mask_coefficient"],
+                "proto": one2many.get("proto"),
+                "feats": one2many.get("feats", []),
+            }
+            if one2one is not None:
+                seg_preds["one2one"] = {
+                    "boxes": one2one.get("boxes"),
+                    "scores": one2one.get("scores"),
+                    "mask_coefficient": one2one.get("mask_coefficient"),
+                    "proto": one2one.get("proto"),
+                }
+            seg_loss_val, seg_items = self.seg_loss(seg_preds, batch)
+            w = self.task_weights.get("segment", 0.5)
+            total_loss = total_loss + w * seg_loss_val.sum()
+            loss_items["seg_loss"] = seg_items[-1].detach() if len(seg_items) > 0 else torch.tensor(0.0)
+
+        # ── Pose loss (flat format) ──────────────────────────────────
+        if self.pose_loss is not None and "kpts" in one2many and batch.get("keypoints") is not None:
+            pose_preds = {
+                "boxes": one2many["boxes"],
+                "scores": one2many["scores"],
+                "kpts": one2many["kpts"],
+                "feats": one2many.get("feats", []),
+            }
+            if one2one is not None:
+                pose_preds["one2one"] = {
+                    "boxes": one2one.get("boxes"),
+                    "scores": one2one.get("scores"),
+                    "kpts": one2one.get("kpts"),
+                }
+            pose_loss_val, pose_items = self.pose_loss(pose_preds, batch)
+            w = self.task_weights.get("pose", 1.0)
+            total_loss = total_loss + w * pose_loss_val.sum()
+            loss_items["pose_loss"] = pose_items[-1].detach() if len(pose_items) > 0 else torch.tensor(0.0)
+
+        # ── Classification loss ──────────────────────────────────────────
+        if self.cls_loss is not None and "cls_logits" in one2many:
+            cls_logits = one2many["cls_logits"]
+            # Use image-level labels (separate from instance-level cls for detection)
+            cls_labels = batch.get("cls_img", batch.get("labels"))
+            if cls_labels is None:
+                cls_labels = batch.get("cls")
+                # If cls is instance-level [N,1], take the first per image
+                if cls_labels is not None and cls_labels.dim() > 1:
+                    cls_labels = cls_labels[:, 0].long()[:cls_logits.shape[0]]
+            if cls_labels is not None:
+                cls_labels = cls_labels.long()[:cls_logits.shape[0]]
+                cls_loss_val, _ = self.cls_loss(cls_logits, {"cls": cls_labels})
+                w = self.task_weights.get("classify", 0.3)
+                total_loss = total_loss + w * cls_loss_val
+                loss_items["cls_global_loss"] = cls_loss_val.detach()
+
+        # ── MoT auxiliary loss ───────────────────────────────────────────
+        from ultralytics.nn.modules.mot.wrappers import collect_mot_aux_loss
+        mot_aux = collect_mot_aux_loss(self.model)
+        if mot_aux is not None and mot_aux.requires_grad:
+            total_loss = total_loss + self.moe_loss_coeff * mot_aux
+
+        # ── TaskRouter balance loss ──────────────────────────────────────
+        if "routing_stats" in one2many:
+            task_router = getattr(self.model.model[-1], "task_router", None)
+            if task_router is not None:
+                balance_loss = task_router.compute_balance_loss()
+                total_loss = total_loss + 0.01 * balance_loss
+
+        # Build loss_items tensor for logging compatibility
+        items = [
+            loss_items.get("box_loss", torch.tensor(0.0, device=device)),
+            loss_items.get("cls_loss", torch.tensor(0.0, device=device)),
+            loss_items.get("dfl_loss", torch.tensor(0.0, device=device)),
+            loss_items.get("seg_loss", torch.tensor(0.0, device=device)),
+            loss_items.get("pose_loss", torch.tensor(0.0, device=device)),
+            loss_items.get("cls_global_loss", torch.tensor(0.0, device=device)),
+        ]
+        loss_items_tensor = torch.stack([i.to(device) if isinstance(i, torch.Tensor) else torch.tensor(i, device=device) for i in items])
+
+        return total_loss, loss_items_tensor.detach()
