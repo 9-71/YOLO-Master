@@ -131,6 +131,7 @@ from .moe import (
     VisualEnhancedAdaptiveGateMoE,
 )
 from .mot import C2fMoT, MoTBlock, anneal_mot_temperature, collect_mot_aux_loss
+from .multitask import MultiTaskHead, TaskRouter
 from .latent_mixture import DenseChannelExpert, LatentMixture, LatentRouter, LatentRoutingContext, MultiScaleLatentMixture
 
 __all__ = (
@@ -245,6 +246,8 @@ __all__ = (
     "anneal_mot_temperature",
     "collect_moa_aux_loss",
     "collect_mot_aux_loss",
+    "MultiTaskHead",
+    "TaskRouter",
     "DenseChannelExpert",
     "LatentMixture",
     "LatentRouter",
