@@ -5,7 +5,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from ultralytics.nn.modules.conv import Conv
-from ultralytics.nn.modules.utils import get_safe_groups as _safe_groups
+from ultralytics.nn.modules.utils import get_safe_groups as _safe_groups, _grid_sample
 from ultralytics.nn.modules.mot._constants import SDPA_EXPLICIT_MAX_TOKENS, SDPA_FALLBACK_CHUNK
 from ultralytics.utils import LOGGER
 
@@ -431,7 +431,7 @@ class _DeformableTransformerExpert(nn.Module):
         if orig_dtype != torch.float32:
             v_4d = v_4d.float()
             locs = locs.float()
-        sampled = F.grid_sample(
+        sampled = _grid_sample(
             v_4d,                                              # [B*nh, hd, H, W]
             locs,                                              # [B*nh, N, np, 2]
             mode="bilinear", align_corners=self.align_corners, padding_mode="zeros"
