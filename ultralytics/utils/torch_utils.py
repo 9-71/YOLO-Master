@@ -740,12 +740,35 @@ class ModelEMA:
             self.updates += 1
             d = self.decay(self.updates)
 
-            msd = unwrap_model(model).state_dict()  # model state_dict
-            for k, v in self.ema.state_dict().items():
-                if v.dtype.is_floating_point:  # true for FP16 and FP32
-                    v *= d
-                    v += (1 - d) * msd[k].detach()
-                    # assert v.dtype == msd[k].dtype == torch.float32, f'{k}: EMA {v.dtype},  model {msd[k].dtype}'
+            source = unwrap_model(model)
+            msd = source.state_dict()
+            # Parameters are exponentially averaged. Persistent buffers carry
+            # runtime/configuration state (e.g. MoT temperature and sparse
+            # warmup counters) and must be copied exactly for resumable runs.
+            ema_parameters = dict(self.ema.named_parameters())
+            for name, parameter in ema_parameters.items():
+                source_value = msd.get(name)
+                if source_value is None:
+                    continue
+                parameter.mul_(d)
+                parameter.add_((1 - d) * source_value.detach())
+            runtime_buffer_names = {
+                name
+                for name, module in self.ema.named_modules()
+                if "mot" in module.__class__.__module__.lower() or "moa" in module.__class__.__module__.lower()
+                for local_name, value in module.named_buffers(recurse=False)
+                if local_name in {"temperature", "_sparse_train_step"}
+                for name in [f"{name}.{local_name}" if name else local_name]
+            }
+            for name, buffer in self.ema.named_buffers():
+                source_value = msd.get(name)
+                if source_value is None:
+                    continue
+                if name in runtime_buffer_names or not buffer.dtype.is_floating_point:
+                    buffer.copy_(source_value.detach())
+                else:
+                    buffer.mul_(d)
+                    buffer.add_((1 - d) * source_value.detach())
 
     def update_attr(self, model, include=(), exclude=("process_group", "reducer")):
         """Copy attributes from model to EMA, with options to include/exclude certain attributes.

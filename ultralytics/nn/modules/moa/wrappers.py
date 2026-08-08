@@ -76,8 +76,17 @@ class C2fMoA(nn.Module):
         regional_max_kv_tokens: int | None = 4096,
         sparse_inference: bool = False,
         sparse_inference_threshold: float = 0.02,
+        inference_sparse_threshold: float | None = None,
     ):
         super().__init__()
+        if inference_sparse_threshold is not None:
+            if sparse_inference_threshold != 0.02 and sparse_inference_threshold != inference_sparse_threshold:
+                raise ValueError(
+                    "Specify only one sparse inference threshold: "
+                    "sparse_inference_threshold or inference_sparse_threshold."
+                )
+            sparse_inference_threshold = inference_sparse_threshold
+            sparse_inference = True
         self.sparse_inference = bool(sparse_inference)
         self.sparse_inference_threshold = float(sparse_inference_threshold)
         self.c = int(c2 * e)
@@ -120,7 +129,9 @@ class C2fMoA(nn.Module):
                      block_index=i,
                      local_window_size=local_window_size,
                      sequential_heads=sequential_heads,
-                     regional_max_kv_tokens=regional_max_kv_tokens)
+                     regional_max_kv_tokens=regional_max_kv_tokens,
+                     sparse_inference=sparse_inference,
+                     sparse_inference_threshold=sparse_inference_threshold)
             for i in range(n)
         )
         self.last_aux_loss: torch.Tensor = torch.zeros((), requires_grad=False)

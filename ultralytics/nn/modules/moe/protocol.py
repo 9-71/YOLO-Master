@@ -7,6 +7,8 @@ from typing import Any, Iterable, Mapping
 
 import torch
 
+from ..routing_protocol import RoutedModule, collect_routed_children, global_routing_metrics, is_routed_module
+
 
 @dataclass(frozen=True)
 class RoutingMetrics:
@@ -51,6 +53,11 @@ def normalize_routing_snapshot(
         "num_experts": size,
         "top_k": int(source.get("top_k", top_k)),
         "aux_loss": float(source.get("aux_loss", 0.0)),
+        "usage_scope": str(source.get("usage_scope", "rank_local")),
+        "global_usage_available": bool(source.get("global_usage_available", False)),
+        "global_expert_usage": _float_list(source.get("global_expert_usage")),
+        "global_entropy": float(source.get("global_entropy", 0.0)),
+        "global_gini": float(source.get("global_gini", 0.0)),
     }
 
 
@@ -87,3 +94,15 @@ def routing_metrics(snapshot: Mapping[str, Any] | None, *, num_experts: int = 0,
         dominant_expert=dominant,
         dominant_share=share,
     )
+
+
+__all__ = [
+    "RoutingMetrics",
+    "RoutedModule",
+    "collect_routed_children",
+    "global_routing_metrics",
+    "is_routed_module",
+    "normalize_routing_snapshot",
+    "routing_metrics",
+    "usage_gini",
+]

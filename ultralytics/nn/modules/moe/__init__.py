@@ -75,7 +75,7 @@ from .utils import (
 from .analysis import ExpertUsageTracker, diagnose_model, RoutingCollapseDetector
 from .diagnostics import MoELayerDiagnostic, collect_moe_diagnostics, diagnostics_to_dict, format_moe_diagnostics
 from .history import MoEDiagnosticsRecorder, export_moe_history_plots
-from .protocol import RoutingMetrics, normalize_routing_snapshot, routing_metrics, usage_gini
+from .protocol import RoutingMetrics, global_routing_metrics, normalize_routing_snapshot, routing_metrics, usage_gini
 from .pruning import prune_moe_model, prune_moe_module
 from .shared_expert_moe import SharedExpertMoE, _SHARED_EXPERT_POOLS  # Issue #54: Cross-Scale Expert Pool Sharing
 from .scheduler import (
@@ -231,6 +231,7 @@ __all__ = [
     "A2C2fMoE",
     "ABlockMoE",
     "SharedExpertMoE",  # Issue #54: Cross-Scale Expert Pool Sharing
+    "_SHARED_EXPERT_POOLS",
     "OptimizedSimpleExpert",
     "FusedGhostExpert",
     "SimpleExpert",
@@ -296,6 +297,7 @@ __all__ = [
     "is_deprecated_moe",
     "is_legacy_moe",
     "RoutingMetrics",
+    "global_routing_metrics",
     "normalize_routing_snapshot",
     "routing_metrics",
     "usage_gini",
