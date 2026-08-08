@@ -1,14 +1,20 @@
-# COCO 2017 dataset configuration for YOLO-Master MoE-aware PEFT experiments
-# The standard Ultralytics dataset directory is used by default. Override `path`
-# for a different checkout or pass an explicit dataset YAML to the CLI.
-
+# Unified COCO 2017 detection + instance segmentation + human pose dataset.
+# Set `path` to the local COCO root, or override it from the CLI. The default
+# resolves to the standard Ultralytics dataset directory (`datasets/coco2017`).
 path: coco2017
 train: images/train2017
 val: images/val2017
+multitask_format: coco
 
-test: test2017
+train_instances: annotations/instances_train2017.json
+val_instances: annotations/instances_val2017.json
+train_keypoints: annotations/person_keypoints_train2017.json
+val_keypoints: annotations/person_keypoints_val2017.json
 
-# Classes
+tasks: [detect, segment, pose]
+kpt_shape: [17, 3]
+flip_idx: [0, 2, 1, 4, 3, 6, 5, 8, 7, 10, 9, 12, 11, 14, 13, 16, 15]
+
 names:
   0: person
   1: bicycle
