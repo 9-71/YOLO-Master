@@ -18,13 +18,13 @@ from ultralytics.utils.torch_utils import autocast
 from .metrics import bbox_iou, probiou
 from .tal import bbox2dist, rbox2dist
 
-# Preserve legacy helper imports while keeping native task-loss formulas in this file unchanged.
+# Backward-compatible imports for callers that still use the historical loss helpers.
 from ultralytics.nn.mixture_loss import (
-    _collect_mixture_aux_loss,
-    _collect_moa_aux_loss,
-    _collect_moe_aux_loss,
-    _collect_mot_aux_loss,
-    _get_mixture_loss_ema,
+    _collect_mixture_aux_loss as _collect_mixture_aux_loss,
+    _collect_moa_aux_loss as _collect_moa_aux_loss,
+    _collect_moe_aux_loss as _collect_moe_aux_loss,
+    _collect_mot_aux_loss as _collect_mot_aux_loss,
+    _get_mixture_loss_ema as _get_mixture_loss_ema,
 )
 
 
@@ -499,7 +499,7 @@ class v8SegmentationLoss(v8DetectionLoss):
     ):  # model must be de-paralleled
         """Initialize the v8SegmentationLoss class with model parameters and mask overlap setting."""
         super().__init__(model, tal_topk, tal_topk2)
-        self.overlap = model.args.overlap_mask
+        self.overlap = getattr(model.args, "overlap_mask", True)
         self.bcedice_loss = BCEDiceLoss(weight_bce=0.5, weight_dice=0.5)
 
     def loss(self, preds: dict[str, torch.Tensor], batch: dict[str, torch.Tensor]) -> tuple[torch.Tensor, torch.Tensor]:
@@ -695,8 +695,8 @@ class v8PoseLoss(v8DetectionLoss):
                 pred_kpts,
             )
 
-        loss[1] *= self.hyp.pose  # pose gain
-        loss[2] *= self.hyp.kobj  # kobj gain
+        loss[1] *= getattr(self.hyp, "pose", 12.0)  # pose gain
+        loss[2] *= getattr(self.hyp, "kobj", 1.0)  # kobj gain
 
         return loss * batch_size, loss.detach()  # loss(box, pose, kobj, cls, dfl)
 
@@ -799,11 +799,27 @@ class v8PoseLoss(v8DetectionLoss):
             gt_kpt = selected_keypoints[masks]
             area = xyxy2xywh(target_bboxes[masks])[:, 2:].prod(1, keepdim=True)
             pred_kpt = pred_kpts[masks]
+            # COCO keypoints are available only for person instances. Non-person instances carry an all-zero placeholder
+            # so they remain aligned with detection/segmentation targets, but must not become pose negatives.
+            object_mask = (
+                (gt_kpt[..., 2] != 0).any(dim=-1)
+                if gt_kpt.shape[-1] == 3
+                else torch.ones(gt_kpt.shape[:2], dtype=torch.bool, device=gt_kpt.device)
+            )
             kpt_mask = gt_kpt[..., 2] != 0 if gt_kpt.shape[-1] == 3 else torch.full_like(gt_kpt[..., 0], True)
-            kpts_loss = self.keypoint_loss(pred_kpt, gt_kpt, kpt_mask, area)  # pose loss
-
-            if pred_kpt.shape[-1] == 3:
-                kpts_obj_loss = self.bce_pose(pred_kpt[..., 2], kpt_mask.float())  # keypoint obj loss
+            if object_mask.any():
+                kpts_loss = self.keypoint_loss(
+                    pred_kpt[object_mask], gt_kpt[object_mask], kpt_mask[object_mask], area[object_mask]
+                )  # pose loss
+                if pred_kpt.shape[-1] == 3:
+                    kpts_obj_loss = self.bce_pose(
+                        pred_kpt[object_mask][..., 2], kpt_mask[object_mask].float()
+                    )  # keypoint obj loss
+            else:
+                # Preserve the graph for distributed/compiled training without treating non-person instances as pose
+                # negatives. COCO multi-task batches intentionally contain zero-filled keypoints for those objects.
+                kpts_loss = pred_kpt.sum() * 0.0
+                kpts_obj_loss = pred_kpt.sum() * 0.0
 
         return kpts_loss, kpts_obj_loss
 
@@ -1400,18 +1416,18 @@ class SemanticSegmentationLoss(nn.Module):
 
 
 class MultiTaskLoss(nn.Module):
-    """Combined multi-task loss: detection + segmentation + pose + classification.
+    """Combined sparse/dense loss for the unified multi-task model.
 
     MOT-inspired weighting: each task's loss is treated like a track confidence
     score — high-quality predictions contribute more to the total loss gradient,
     while noisy task predictions are down-weighted adaptively.
 
     Attributes:
-        model (torch.nn.Module): The multi-task YOLO model.
+        model (torch.nn.Module): Non-owning reference to the multi-task YOLO model.
         det_loss (v8DetectionLoss): Detection branch loss.
         seg_loss (v8SegmentationLoss | None): Segmentation branch loss.
         pose_loss (v8PoseLoss | PoseLoss26 | None): Pose estimation loss.
-        cls_loss (v8ClassificationLoss | None): Classification loss.
+        cls_loss (nn.BCEWithLogitsLoss | None): Image multi-label classification loss.
         task_weights (dict): Static per-task loss weights.
         moe_loss_coeff (float): MoE/MoT auxiliary loss coefficient.
     """
@@ -1423,7 +1439,9 @@ class MultiTaskLoss(nn.Module):
             model (MultiTaskModel): Multi-task model instance.
         """
         super().__init__()
-        self.model = model
+        # The criterion is attached to its model after lazy initialization. Registering the parent here would create
+        # model -> criterion -> model recursion in state_dict() and EMA updates.
+        object.__setattr__(self, "model", model)
         head = model.model[-1]
         self.nc = head.nc
 
@@ -1431,10 +1449,12 @@ class MultiTaskLoss(nn.Module):
         # (happens when init_criterion is called before the trainer sets args)
         if isinstance(model.args, dict):
             from ultralytics.utils import IterableSimpleNamespace
+
             model.args = IterableSimpleNamespace(**model.args)
 
         # Detection loss (always present)
         from ultralytics.utils.loss import v8DetectionLoss, E2ELoss
+
         end2end = getattr(model, "end2end", False)
         det_cls = E2ELoss if end2end else v8DetectionLoss
         self.det_loss = det_cls(model) if end2end else det_cls(model)
@@ -1443,24 +1463,36 @@ class MultiTaskLoss(nn.Module):
         self.seg_loss = None
         if head.has_task("segment"):
             from ultralytics.utils.loss import v8SegmentationLoss
+
             self.seg_loss = v8SegmentationLoss(model)
 
         # Pose loss
         self.pose_loss = None
         if head.has_task("pose"):
             from ultralytics.utils.loss import v8PoseLoss
+
             self.pose_loss = v8PoseLoss(model)
 
-        # Classification loss
-        self.cls_loss = None
-        if head.has_task("classify"):
-            self.cls_loss = v8ClassificationLoss()
+        self.cls_loss = nn.BCEWithLogitsLoss(reduction="none") if head.has_task("classify") else None
+        self.semantic_loss = (
+            nn.CrossEntropyLoss(ignore_index=255, reduction="none") if head.has_task("semantic") else None
+        )
 
         # Task weights (from model or defaults)
-        self.task_weights = getattr(model, "task_weights", {
-            "detect": 1.0, "segment": 0.5, "pose": 1.0,
-            "classify": 0.3, "depth": 0.3, "obb": 0.5,
-        })
+        self.task_weights = getattr(
+            model,
+            "task_weights",
+            {
+                "detect": 1.0,
+                "segment": 0.5,
+                "pose": 1.0,
+                "classify": 0.3,
+                "depth": 0.3,
+                "normal": 0.3,
+                "semantic": 0.5,
+                "obb": 0.5,
+            },
+        )
 
         # MoT auxiliary loss coefficient
         self.moe_loss_coeff = 0.01
@@ -1480,47 +1512,59 @@ class MultiTaskLoss(nn.Module):
         #   - Tuple (tensor, dict) from standard Detect pattern
         #   - Dict with one2many/one2one from training
         if isinstance(preds, dict):
-            one2many = preds.get("one2many", preds)
-            one2one = preds.get("one2one", None)
+            raw_preds = preds
         elif isinstance(preds, (list, tuple)):
             # eval mode: first element is detection tensor, second is raw preds dict
-            one2many = preds[1] if len(preds) > 1 and isinstance(preds[1], dict) else {}
-            one2one = None
+            raw_preds = preds[1] if len(preds) > 1 and isinstance(preds[1], dict) else {}
         elif isinstance(preds, torch.Tensor):
-            one2many = {}
-            one2one = None
+            raw_preds = {}
         else:
-            one2many = {}
-            one2one = None
+            raw_preds = {}
+
+        one2many = raw_preds.get("one2many", raw_preds)
+        one2one = raw_preds.get("one2one")
 
         # Validate one2many has required keys for detection
         if not isinstance(one2many, dict) or "boxes" not in one2many:
-            return torch.tensor(0.0), torch.zeros(6)
+            return torch.tensor(0.0), torch.zeros(9)
 
         device = one2many["boxes"].device
+        end2end = bool(getattr(self.model, "end2end", False))
         total_loss = torch.tensor(0.0, device=device, requires_grad=False)
         loss_items = {}
 
-        # Extract predictions for each head
-        one2many = preds.get("one2many", preds)
-        one2one = preds.get("one2one", None)
+        # A task-routed sampler annotates each sample with its supervision source.
+        # Skip auxiliary criteria for a homogeneous source that does not provide
+        # that target. Mixed batches retain the union of their declared sources.
+        task_sources = batch.get("task_source")
+        if isinstance(task_sources, str):
+            task_sources = {task_sources}
+        elif isinstance(task_sources, (list, tuple, set)):
+            task_sources = {str(source) for source in task_sources}
+        else:
+            task_sources = None
+
+        def source_enabled(task: str) -> bool:
+            return task_sources is None or task in task_sources
 
         # ── Detection loss ───────────────────────────────────────────────
         # E2ELoss needs full one2many/one2one structure; v8DetectionLoss uses
         # boxes/scores directly.
-        det_preds = {
-            "one2many": {
-                "boxes": one2many["boxes"],
-                "scores": one2many["scores"],
-                "feats": one2many.get("feats", []),
-            },
+        flat_det_preds = {
+            "boxes": one2many["boxes"],
+            "scores": one2many["scores"],
+            "feats": one2many.get("feats", []),
         }
-        if one2one is not None:
-            det_preds["one2one"] = {
-                "boxes": one2one["boxes"],
-                "scores": one2one["scores"],
-                "feats": one2one.get("feats", []),
-            }
+        if end2end:
+            det_preds = {"one2many": flat_det_preds}
+            if one2one is not None:
+                det_preds["one2one"] = {
+                    "boxes": one2one["boxes"],
+                    "scores": one2one["scores"],
+                    "feats": one2one.get("feats", []),
+                }
+        else:
+            det_preds = flat_det_preds
         det_loss_val, det_items = self.det_loss(det_preds, batch)
         w = self.task_weights.get("detect", 1.0)
         total_loss = total_loss + w * det_loss_val.sum()
@@ -1529,7 +1573,12 @@ class MultiTaskLoss(nn.Module):
         loss_items["dfl_loss"] = det_items[2].detach() if len(det_items) > 2 else torch.tensor(0.0)
 
         # ── Segmentation loss (flat format: v8SegmentationLoss accesses keys directly) ──
-        if self.seg_loss is not None and "mask_coefficient" in one2many and batch.get("masks") is not None:
+        if (
+            source_enabled("segment")
+            and self.seg_loss is not None
+            and "mask_coefficient" in one2many
+            and batch.get("masks") is not None
+        ):
             seg_preds = {
                 "boxes": one2many["boxes"],
                 "scores": one2many["scores"],
@@ -1546,11 +1595,19 @@ class MultiTaskLoss(nn.Module):
                 }
             seg_loss_val, seg_items = self.seg_loss(seg_preds, batch)
             w = self.task_weights.get("segment", 0.5)
-            total_loss = total_loss + w * seg_loss_val.sum()
-            loss_items["seg_loss"] = seg_items[-1].detach() if len(seg_items) > 0 else torch.tensor(0.0)
+            # v8SegmentationLoss includes detection terms for target assignment. Detection is already accounted for
+            # above, so only add the instance-mask and semantic components here to avoid double-counting box/cls/DFL.
+            seg_component = seg_loss_val[1] + (seg_loss_val[4] if len(seg_loss_val) > 4 else 0.0)
+            total_loss = total_loss + w * seg_component
+            loss_items["seg_loss"] = seg_component.detach()
 
         # ── Pose loss (flat format) ──────────────────────────────────
-        if self.pose_loss is not None and "kpts" in one2many and batch.get("keypoints") is not None:
+        if (
+            source_enabled("pose")
+            and self.pose_loss is not None
+            and "kpts" in one2many
+            and batch.get("keypoints") is not None
+        ):
             pose_preds = {
                 "boxes": one2many["boxes"],
                 "scores": one2many["scores"],
@@ -1565,31 +1622,76 @@ class MultiTaskLoss(nn.Module):
                 }
             pose_loss_val, pose_items = self.pose_loss(pose_preds, batch)
             w = self.task_weights.get("pose", 1.0)
-            total_loss = total_loss + w * pose_loss_val.sum()
-            loss_items["pose_loss"] = pose_items[-1].detach() if len(pose_items) > 0 else torch.tensor(0.0)
+            # v8PoseLoss returns [box, keypoint, keypoint-objectness, cls, DFL]. The detection terms are already
+            # included in det_loss, therefore the unified criterion adds only the pose-specific terms.
+            pose_component = (
+                pose_loss_val[1] + pose_loss_val[2] if len(pose_loss_val) > 2 else torch.zeros((), device=device)
+            )
+            total_loss = total_loss + w * pose_component
+            loss_items["pose_loss"] = pose_component.detach()
 
-        # ── Classification loss ──────────────────────────────────────────
-        if self.cls_loss is not None and "cls_logits" in one2many:
+        # ── Image multi-label classification loss ─────────────────────────
+        if source_enabled("classify") and self.cls_loss is not None and "cls_logits" in one2many:
             cls_logits = one2many["cls_logits"]
-            # Use image-level labels (separate from instance-level cls for detection)
-            cls_labels = batch.get("cls_img", batch.get("labels"))
-            if cls_labels is None:
-                cls_labels = batch.get("cls")
-                # If cls is instance-level [N,1], take the first per image
-                if cls_labels is not None and cls_labels.dim() > 1:
-                    cls_labels = cls_labels[:, 0].long()[:cls_logits.shape[0]]
+            cls_labels = batch.get("cls_img")
             if cls_labels is not None:
-                cls_labels = cls_labels.long()[:cls_logits.shape[0]]
-                cls_loss_val, _ = self.cls_loss(cls_logits, {"cls": cls_labels})
-                w = self.task_weights.get("classify", 0.3)
-                total_loss = total_loss + w * cls_loss_val
-                loss_items["cls_global_loss"] = cls_loss_val.detach()
+                cls_labels = cls_labels.to(device=device, dtype=cls_logits.dtype)
+                valid = batch.get("cls_img_valid")
+                if valid is None:
+                    valid = torch.ones(cls_labels.shape[0], device=device, dtype=torch.bool)
+                else:
+                    valid = valid.to(device=device, dtype=torch.bool)
+                if valid.any():
+                    cls_loss_val = self.cls_loss(cls_logits[valid], cls_labels[valid]).mean()
+                    w = self.task_weights.get("classify", 0.3)
+                    total_loss = total_loss + w * cls_loss_val
+                    loss_items["cls_global_loss"] = cls_loss_val.detach()
 
-        # ── MoT auxiliary loss ───────────────────────────────────────────
-        from ultralytics.nn.modules.mot.wrappers import collect_mot_aux_loss
-        mot_aux = collect_mot_aux_loss(self.model)
-        if mot_aux is not None and mot_aux.requires_grad:
-            total_loss = total_loss + self.moe_loss_coeff * mot_aux
+        # ── Dense depth regression ────────────────────────────────────────
+        if source_enabled("depth") and "depth" in one2many and batch.get("depth") is not None:
+            depth_target = batch["depth"].to(device=device, dtype=one2many["depth"].dtype)
+            depth_valid = batch.get("depth_valid")
+            if depth_valid is not None:
+                depth_valid = depth_valid.to(device=device, dtype=torch.bool)
+                if depth_valid.any():
+                    depth_pred = F.interpolate(
+                        one2many["depth"], size=depth_target.shape[-2:], mode="bilinear", align_corners=False
+                    )
+                    depth_loss_val = F.smooth_l1_loss(depth_pred[:, 0][depth_valid], depth_target[:, 0][depth_valid])
+                    total_loss = total_loss + self.task_weights.get("depth", 0.3) * depth_loss_val
+                    loss_items["depth_loss"] = depth_loss_val.detach()
+
+        # ── Surface-normal cosine loss ────────────────────────────────────
+        if source_enabled("normal") and "normal" in one2many and batch.get("normal") is not None:
+            normal_target = batch["normal"].to(device=device, dtype=one2many["normal"].dtype)
+            normal_valid = batch.get("normal_valid")
+            if normal_valid is not None:
+                normal_valid = normal_valid.to(device=device, dtype=torch.bool)
+                if normal_valid.any():
+                    normal_pred = F.interpolate(
+                        one2many["normal"], size=normal_target.shape[-2:], mode="bilinear", align_corners=False
+                    )
+                    normal_pred = F.normalize(normal_pred, dim=1, eps=1e-6)
+                    normal_target = F.normalize(normal_target, dim=1, eps=1e-6)
+                    normal_loss_val = (1.0 - (normal_pred * normal_target).sum(1)[normal_valid]).mean()
+                    total_loss = total_loss + self.task_weights.get("normal", 0.3) * normal_loss_val
+                    loss_items["normal_loss"] = normal_loss_val.detach()
+
+        # ── Stuff/Panoptic semantic loss ──────────────────────────────────
+        if (
+            source_enabled("semantic")
+            and self.semantic_loss is not None
+            and "semantic" in one2many
+            and batch.get("semantic_mask") is not None
+        ):
+            semantic_target = batch["semantic_mask"].to(device=device, dtype=torch.long)
+            semantic_pred = F.interpolate(
+                one2many["semantic"], size=semantic_target.shape[-2:], mode="bilinear", align_corners=False
+            )
+            if (semantic_target != 255).any():
+                semantic_loss_val = self.semantic_loss(semantic_pred, semantic_target).mean()
+                total_loss = total_loss + self.task_weights.get("semantic", 0.5) * semantic_loss_val
+                loss_items["semantic_loss"] = semantic_loss_val.detach()
 
         # ── TaskRouter balance loss ──────────────────────────────────────
         if "routing_stats" in one2many:
@@ -1606,7 +1708,12 @@ class MultiTaskLoss(nn.Module):
             loss_items.get("seg_loss", torch.tensor(0.0, device=device)),
             loss_items.get("pose_loss", torch.tensor(0.0, device=device)),
             loss_items.get("cls_global_loss", torch.tensor(0.0, device=device)),
+            loss_items.get("depth_loss", torch.tensor(0.0, device=device)),
+            loss_items.get("normal_loss", torch.tensor(0.0, device=device)),
+            loss_items.get("semantic_loss", torch.tensor(0.0, device=device)),
         ]
-        loss_items_tensor = torch.stack([i.to(device) if isinstance(i, torch.Tensor) else torch.tensor(i, device=device) for i in items])
+        loss_items_tensor = torch.stack(
+            [i.to(device) if isinstance(i, torch.Tensor) else torch.tensor(i, device=device) for i in items]
+        )
 
         return total_loss, loss_items_tensor.detach()

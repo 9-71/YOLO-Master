@@ -1,7 +1,7 @@
 # Ultralytics YOLO26-Master-MT Multi-Task Vision Model
 #
-# Simultaneously supports: detection, segmentation, pose, classification,
-# depth estimation, and OBB — all in a single unified real-time model.
+# Default supervised path: detection, instance segmentation, and pose.
+# Classification/depth/OBB require dedicated data, criteria, and validation.
 #
 # MOT-inspired architecture:
 #   - MoT blocks in neck: token-level routing to Transformer experts
@@ -20,7 +20,7 @@ reg_max: 1                                      # DFL bins
 kpt_shape: [17, 3]                              # COCO keypoints
 nm: 32                                          # mask coefficients
 npr: 256                                         # mask prototypes
-tasks: ['detect', 'segment', 'pose', 'classify', 'depth', 'obb']  # active tasks
+tasks: ['detect', 'segment', 'pose']             # active supervised tasks
 
 scales:
   # [depth, width, max_channels]

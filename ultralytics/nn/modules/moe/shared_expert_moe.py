@@ -15,11 +15,13 @@
     - [-1, 1, SharedExpertMoE, [512, 4, 2, 0.5, "shared_512"]]  # 复用 pool
   ```
 """
+
 from typing import Dict
 
 from .modules import LowRankHybridAdaptiveGateMoE
 
-# 全局 expert pool 注册表
+# Build-time expert pool registry. Model parsing clears it at model boundaries;
+# modules keep the shared expert object as a registered child after construction.
 # Key: pool_id, Value: dict{fused_experts, in_channels, out_channels, num_experts, top_k, bottleneck_ratio}
 _SHARED_EXPERT_POOLS: Dict[str, dict] = {}
 
@@ -59,10 +61,6 @@ class SharedExpertMoE(LowRankHybridAdaptiveGateMoE):
         bottleneck_ratio: float = 0.5,
         pool_id: str = "shared",
     ):
-        # 关键: 在 super().__init__ 之前 reset pool, 确保每个模型实例都有干净的 pool
-        # 否则同一个 pool_id 会在不同模型的实例间共享, 引发 device mismatch
-        SharedExpertMoE.reset_shared_pools()
-
         super().__init__(
             in_channels,
             out_channels,
@@ -87,11 +85,11 @@ class SharedExpertMoE(LowRankHybridAdaptiveGateMoE):
         """设置共享 expert pool. 第一个该 pool_id 的块是 owner, 后续块复用."""
         pool_key = self.pool_id
         pool_signature = {
-            'in_channels': self.dynamic_channels,
-            'out_channels': self.out_dynamic,
-            'num_experts': self.fused_experts.num_experts if hasattr(self.fused_experts, 'num_experts') else 0,
-            'top_k': self.top_k,
-            'bottleneck_ratio': self.bottleneck_ratio,
+            "in_channels": self.dynamic_channels,
+            "out_channels": self.out_dynamic,
+            "num_experts": self.fused_experts.num_experts if hasattr(self.fused_experts, "num_experts") else 0,
+            "top_k": self.top_k,
+            "bottleneck_ratio": self.bottleneck_ratio,
         }
 
         if pool_key in _SHARED_EXPERT_POOLS:
@@ -105,45 +103,27 @@ class SharedExpertMoE(LowRankHybridAdaptiveGateMoE):
                         f"共享 pool 的 MoE 块必须有相同的 channels/num_experts/top_k."
                     )
             # 复用现有 expert pool
-            self.fused_experts = existing['fused_experts']
+            self.fused_experts = existing["fused_experts"]
             self._is_pool_owner = False
         else:
             # 注册新的 expert pool
             _SHARED_EXPERT_POOLS[pool_key] = {
                 **pool_signature,
-                'fused_experts': self.fused_experts,
+                "fused_experts": self.fused_experts,
             }
             self._is_pool_owner = True
 
     @classmethod
     def reset_shared_pools(cls):
-        """重置所有共享 pool (用于重新构建模型)."""
-        global _SHARED_EXPERT_POOLS
-        _SHARED_EXPERT_POOLS = {}
-
-    def _apply(self, fn, recurse=True):
-        """重写 _apply 以确保 .to(device) 调用能传播到 shared pool.
-
-        PyTorch 在调用 module.to(device) 时会调用 _apply, 该方法会递归处理
-        所有子模块的参数. 但 shared pool 是 class-level 全局变量, 不在
-        self._modules 中, 所以默认 _apply 不会处理它. 这里我们手动处理.
-        """
-        # 先调用父类的 _apply (处理 self 的子模块)
-        result = super()._apply(fn, recurse=recurse)
-
-        # 然后处理 shared pool 中的 fused_experts
-        for pool_info in _SHARED_EXPERT_POOLS.values():
-            if 'fused_experts' in pool_info:
-                pool_info['fused_experts']._apply(fn, recurse=recurse)
-
-        return result
+        """Clear the build-time registry before or after constructing a model."""
+        _SHARED_EXPERT_POOLS.clear()
 
     def get_pool_info(self):
         """获取当前 pool 的信息 (用于诊断)."""
         return {
-            'pool_id': self.pool_id,
-            'is_owner': self._is_pool_owner,
-            'num_experts': self.fused_experts.num_experts if hasattr(self.fused_experts, 'num_experts') else 0,
-            'top_k': self.top_k,
-            'dynamic_channels': self.dynamic_channels,
+            "pool_id": self.pool_id,
+            "is_owner": self._is_pool_owner,
+            "num_experts": self.fused_experts.num_experts if hasattr(self.fused_experts, "num_experts") else 0,
+            "top_k": self.top_k,
+            "dynamic_channels": self.dynamic_channels,
         }

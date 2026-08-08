@@ -128,7 +128,7 @@ class YOLO(Model):
             "multitask": {
                 "model": MultiTaskModel,
                 "trainer": yolo.multitask.MultiTaskTrainer,
-                "validator": yolo.detect.DetectionValidator,
+                "validator": yolo.multitask.MultiTaskValidator,
                 "predictor": yolo.detect.DetectionPredictor,
             },
         }
