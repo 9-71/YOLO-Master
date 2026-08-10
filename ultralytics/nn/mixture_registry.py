@@ -3,13 +3,16 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from collections.abc import Mapping
 from typing import Any
 
-from ultralytics.nn.modules.moa import C2fMoA
+from ultralytics.mixture_metadata import MIXTURE_MODULE_KINDS
 from ultralytics.nn.modules.block import DyC2f, DyMoEBlock
+from ultralytics.nn.modules.moa import C2fMoA
 from ultralytics.nn.modules.moe import (
     A2C2fMoE,
     AdaptiveGateMoE,
+    ContextRefinedLowRankHybridAdaptiveGateMoE,
     DetailAwareLowRankHybridAdaptiveGateMoE,
     DiversifiedExpertMoE,
     ES_MOE,
@@ -22,18 +25,21 @@ from ultralytics.nn.modules.moe import (
     MultiHeadRouterMoE,
     OptimalHybridGateMoE,
     RefinedLowRankHybridAdaptiveGateMoE,
+    SharedExpertMoE,  # Issue #54: Cross-Scale Expert Pool Sharing
     UltimateOptimizedMoE,
     UltraOptimizedMoE,
     VisualEnhancedAdaptiveGateMoE,
 )
 from ultralytics.nn.modules.moe.config import annotate_mixture_yaml_config
 from ultralytics.nn.modules.mot import C2fMoT
+from ultralytics.nn.modules.latent_mixture import LatentMixture
 from ultralytics.utils.ops import make_divisible
 
 
 MIXTURE_MODULES = {
     "A2C2fMoE": A2C2fMoE,
     "AdaptiveGateMoE": AdaptiveGateMoE,
+    "ContextRefinedLowRankHybridAdaptiveGateMoE": ContextRefinedLowRankHybridAdaptiveGateMoE,
     "C2fMoA": C2fMoA,
     "C2fMoT": C2fMoT,
     "DetailAwareLowRankHybridAdaptiveGateMoE": DetailAwareLowRankHybridAdaptiveGateMoE,
@@ -50,12 +56,21 @@ MIXTURE_MODULES = {
     "MultiHeadRouterMoE": MultiHeadRouterMoE,
     "OptimalHybridGateMoE": OptimalHybridGateMoE,
     "RefinedLowRankHybridAdaptiveGateMoE": RefinedLowRankHybridAdaptiveGateMoE,
+    "SharedExpertMoE": SharedExpertMoE,  # Issue #54: Cross-Scale Expert Pool Sharing
     "UltimateOptimizedMoE": UltimateOptimizedMoE,
     "UltraOptimizedMoE": UltraOptimizedMoE,
     "VisualEnhancedAdaptiveGateMoE": VisualEnhancedAdaptiveGateMoE,
+    "LatentMixture": LatentMixture,
 }
+if set(MIXTURE_MODULES) != set(MIXTURE_MODULE_KINDS):
+    missing_metadata = sorted(set(MIXTURE_MODULES) - set(MIXTURE_MODULE_KINDS))
+    missing_runtime = sorted(set(MIXTURE_MODULE_KINDS) - set(MIXTURE_MODULES))
+    raise RuntimeError(
+        f"mixture module metadata mismatch: missing_metadata={missing_metadata}, missing_runtime={missing_runtime}"
+    )
 MIXTURE_BASE_MODULES = frozenset(MIXTURE_MODULES.values())
 MIXTURE_REPEAT_MODULES = frozenset({A2C2fMoE, C2fMoA, C2fMoT, DyC2f})
+MIXTURE_MULTI_INPUT_MODULES = frozenset({LatentMixture})
 
 
 def get_mixture_module(name: str):
@@ -78,6 +93,51 @@ def adapt_mixture_args(
     max_channels: float,
 ) -> tuple[list[Any], int, int, bool]:
     """Apply upstream width/depth/channel rules to one registered module."""
+    if module in MIXTURE_MULTI_INPUT_MODULES:
+        if module.__name__ == "MultiScaleLatentMixture":
+            raise ValueError(
+                "MultiScaleLatentMixture returns list[Tensor] and cannot be registered in the list-to-Tensor parser path"
+            )
+        if not isinstance(from_index, (list, tuple)) or not from_index:
+            raise TypeError(f"{module.__name__} expects a non-empty input index list, got {from_index!r}")
+        if len(from_index) < 1 or any(not isinstance(index, int) for index in from_index):
+            raise TypeError(f"{module.__name__} input indices must be integers, got {from_index!r}")
+        if not args:
+            raise ValueError(f"{module.__name__} requires an output-channel argument")
+        c1 = [channels[index] for index in from_index]
+        c2 = args[0]
+        named_config = isinstance(c2, Mapping)
+        if named_config:
+            config = dict(c2)
+            c2 = config.pop("out_channels", config.pop("c2", None))
+            if c2 is None:
+                raise ValueError(f"{module.__name__} named config requires 'out_channels'")
+            named_order = (
+                "num_experts",
+                "expert_ratio",
+                "router_hidden_dim",
+                "temperature",
+                "balance_loss_coeff",
+                "router_z_loss_coeff",
+                "residual_init",
+                "noise_std",
+                "router_init_std",
+                "inference_top_k",
+                "value_fusion_mode",
+                "value_fusion_weights",
+                "require_inference_calibration",
+            )
+            unknown = sorted(set(config).difference(named_order))
+            if unknown:
+                raise ValueError(f"{module.__name__} named config has unknown keys: {unknown}")
+            defaults = (4, 0.25, None, 1.0, 1e-2, 1e-3, 0.0, 0.0, 0.0, None, "router_only", None, False)
+            args = [config.get(key, default) for key, default in zip(named_order, defaults)]
+        if c2 != nc:
+            c2 = make_divisible(min(c2, max_channels) * width, 8)
+        # Named configs have already removed their output-channel field;
+        # legacy positional configs still carry it at args[0].
+        adapted_tail = args if named_config else args[1:]
+        return [c1, c2, *adapted_tail], c2, 1, False
     if not isinstance(from_index, int):
         raise TypeError(f"{module.__name__} expects one input index, got {from_index!r}")
     if not args:
@@ -128,6 +188,7 @@ __all__ = [
     "MIXTURE_MODULES",
     "MIXTURE_BASE_MODULES",
     "MIXTURE_REPEAT_MODULES",
+    "MIXTURE_MULTI_INPUT_MODULES",
     "adapt_mixture_args",
     "finalize_mixture_module",
     "get_mixture_module",

@@ -1,4 +1,5 @@
 """Core Mixture-of-Attention block."""
+
 from __future__ import annotations
 import torch
 import torch.nn as nn
@@ -7,12 +8,14 @@ from ultralytics.nn.modules._numeric import should_reduce_ddp
 from ultralytics.nn.modules.utils import robust_deepcopy
 from ultralytics.nn.modules.routing_protocol import (
     export_capabilities as _export_routing_capabilities,
+    is_export_or_tracing,
     publish_aux_loss,
     routing_finite_diagnostics,
     routing_snapshot as _routing_snapshot,
 )
 from .heads import _GlobalAttnHead, _LocalAttnHead, _RegionalAttnHead, _init_conv_weights
 from .router import _MoARouter, _moa_router_aux_loss
+
 
 class MoABlock(nn.Module):
     """Mixture-of-Attention Block.
@@ -54,10 +57,26 @@ class MoABlock(nn.Module):
         aux_loss_coeff: float = 0.01,
         block_index: int = 0,
         local_window_size: int = 7,
-        sequential_heads: bool = False,
+        sequential_heads: bool = True,
+        regional_max_kv_tokens: int | None = 4096,
+        sparse_inference: bool = False,
+        sparse_inference_threshold: float = 0.02,
+        inference_sparse_threshold: float | None = None,
     ):
         super().__init__()
+        if inference_sparse_threshold is not None:
+            if sparse_inference_threshold != 0.02 and sparse_inference_threshold != inference_sparse_threshold:
+                raise ValueError(
+                    "Specify only one sparse inference threshold: "
+                    "sparse_inference_threshold or inference_sparse_threshold."
+                )
+            sparse_inference_threshold = inference_sparse_threshold
+            sparse_inference = True
         self.sequential_heads = sequential_heads
+        self.sparse_inference = bool(sparse_inference)
+        self.sparse_inference_threshold = float(sparse_inference_threshold)
+        if not 0.0 <= self.sparse_inference_threshold < 1.0:
+            raise ValueError("sparse_inference_threshold must be in [0, 1)")
         if num_heads <= 0 or num_heads % self.NUM_GROUPS != 0:
             raise ValueError(
                 f"num_heads ({num_heads}) must be positive and divisible by NUM_GROUPS ({self.NUM_GROUPS})"
@@ -70,7 +89,9 @@ class MoABlock(nn.Module):
         # Three attention head-groups (global head uses a per-block RF seed).
         global_rf_seed = block_index * 7919 + 2 * 65537
         self.local_head   = _LocalAttnHead(dim, heads_per_group, head_dim, window_size=local_window_size)
-        self.region_head  = _RegionalAttnHead(dim, heads_per_group, head_dim)
+        self.region_head  = _RegionalAttnHead(
+            dim, heads_per_group, head_dim, max_kv_tokens=regional_max_kv_tokens
+        )
         self.global_head  = _GlobalAttnHead(dim, heads_per_group, head_dim, rf_seed=global_rf_seed)
 
         # Router
@@ -127,11 +148,18 @@ class MoABlock(nn.Module):
 
     def export_capabilities(self) -> dict:
         capabilities = _export_routing_capabilities(self)
+        eager_sparse = bool(self.sparse_inference)
         capabilities.update(
             routing_kind="moa",
-            sparse_dispatch=False,
-            eager_sparse_dispatch=False,
-            sparse_export_limitation="MoA uses dense soft routing in eager and exported graphs.",
+            sparse_dispatch=eager_sparse,
+            eager_sparse_dispatch=eager_sparse,
+            training_sparse_dispatch=False,
+            sparse_export_limitation=(
+                "MoA optional eager inference skips low-weight head groups; ONNX and TorchScript tracing use "
+                "the dense fallback."
+                if eager_sparse
+                else "MoA uses dense soft routing in eager and exported graphs."
+            ),
         )
         return capabilities
 
@@ -143,7 +171,8 @@ class MoABlock(nn.Module):
 
         # ── Routing weights ──────────────────────────────────────────────
         weights, router_logits = self.router(x, return_logits=True)   # [B, 3, H, W]
-        if self.training and self.aux_loss_coeff > 0:
+        exporting = is_export_or_tracing()
+        if not exporting and self.training and self.aux_loss_coeff > 0:
             self.last_aux_loss, finite_diagnostics = _moa_router_aux_loss(
                 weights,
                 router_logits,
@@ -151,31 +180,56 @@ class MoABlock(nn.Module):
                 reduce_ddp=should_reduce_ddp(self),
                 return_diagnostics=True,
             )
+        elif exporting:
+            self.last_aux_loss = x.new_zeros(())
+            finite_diagnostics = {}
         else:
             self.last_aux_loss = x.new_zeros(())
             finite_diagnostics = routing_finite_diagnostics(
                 logits=router_logits, probabilities=weights, aux_loss=self.last_aux_loss
             )
-        publish_aux_loss(self, self.last_aux_loss, kind="moa", training=self.training)
-
-        # ── Routing snapshot (detached diagnostics) ──────────────────────
-        with torch.no_grad():
-            mean_w = weights.detach().float().mean(dim=(0, 2, 3))  # [3]
-            self.last_routing_snapshot = {
-                "num_experts": self.NUM_GROUPS,
-                "top_k": self.NUM_GROUPS,
-                "expert_usage": mean_w,
-                "mean_router_probs": mean_w,
-                "aux_loss": float(self.last_aux_loss.detach()),
-                "finite_diagnostics": finite_diagnostics,
-            }
-
-        w_l = weights[:, 0:1]     # [B, 1, H, W]
-        w_r = weights[:, 1:2]
-        w_g = weights[:, 2:3]
+        if not exporting:
+            publish_aux_loss(self, self.last_aux_loss, kind="moa", training=self.training)
 
         # ── Attention head outputs ────────────────────────────────────────
-        if self.sequential_heads:
+        exporting = torch.jit.is_tracing() or torch.onnx.is_in_onnx_export()
+        sparse_eval = not self.training and self.sparse_inference and not exporting
+        active = None
+        executed_groups = self.NUM_GROUPS
+        dropped_routing_mass = 0.0
+        if sparse_eval:
+            # Skip a group only when it contributes less than the configured
+            # threshold for every token in this batch.  The decision is batch-
+            # level, so no per-token Python control flow enters exported graphs.
+            active = weights.detach().amax(dim=(0, 2, 3)) > self.sparse_inference_threshold
+            if not bool(active.any()):
+                active = torch.zeros_like(active)
+                active[weights.detach().mean(dim=(0, 2, 3)).argmax()] = True
+            if bool(active.all()):
+                active = None
+            else:
+                executed_groups = int(active.sum())
+                dropped_routing_mass = float(weights[:, ~active].detach().float().sum(dim=1).mean())
+
+        blend_weights = weights
+        if active is not None:
+            # Re-normalize retained groups per token so sparse inference
+            # approximates dense routing without shrinking the activation.
+            blend_weights = weights * active.view(1, -1, 1, 1)
+            blend_weights = blend_weights / blend_weights.sum(dim=1, keepdim=True).clamp_min(torch.finfo(weights.dtype).eps)
+        w_l = blend_weights[:, 0:1]  # [B, 1, H, W]
+        w_r = blend_weights[:, 1:2]
+        w_g = blend_weights[:, 2:3]
+
+        if active is not None:
+            mixed = x.new_zeros(x.shape)
+            if bool(active[0]):
+                mixed = mixed + w_l * self.local_head(x)
+            if bool(active[1]):
+                mixed = mixed + w_r * self.region_head(x)
+            if bool(active[2]):
+                mixed = mixed + w_g * self.global_head(x)
+        elif self.sequential_heads:
             # Sequential path: compute and accumulate one head at a time.
             # Mathematically identical to the default path; useful for
             # memory-constrained environments and ONNX export validation.
@@ -186,8 +240,28 @@ class MoABlock(nn.Module):
             out_l = self.local_head(x)
             out_r = self.region_head(x)
             out_g = self.global_head(x)
-            mixed = w_l * out_l + w_r * out_r + w_g * out_g   # [B, C, H, W]
+            mixed = w_l * out_l + w_r * out_r + w_g * out_g  # [B, C, H, W]
         mixed = self.attn_drop(self.fusion(mixed))
+
+        # ── Routing snapshot (detached diagnostics) ──────────────────────
+        if not exporting:
+            with torch.no_grad():
+                mean_w = weights.detach().float().mean(dim=(0, 2, 3))  # [3]
+                self.last_routing_snapshot = {
+                    "num_experts": self.NUM_GROUPS,
+                    "top_k": self.NUM_GROUPS,
+                    "expert_usage": mean_w,
+                    "mean_router_probs": mean_w,
+                    "aux_loss": float(self.last_aux_loss.detach()),
+                    "finite_diagnostics": finite_diagnostics,
+                    "executed_groups": executed_groups,
+                    "dropped_routing_mass": dropped_routing_mass,
+                    # Legacy diagnostics exposed this value as an approximation
+                    # error. It is a routing-mass proxy, not a tensor error norm.
+                    "approximation_error": dropped_routing_mass,
+                }
+        else:
+            self.last_routing_snapshot = {}
 
         # ── Residual + layer-scale ────────────────────────────────────────
         # `shortcut` controls *all* block-level residual paths consistently:
@@ -202,5 +276,6 @@ class MoABlock(nn.Module):
             x = self.ls_ffn * self.ffn(x)
 
         return x
+
 
 __all__ = ("MoABlock",)

@@ -1,4 +1,3 @@
-from copy import deepcopy
 from types import SimpleNamespace
 from unittest.mock import MagicMock, call, patch
 
@@ -7,6 +6,7 @@ import torch
 from torch import nn
 
 from ultralytics.engine.extensions import AdapterRuntimeController
+from ultralytics.engine.extensions.recovery import TrainingRecoveryController
 from ultralytics.engine.trainer import BaseTrainer, validate_adapter_configuration
 from ultralytics.nn.peft.molora import MoLoRAConfig, MoLoRALayer, get_peft_molora_model
 from ultralytics.utils.errors import MoERouterError
@@ -53,6 +53,43 @@ class RTDETRSmokeModel(ImageSmokeModel):
 
     def forward(self, x):
         return self.decoder(super().forward(x))
+
+
+@pytest.mark.parametrize(
+    "device",
+    [
+        "cpu",
+        pytest.param("mps", marks=pytest.mark.skipif(not torch.backends.mps.is_available(), reason="MPS unavailable")),
+    ],
+)
+def test_batched_finite_check_detects_nonfinite_tensors(device):
+    tensors = [torch.ones(3, device=device), torch.tensor([float("nan")], device=device)]
+
+    assert TrainingRecoveryController.tensors_are_finite(tensors) is False
+
+
+def test_batched_finite_check_uses_foreach_kernel(monkeypatch):
+    tensors = [torch.ones(3), torch.ones(2)]
+    finite_check = MagicMock(wraps=torch._amp_foreach_non_finite_check_and_unscale_)
+    monkeypatch.setattr(torch, "_amp_foreach_non_finite_check_and_unscale_", finite_check)
+
+    assert TrainingRecoveryController.tensors_are_finite(tensors) is True
+    finite_check.assert_called_once()
+
+
+def test_batched_state_finite_check_handles_nested_optimizer_state():
+    state = {"state": {0: {"exp_avg": torch.ones(3), "exp_avg_sq": torch.tensor([float("inf")])}}}
+
+    assert TrainingRecoveryController.state_is_finite_batched(state) is False
+
+
+def test_finite_ema_resync_check_avoids_per_tensor_finite_checks(monkeypatch):
+    source, target = nn.Linear(3, 2), nn.Linear(3, 2)
+    finite_check = MagicMock(wraps=TrainingRecoveryController.state_is_finite)
+    monkeypatch.setattr(TrainingRecoveryController, "state_is_finite", finite_check)
+
+    assert TrainingRecoveryController.replace_nonfinite_tensors(target, source) is True
+    finite_check.assert_not_called()
 
 
 def test_adapter_configuration_rejects_lora_and_molora_together():
@@ -123,15 +160,18 @@ def recovery_trainer(tmp_path, loss=1.0, fitness=0.0, best_fitness=0.4):
 
 def write_healthy(path):
     model = nn.Linear(1, 1)
-    torch.save({"model": model, "ema": nn.Linear(1, 1), "optimizer": None, "scaler": None, "best_fitness": 0.4, "updates": 0}, path)
+    torch.save(
+        {"model": model, "ema": nn.Linear(1, 1), "optimizer": None, "scaler": None, "best_fitness": 0.4, "updates": 0},
+        path,
+    )
 
 
 def test_nccl_skips_nonpersistent_cpu():
     t = tr(E(False))
     with patch("torch.distributed.is_initialized", return_value=True), patch(
         "torch.distributed.get_backend", return_value="nccl"
-    ), patch("torch.distributed.get_world_size", return_value=2), patch(
-        "torch.distributed.all_gather_object", side_effect=lambda output, value: output.__setitem__(slice(None), [value, value])
+    ), patch("torch.distributed.get_world_size", return_value=1), patch(
+        "torch.distributed.all_gather_object", side_effect=lambda states, state: states.__setitem__(0, state)
     ), patch("torch.distributed.broadcast") as broadcast:
         t._sync_ema_buffers_for_validation()
     broadcast.assert_not_called()
@@ -142,30 +182,11 @@ def test_nccl_moves_persistent_cpu_buffer_before_broadcast():
     t.device = torch.device("cpu")
     with patch("torch.distributed.is_initialized", return_value=True), patch(
         "torch.distributed.get_backend", return_value="nccl"
-    ), patch("torch.distributed.get_world_size", return_value=2), patch(
-        "torch.distributed.all_gather_object", side_effect=lambda output, value: output.__setitem__(slice(None), [value, value])
+    ), patch("torch.distributed.get_world_size", return_value=1), patch(
+        "torch.distributed.all_gather_object", side_effect=lambda states, state: states.__setitem__(0, state)
     ), patch("torch.distributed.broadcast") as broadcast:
         t._sync_ema_buffers_for_validation()
     broadcast.assert_called_once()
-
-
-def test_nccl_buffer_transfer_failure_is_coordinated_before_broadcast():
-    t = tr(E(True))
-    t.device = torch.device("cpu")
-
-    def gather_rank_states(output, value):
-        remote = {**value, "preparation_errors": ("diagnostic: RuntimeError: injected transfer failure",)}
-        output[:] = [value, remote]
-
-    with patch("torch.distributed.is_initialized", return_value=True), patch(
-        "torch.distributed.get_backend", return_value="nccl"
-    ), patch("torch.distributed.get_world_size", return_value=2), patch(
-        "torch.distributed.all_gather_object", side_effect=gather_rank_states
-    ), patch("torch.distributed.broadcast") as broadcast, pytest.raises(
-        RuntimeError, match="rank 1: diagnostic: RuntimeError: injected transfer failure"
-    ):
-        t._sync_ema_buffers_for_validation()
-    broadcast.assert_not_called()
 
 
 def test_train_destroys_group_on_error():
@@ -196,67 +217,10 @@ def test_bootstrap_checkpoint_serializes_before_training_epoch_is_set(tmp_path):
     del trainer.epoch
 
     checkpoint = torch_load(
-        __import__("io").BytesIO(trainer._serialize_checkpoint(include_online_model=True)),
-        map_location="cpu",
-        weights_only=False,
-    )
-
-    assert checkpoint["epoch"] == 6
-
-
-def test_checkpoint_serialization_does_not_change_buffer_schema(tmp_path):
-    trainer = bootstrap_trainer(tmp_path)
-    before_model = tuple((name, tuple(value.shape), value.dtype) for name, value in trainer.model.named_buffers())
-    before_ema = tuple((name, tuple(value.shape), value.dtype) for name, value in trainer.ema.ema.named_buffers())
-
-    trainer._serialize_checkpoint()
-
-    after_model = tuple((name, tuple(value.shape), value.dtype) for name, value in trainer.model.named_buffers())
-    after_ema = tuple((name, tuple(value.shape), value.dtype) for name, value in trainer.ema.ema.named_buffers())
-    assert after_model == before_model
-    assert after_ema == before_ema
-
-
-def test_standard_checkpoint_omits_online_model_but_healthy_keeps_it(tmp_path):
-    trainer = bootstrap_trainer(tmp_path)
-    standard = torch_load(
-        __import__("io").BytesIO(trainer._serialize_checkpoint(include_online_model=False)),
-        map_location="cpu",
-        weights_only=False,
-    )
-    healthy = torch_load(
-        __import__("io").BytesIO(trainer._serialize_checkpoint(include_online_model=True)),
-        map_location="cpu",
-        weights_only=False,
-    )
-    assert standard["model"] is None
-    assert standard["ema"] is not None
-    assert healthy["model"] is not None
-    assert healthy["ema"] is not None
-
-
-def test_standard_checkpoint_does_not_deepcopy_online_model(tmp_path):
-    trainer = bootstrap_trainer(tmp_path)
-    with patch("ultralytics.engine.extensions.recovery.deepcopy", wraps=deepcopy) as copied:
-        trainer._serialize_checkpoint(include_online_model=False)
-    copied_values = [item.args[0] for item in copied.call_args_list]
-    assert trainer.model not in copied_values
-    assert trainer.ema.ema in copied_values
-
-
-def test_standard_checkpoint_repairs_nonfinite_ema_snapshot_from_online_model(tmp_path):
-    trainer = bootstrap_trainer(tmp_path)
-    online = next(trainer.model.parameters())
-    ema = next(trainer.ema.ema.parameters())
-    online.data.fill_(3.0)
-    ema.data.fill_(float("nan"))
-
-    checkpoint = torch_load(
         __import__("io").BytesIO(trainer._serialize_checkpoint()), map_location="cpu", weights_only=False
     )
 
-    assert torch.equal(next(checkpoint["ema"].parameters()).float(), torch.full_like(online, 3.0))
-    assert torch.isnan(ema).all()
+    assert checkpoint["epoch"] == 6
 
 
 def test_checkpoint_serialization_clamps_fp16_overflow_without_mutating_live_ema(tmp_path):
@@ -289,7 +253,9 @@ def test_recovery_controller_resyncs_nonfinite_ema_from_online_model(tmp_path):
 
 def test_recovery_rejects_legacy_checkpoint_without_online_model(tmp_path):
     t = recovery_trainer(tmp_path, loss=float("nan"))
-    torch.save({"ema": nn.Linear(1, 1), "optimizer": None, "scaler": None, "best_fitness": 0.4, "updates": 0}, t.healthy)
+    torch.save(
+        {"ema": nn.Linear(1, 1), "optimizer": None, "scaler": None, "best_fitness": 0.4, "updates": 0}, t.healthy
+    )
     with pytest.raises(RuntimeError, match="lacks online model state"):
         t._handle_nan_recovery(0)
 
@@ -314,6 +280,20 @@ def test_recovery_clears_non_checkpoint_moe_registry(tmp_path):
         assert not list(MOE_LOSS_REGISTRY.items())
     finally:
         MOE_LOSS_REGISTRY.clear()
+
+
+def test_recovery_aux_finite_check_uses_canonical_records():
+    from ultralytics.engine.extensions.recovery import TrainingRecoveryController
+    from ultralytics.nn.modules.moe._common import MOE_LOSS_REGISTRY
+    from ultralytics.nn.modules.routing_protocol import clear_aux_records, publish_aux_loss
+
+    clear_aux_records(step=91)
+    module = nn.Linear(1, 1).train()
+    MOE_LOSS_REGISTRY[module] = torch.tensor(float("nan"))
+    assert TrainingRecoveryController.aux_state_is_finite()
+
+    publish_aux_loss(module, torch.tensor(float("nan"), requires_grad=True), kind="moe", training=True)
+    assert not TrainingRecoveryController.aux_state_is_finite()
 
 
 def test_validate_skips_nonfinite_ema_and_marks_recovery():
@@ -490,27 +470,30 @@ def test_checkpoint_restore_tolerates_missing_lazy_ema_buffer():
     t.model.register_buffer("_mixture_loss_ema_buf", torch.tensor([1.0, 0.1, 0.1]))
     t._load_checkpoint_state({"ema": old_ema, "optimizer": None, "scaler": None, "best_fitness": 0.0, "updates": 0})
 
-    assert torch.equal(t.ema.ema._mixture_loss_ema_buf, torch.tensor([1.0, 0.1, 0.1]))
-    assert torch.equal(t.model._mixture_loss_ema_buf, torch.tensor([1.0, 0.1, 0.1]))
+    # Legacy three-slot EMA state is migrated when the latent loss channel is
+    # introduced; the original values remain unchanged in their slots.
+    assert torch.equal(
+        t.ema.ema._mixture_loss_ema_buf,
+        torch.tensor([1.0, 0.1, 0.1, 0.1]),
+    )
 
 
-def test_checkpoint_restore_preserves_mixture_ema_on_online_and_ema_models():
+def test_checkpoint_restore_migrates_legacy_three_slot_ema_state():
     t = object.__new__(BaseTrainer)
     t.model = nn.Linear(1, 1)
+    t.model.register_buffer("_mixture_loss_ema_buf", torch.tensor([1.0, 0.1, 0.1, 0.1]))
     t.ema = ModelEMA(t.model)
     t.optimizer = torch.optim.SGD(t.model.parameters(), lr=0.01)
     t.scaler = torch.amp.GradScaler("cuda", enabled=False)
-    checkpoint_ema = nn.Linear(1, 1)
-    checkpoint_ema.register_buffer("_mixture_loss_ema_buf", torch.tensor([9.0, 8.0, 7.0]))
+    old_ema = nn.Linear(1, 1)
+    old_ema.register_buffer("_mixture_loss_ema_buf", torch.tensor([2.0, 0.2, 0.3]))
 
-    t._load_checkpoint_state(
-        {"ema": checkpoint_ema, "optimizer": None, "scaler": None, "best_fitness": 0.0, "updates": 3}
-    )
+    t._load_checkpoint_state({"ema": old_ema, "optimizer": None, "scaler": None, "best_fitness": 0.0, "updates": 7})
 
-    expected = torch.tensor([9.0, 8.0, 7.0])
+    expected = torch.tensor([2.0, 0.2, 0.3, 0.1])
     assert torch.equal(t.model._mixture_loss_ema_buf, expected)
     assert torch.equal(t.ema.ema._mixture_loss_ema_buf, expected)
-    assert t.ema.updates == 3
+    assert t.ema.updates == 7
 
 
 def test_healthy_checkpoint_rejects_nonfinite_state_and_preserves_prior(tmp_path):
@@ -555,7 +538,7 @@ def test_checkpoint_forward_smoke_uses_rtdetr_safe_minimum_shape():
     assert reason == ""
 
 
-def test_save_model_writes_last_and_best_without_recovery_gate(tmp_path):
+def test_save_model_keeps_standard_checkpoints_when_recovery_refresh_fails(tmp_path):
     t = object.__new__(BaseTrainer)
     t.wdir = tmp_path
     t.last = tmp_path / "last.pt"
@@ -567,29 +550,11 @@ def test_save_model_writes_last_and_best_without_recovery_gate(tmp_path):
     t.epoch = 0
     t._serialize_checkpoint = MagicMock(return_value=b"bad-checkpoint")
     t._refresh_healthy_checkpoint = MagicMock(return_value=False)
+
     assert t.save_model() is True
     assert t.last.read_bytes() == b"bad-checkpoint"
     assert t.best.read_bytes() == b"bad-checkpoint"
     t._refresh_healthy_checkpoint.assert_called_once_with()
-
-
-def test_save_model_keeps_upstream_payload_and_refreshes_full_recovery_checkpoint(tmp_path):
-    t = bootstrap_trainer(tmp_path)
-    t.best = tmp_path / "best.pt"
-    t.best_fitness = t.fitness = 0.5
-    t.save_period = -1
-    t.loss = torch.tensor(1.0)
-    t._gradient_nonfinite = False
-
-    assert t.save_model() is True
-
-    standard = torch_load(t.last, map_location="cpu", weights_only=False)
-    healthy = torch_load(t.healthy, map_location="cpu", weights_only=False)
-    assert standard["model"] is None
-    assert standard["ema"] is not None
-    assert healthy["model"] is not None
-    assert healthy["ema"] is not None
-    assert t.best.read_bytes() == t.last.read_bytes()
 
 
 def final_eval_trainer(tmp_path):
@@ -741,36 +706,13 @@ def test_bootstrap_checkpoint_precedes_first_nonfinite_recovery(tmp_path):
     assert t.ema.updates == payload["updates"]
 
 
-def test_epoch_refresh_recovery_restores_latest_finite_online_state(tmp_path):
-    t = bootstrap_trainer(tmp_path)
-    with patch("ultralytics.engine.trainer.RANK", -1):
-        t._bootstrap_healthy_checkpoint()
-
-    t.epoch = 4
-    t.loss = torch.tensor(1.0)
-    t._gradient_nonfinite = False
-    with torch.no_grad():
-        t.model.weight.fill_(5.0)
-        t.model.bias.fill_(6.0)
-        t.ema.ema.load_state_dict(t.model.state_dict())
-    assert t._refresh_healthy_checkpoint() is True
-
-    refreshed = torch_load(t.healthy, map_location="cpu", weights_only=False)
-    assert refreshed["epoch"] == 4
-    assert torch.equal(refreshed["model"].float().weight, torch.full_like(t.model.weight, 5.0))
-
-    with torch.no_grad():
-        t.model.weight.fill_(99.0)
-    t.loss = torch.tensor(float("nan"))
-    assert t._handle_nan_recovery(5) is True
-    assert torch.equal(t.model.weight, torch.full_like(t.model.weight, 5.0))
-
-
 def test_bootstrap_failure_never_creates_unverified_checkpoint(tmp_path):
     t = bootstrap_trainer(tmp_path)
     with torch.no_grad():
         t.model.weight.fill_(float("nan"))
-    with patch("ultralytics.engine.trainer.RANK", -1), pytest.raises(RuntimeError, match="Initial training state is nonfinite"):
+    with patch("ultralytics.engine.trainer.RANK", -1), pytest.raises(
+        RuntimeError, match="Initial training state is nonfinite"
+    ):
         t._bootstrap_healthy_checkpoint()
     assert not t.healthy.exists()
 

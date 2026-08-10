@@ -45,6 +45,7 @@ from .policy import (
     SEMANTIC_UTILITY,
     RANK_SET,
 )
+from .placement_plan import PlacementPlan, PlacementTarget, PlannerResult
 
 __all__ = [
     # Solver
@@ -83,4 +84,7 @@ __all__ = [
     "HybridTrainingProtocol",
     "SEMANTIC_UTILITY",
     "RANK_SET",
+    "PlacementPlan",
+    "PlacementTarget",
+    "PlannerResult",
 ]

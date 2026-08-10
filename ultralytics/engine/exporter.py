@@ -86,6 +86,7 @@ from ultralytics.nn.modules import (
     C2f,
     Classify,
     Detect,
+    MultiTaskHead,
     Pose,
     Pose26,
     RTDETRDecoder,
@@ -563,9 +564,22 @@ class Exporter:
                 raise ValueError(f"{msg} Valid formats are {fmts}")
             LOGGER.warning(f"Invalid export format='{fmt}', updating to format='{matches[0]}'")
             fmt = matches[0]
+        if getattr(model, "task", None) == "multitask" and self.args.nms:
+            raise ValueError(
+                "Multi-task export does not support nms=True because embedded NMS drops mask, pose, and dense outputs. "
+                "Export with nms=False and consume the named multi-task output schema."
+            )
         from ultralytics.utils.export_preflight import export_preflight
 
-        self.export_preflight_report = export_preflight(model, fmt, strict=True)
+        molora_export_mode = str(getattr(self.args, "molora_export_mode", "dynamic")).lower()
+        if molora_export_mode not in {"dynamic", "routing_preserved"}:
+            raise ValueError("molora_export_mode must be 'dynamic' or 'routing_preserved'")
+        if molora_export_mode == "routing_preserved" and fmt not in {"onnx", "torchscript"}:
+            raise ValueError("molora_export_mode='routing_preserved' is only supported for ONNX/TorchScript export")
+        preflight_kwargs = {}
+        if molora_export_mode == "routing_preserved":
+            preflight_kwargs["routing_preserved"] = True
+        self.export_preflight_report = export_preflight(model, fmt, strict=True, **preflight_kwargs)
         decisions = self.export_preflight_report["decisions"]
         if decisions:
             LOGGER.info(
@@ -786,6 +800,11 @@ class Exporter:
             p.requires_grad = False
         model.eval()
         model.float()
+        for module in model.modules():
+            if type(module).__name__ in {"MoLoRALayer", "MoLoRAMoEAwareLayer"}:
+                module._export_mode = molora_export_mode
+        if getattr(self.args, "pre_export_prune", False):
+            model = self._pre_export_prune(model, im, copy_model=False)
         model = model.fuse()
 
         if fmt == "imx":
@@ -874,11 +893,19 @@ class Exporter:
             "channels": model.yaml.get("channels", 3),
             "end2end": getattr(model, "end2end", False),
         }  # model metadata
+        multitask_head = (
+            model.model[-1] if model.task == "multitask" and isinstance(model.model[-1], MultiTaskHead) else None
+        )
+        if multitask_head is not None:
+            self.metadata["multitask_output_schema"] = multitask_head.export_output_schema
         if self.export_preflight_report["decisions"]:
             self.metadata["mixture_export_preflight"] = self.export_preflight_report
+        self.metadata["molora_export_mode"] = molora_export_mode
+        if hasattr(self, "moe_prune_manifest"):
+            self.metadata["moe_prune_manifest"] = self.moe_prune_manifest
         if self.dla is not None:
             self.metadata["dla"] = self.dla  # make sure `AutoBackend` uses correct dla device if it has one
-        if model.task == "pose":
+        if model.task == "pose" or (multitask_head is not None and multitask_head.has_task("pose")):
             self.metadata["kpt_shape"] = model.model[-1].kpt_shape
             if hasattr(model, "kpt_names"):
                 self.metadata["kpt_names"] = model.kpt_names
@@ -898,6 +925,17 @@ class Exporter:
                 f = self.export_edgetpu(tflite_model=Path(f) / f"{self.file.stem}_full_integer_quant.tflite")
         else:
             f = getattr(self, f"export_{fmt}")()
+
+        if hasattr(self, "moe_prune_manifest") and f:
+            artifact = Path(f)
+            manifest_path = (
+                artifact / "moe-prune.json"
+                if artifact.is_dir()
+                else artifact.with_suffix(artifact.suffix + ".prune.json")
+            )
+            self.moe_prune_manifest["output_artifact"] = str(f)
+            manifest_path.write_text(json.dumps(self.moe_prune_manifest, indent=2, sort_keys=True) + "\n")
+            LOGGER.info("MoE pre-export pruning manifest saved to %s", manifest_path)
 
         # Finish
         if f:
@@ -925,6 +963,49 @@ class Exporter:
 
         self.run_callbacks("on_export_end")
         return f  # path to final export artifact
+
+    def _pre_export_prune(self, model, calibration_input, *, copy_model=True):
+        """Calibrate and prune a copied model before graph export."""
+        from ultralytics.nn.modules.moe.analysis import ExpertUsageTracker
+        from ultralytics.nn.modules.moe.pruning import prune_moe_module
+
+        # Keep this helper safe for direct callers as well as the exporter,
+        # whose normal path has already created a deployment copy.
+        if copy_model:
+            model = deepcopy(model)
+        steps = max(int(getattr(self.args, "moe_prune_calibration_steps", 8)), 1)
+        model_root = getattr(model, "model", model)
+        tracker = ExpertUsageTracker(model_root)
+        try:
+            with torch.no_grad():
+                for _ in range(steps):
+                    model(calibration_input)
+        finally:
+            tracker.remove_hooks()
+        usage_stats = dict(tracker.usage_stats)
+        manifest = {
+            "schema_version": 1,
+            "applied": bool(usage_stats),
+            "calibration_steps": steps,
+            "threshold": float(getattr(self.args, "moe_prune_threshold", 0.15)),
+            "keep_top_m": getattr(self.args, "moe_prune_keep_top_m", None),
+            "usage_layers": sorted(usage_stats),
+        }
+        if usage_stats:
+            pruned_model, plan = prune_moe_module(
+                model.model,
+                usage_stats,
+                threshold=manifest["threshold"],
+                keep_top_m=manifest["keep_top_m"],
+            )
+            model.model = pruned_model
+            manifest["pruning_plan"] = plan
+            LOGGER.info("MoE pre-export pruning retained %d routed layers", len(plan))
+        else:
+            manifest["reason"] = "no routed MoE usage observed during calibration"
+            LOGGER.warning("pre_export_prune requested but no MoE routing usage was observed")
+        self.moe_prune_manifest = manifest
+        return model
 
     def get_int8_calibration_dataloader(self, prefix=""):
         """Build and return a dataloader for calibration of INT8 models."""
@@ -999,11 +1080,26 @@ class Exporter:
             assert TORCH_1_13, f"'nms=True' ONNX export requires torch>=1.13 (found torch=={TORCH_VERSION})"
 
         f = str(self.file.with_suffix(".onnx"))
-        output_names = ["output0", "output1"] if self.model.task == "segment" else ["output0"]
+        multitask_head = (
+            self.model.model[-1]
+            if self.model.task == "multitask" and isinstance(self.model.model[-1], MultiTaskHead)
+            else None
+        )
+        output_names = (
+            multitask_head.export_output_names
+            if multitask_head is not None
+            else (["output0", "output1"] if self.model.task == "segment" else ["output0"])
+        )
         dynamic = self.args.dynamic
         if dynamic:
             dynamic = {"images": {0: "batch", 2: "height", 3: "width"}}  # shape(1,3,640,640)
-            if isinstance(self.model, SegmentationModel):
+            if multitask_head is not None:
+                for output_name in output_names:
+                    dynamic[output_name] = {0: "batch"}
+                for output_name in ("mask_prototypes", "depth", "normal", "semantic"):
+                    if output_name in dynamic:
+                        dynamic[output_name].update({2: "height", 3: "width"})
+            elif isinstance(self.model, SegmentationModel):
                 dynamic["output0"] = {0: "batch", 2: "anchors"}  # shape(1, 116, 8400)
                 dynamic["output1"] = {0: "batch", 2: "mask_height", 3: "mask_width"}  # shape(1,32,160,160)
             elif isinstance(self.model, DetectionModel):

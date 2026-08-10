@@ -5,7 +5,12 @@ import torch
 import torch.distributed as dist
 import torch.nn as nn
 import torch.nn.functional as F
-from ultralytics.nn.modules._numeric import all_reduce_mean, fp_clamp_floor
+from ultralytics.nn.modules._numeric import (
+    FP32RouterMixin,
+    all_reduce_mean,
+    disabled_autocast,
+    fp_clamp_floor,
+)
 from ultralytics.nn.modules.moa._constants import DEFAULT_MIN_TEMPERATURE, DEFAULT_TEMPERATURE_ANNEAL_FACTOR, ROUTER_ENTROPY_FLOOR, ROUTER_LOGIT_LIMIT, ROUTER_Z_LOSS_LIMIT
 from ultralytics.nn.modules.routing_protocol import graph_connected_finite_zero
 from ultralytics.nn.modules.routing_protocol import routing_finite_diagnostics
@@ -14,7 +19,7 @@ from ultralytics.nn.modules.utils import get_safe_groups as _safe_groups
 _all_reduce_mean = all_reduce_mean
 _fp_min = fp_clamp_floor
 
-class _MoARouter(nn.Module):
+class _MoARouter(FP32RouterMixin, nn.Module):
     """Lightweight soft-router: assigns each spatial token a weight over M head-groups.
 
     Complexity: O(H·W·C_in / reduction).
@@ -41,9 +46,11 @@ class _MoARouter(nn.Module):
         # that routing entropy stays consistent across modes.  Previously eval
         # hardcoded temp=1.0, which could shift router distributions after
         # annealing and destabilise MoA (no Top-K stable set).
-        temp = self.temperature
-        logits = self.router(x) / temp           # [B, M, H, W]
-        probs = F.softmax(logits, dim=1)
+        with disabled_autocast(x.device.type):
+            temp = self.temperature
+            logits = self.router(x.float()).float() / temp  # [B, M, H, W]
+            probs = F.softmax(logits, dim=1)
+        probs = probs.to(dtype=x.dtype)
         if return_logits:
             return probs, logits
         return probs
@@ -68,10 +75,11 @@ def _moa_router_aux_loss(
     if reduce_ddp:
         global_sum = _all_reduce_mean(local_sum.detach().clone())
         global_count = _all_reduce_mean(local_count.detach().clone())
-        # DDP averages parameter gradients by world size. Scale the local Jacobian
-        # by R/N while exposing the exact detached global value S/N.
+        # ``_all_reduce_mean`` makes ``global_count`` equal N/R. DDP later averages
+        # parameter gradients by R, so 1/global_count already gives the required
+        # local Jacobian R/N; multiplying by world size again would over-scale it.
         importance = global_sum / global_count.clamp_min(1.0)
-        local_grad = (local_sum - local_sum.detach()) * (dist.get_world_size() / global_count.clamp_min(1.0))
+        local_grad = (local_sum - local_sum.detach()) / global_count.clamp_min(1.0)
         importance = importance + local_grad
     else:
         importance = local_sum / local_count.clamp_min(1.0)

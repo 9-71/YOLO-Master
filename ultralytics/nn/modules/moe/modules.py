@@ -18,21 +18,27 @@ import os
 import sys
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
-from typing import Tuple, Dict, Optional, Union
+from typing import Dict, Tuple
 
 from .utils import FlopsUtils, get_safe_groups, BatchedExpertComputation
-from .experts import (
+from .experts import (  # noqa: F401 - preserve historical module attributes
     OptimizedSimpleExpert, FusedGhostExpert, SimpleExpert, GhostExpert,
     InvertedResidualExpert, EfficientExpertGroup, SpatialExpert, SharedInvertedExpertGroup
 )
-from .routers import (
+from .routers import (  # noqa: F401 - preserve historical module attributes
     UltraEfficientRouter, EfficientSpatialRouter, LocalRoutingLayer,
     AdaptiveRoutingLayer, DynamicRoutingLayer, AdvancedRoutingLayer
 )
 from ultralytics.nn.modules.block import ABlock, A2C2f, C3k
-from .loss import MoELoss, gshard_balance_loss, weighted_gshard_balance_loss, differentiable_balance_loss, all_reduce_mean, should_reduce_ddp
-from .scheduler import MoEDynamicScheduler, MoEDynamicSchedulerConfig
+from .loss import (  # noqa: F401 - preserve historical module attributes
+    MoELoss,
+    all_reduce_mean,
+    differentiable_balance_loss,
+    gshard_balance_loss,
+    should_reduce_ddp,
+    weighted_gshard_balance_loss,
+)
+from .scheduler import MoEDynamicScheduler, MoEDynamicSchedulerConfig  # noqa: F401 - compatibility attributes
 from ultralytics.nn.modules.routing_protocol import (
     export_capabilities as _export_routing_capabilities,
     graph_connected_finite_zero,
@@ -396,9 +402,9 @@ class AdaptiveCapacityMoE(UltraOptimizedMoE):
 class ES_MOE(nn.Module):
     """General MoE block with a routing network and multiple expert branches."""
 
-    def __init__(self, in_channels, out_channels=None, num_experts=3, reduction=8,
-                 top_k=None, use_sparse_inference=True, dynamic_threshold=0.4,
-                 max_kernel_size=15):
+    def __init__(self, in_channels, out_channels=None, num_experts=4, reduction=8,
+                 top_k=2, use_sparse_inference=True, dynamic_threshold=0.4,
+                 max_kernel_size=15, expert_kernel_sizes=None):
         """
         Args:
             in_channels: Input channels
@@ -409,6 +415,10 @@ class ES_MOE(nn.Module):
             use_sparse_inference: Enable sparse Top-K expert computation during inference
             dynamic_threshold: Optional threshold for pruning low-confidence experts during inference
             max_kernel_size: Largest odd depthwise kernel assigned to an expert
+            expert_kernel_sizes: Optional explicit per-expert depthwise kernel sizes
+                (length must equal ``num_experts``). When ``None`` the kernels are
+                derived from defaults; pruned checkpoints set this so retraining
+                rebuilds the exact kept-expert kernels and reloads their weights.
         """
         super(ES_MOE, self).__init__()
 
@@ -434,6 +444,7 @@ class ES_MOE(nn.Module):
         self.in_channels = in_channels
         self.out_channels = out_channels
         self.num_experts = num_experts
+        self.reduction = reduction
         self.top_k = min(top_k, num_experts) if top_k is not None else num_experts
         self.use_top_k = (top_k is not None)
         self.use_sparse_inference = use_sparse_inference
@@ -443,12 +454,27 @@ class ES_MOE(nn.Module):
         # Dynamic routing (Top-K supported)
         self.routing = DynamicRoutingLayer(in_channels, num_experts, reduction, top_k)
 
-        # Expert group (original design)
-        default_kernel_sizes = [3, 5, 7]
-        if num_experts <= len(default_kernel_sizes):
-            ks = [min(k, max_kernel_size) for k in default_kernel_sizes[:num_experts]]
+        # Expert group (original design). ``expert_kernel_sizes`` lets a pruned
+        # checkpoint reconstruct its kept experts' heterogeneous kernels so that
+        # ``YOLO(pruned.pt).train()`` reloads expert weights instead of dropping
+        # them on a kernel-shape mismatch (prune -> LoRA/full fine-tune recovery).
+        if expert_kernel_sizes is not None:
+            if len(expert_kernel_sizes) != num_experts:
+                raise ValueError(
+                    f"expert_kernel_sizes must have {num_experts} entries, got {len(expert_kernel_sizes)}"
+                )
+            ks = []
+            for k in expert_kernel_sizes:
+                k = int(k)
+                if k % 2 == 0:
+                    k -= 1
+                ks.append(min(k, max_kernel_size))
         else:
-            ks = [min(3 + 2 * i, max_kernel_size) for i in range(num_experts)]
+            default_kernel_sizes = [3, 5, 7]
+            if num_experts <= len(default_kernel_sizes):
+                ks = [min(k, max_kernel_size) for k in default_kernel_sizes[:num_experts]]
+            else:
+                ks = [min(3 + 2 * i, max_kernel_size) for i in range(num_experts)]
         self.experts = nn.ModuleList(
             [EfficientExpertGroup(in_channels, out_channels, kernel_size=k) for k in ks]
         )
@@ -561,6 +587,7 @@ class ES_MOE(nn.Module):
             routing_kind="moe",
             sparse_dispatch=eager_sparse,
             eager_sparse_dispatch=eager_sparse,
+            training_sparse_dispatch=False,
             sparse_export_limitation=(
                 "ES_MOE eager inference supports sample-level Top-K dispatch; ONNX and TorchScript tracing execute "
                 "all experts through the dense fallback."
@@ -620,6 +647,10 @@ class ES_MOE(nn.Module):
 
     def _sparse_forward(self, x, routing_weights):
         """Sparse forward: compute only Top-K experts (used during inference)."""
+        # Selecting every expert must exactly match the dense training-time path.
+        if self.top_k >= self.num_experts:
+            return self._dense_forward(x, routing_weights)
+
         B, E, H, W = routing_weights.shape
 
         # Compute per-expert importance
@@ -666,7 +697,10 @@ class ES_MOE(nn.Module):
         expert_usage = routing_weights.mean(dim=(0, 2, 3))
         # reduce_ddp=should_reduce_ddp(self) → usage averaged across ranks so all GPUs share one
         # global balance target (matches MoELoss; no-op on single GPU).
-        load_balance_loss = gshard_balance_loss(expert_usage, self.num_experts, reduce_ddp=should_reduce_ddp(self))
+        raw_balance_loss = gshard_balance_loss(
+            expert_usage, self.num_experts, reduce_ddp=should_reduce_ddp(self)
+        )
+        load_balance_loss = raw_balance_loss * float(getattr(self, "balance_loss_coeff", 1.0))
 
         router_diagnostics = getattr(self.routing, "last_routing_diagnostics", {})
         downstream = routing_finite_diagnostics(probabilities=routing_weights, aux_loss=load_balance_loss)
@@ -687,7 +721,7 @@ class ES_MOE(nn.Module):
             load_balance_loss = graph_connected_finite_zero(routing_weights, load_balance_loss)
 
         if not exporting:
-            self.load_balancing_loss.copy_(load_balance_loss.detach())
+            self.load_balancing_loss.copy_(raw_balance_loss.detach())
             self.expert_usage_counts.copy_(expert_usage.detach())
         
         # Store in registry (training only — avoids leaving graph-detached eval
@@ -1060,11 +1094,6 @@ class OptimizedMOEImproved(nn.Module):
         # Only after warmup so it doesn't fight progressive-sparsity scheduling.
         active_experts = list(range(self.num_experts))
         _step = self._training_step
-        ddp_active = (
-            torch.distributed.is_available()
-            and torch.distributed.is_initialized()
-            and torch.distributed.get_world_size() > 1
-        )
         if self.training and _step >= self.warmup_steps and _step % self.dropout_interval == 0:
             num_drop = max(1, int(self.num_experts * self.expert_dropout_rate))
             # Draw the drop set on a fixed-seed generator keyed by the global

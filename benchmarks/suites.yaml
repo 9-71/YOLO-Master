@@ -13,6 +13,16 @@ defaults:
   collect_routing: true
 
 suites:
+  moe_rc_smoke:
+    description: v0.15 GatedFusionMoE candidate against the v0.10 MoE baseline.
+    cases:
+      - id: v15_gated_fusion
+        label: v0.15 GatedFusionMoE candidate
+        model: ultralytics/cfg/models/master/v0_15/det/yolo-master-n.yaml
+      - id: v10_moe
+        label: v0.10 MoE baseline
+        model: ultralytics/cfg/models/master/v0_10/det/yolo-master-n.yaml
+
   mixture_smoke:
     description: Fast structural and eager-inference comparison of v0.10 no-MoE, MoE, MoA, and MoT variants.
     cases:

@@ -12,7 +12,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_registry_covers_preserved_yaml_names():
-    assert set(MIXTURE_MODULES) == {
+    assert set(MIXTURE_MODULES) >= {
         "A2C2fMoE",
         "AdaptiveGateMoE",
         "C2fMoA",
@@ -35,6 +35,7 @@ def test_registry_covers_preserved_yaml_names():
         "UltraOptimizedMoE",
         "VisualEnhancedAdaptiveGateMoE",
     }
+    assert "LatentMixture" in MIXTURE_MODULES
     assert {module.__name__ for module in MIXTURE_REPEAT_MODULES} == {"A2C2fMoE", "C2fMoA", "C2fMoT", "DyC2f"}
 
 

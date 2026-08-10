@@ -5,16 +5,23 @@ import torch.nn as nn
 import copy
 import argparse
 from typing import Dict, List, Optional, Tuple, Any
-from .analysis import ExpertUsageTracker
+from ultralytics.nn.modules.moe.analysis import ExpertUsageTracker
 from ultralytics.utils import LOGGER
 
 
 class MoEPruner:
     """Pruner for Mixture-of-Experts models based on usage statistics"""
     
-    def __init__(self, model_path: str, threshold: float = 0.15, dataset: str = 'coco8.yaml',
-                 device: Optional[str] = None, importance_mode: str = "usage",
-                 keep_top_m: Optional[int] = None):
+    def __init__(
+        self,
+        model_path: str,
+        threshold: float = 0.15,
+        dataset: str = 'coco8.yaml',
+        device: Optional[str] = None,
+        importance_mode: str = "usage",
+        keep_top_m: Optional[int] = None,
+        usage_stats: Optional[Dict[str, Dict[int, Any]]] = None,
+    ):
         """
         Initialize MoE pruner
 
@@ -31,6 +38,8 @@ class MoEPruner:
                 experts by how strongly the router favours them).
             keep_top_m: If set, always keep the top-M highest-scoring experts
                 regardless of threshold.
+            usage_stats: Optional pre-computed usage statistics. When provided,
+                the diagnosis pass is skipped and these stats are reused.
         """
         self.model_path = model_path
         self.threshold = threshold
@@ -39,7 +48,7 @@ class MoEPruner:
         self.importance_mode = importance_mode
         self.keep_top_m = keep_top_m
         self.model = None
-        self.usage_stats: Dict[str, Dict[int, Any]] = {}
+        self.usage_stats: Dict[str, Dict[int, Any]] = usage_stats if usage_stats is not None else {}
         self.pruning_plan: Dict[str, List[int]] = {}
 
     def _expert_score(self, stats: Any, total_hits: float) -> float:
@@ -83,22 +92,37 @@ class MoEPruner:
             raise RuntimeError(f"Failed to load model: {e}")
     
     def _diagnose_usage(self) -> None:
-        """Run diagnosis to collect expert usage statistics"""
+        """Run diagnosis to collect expert usage statistics."""
+        if self.usage_stats:
+            LOGGER.info("[Phase 1] Reusing pre-computed expert usage stats")
+            return
+
         LOGGER.info("\n[Phase 1] Diagnosing Expert Usage...")
-        
+
         with ExpertUsageTracker(self.model.model) as tracker:
             try:
                 self.model.val(
-                    data=self.dataset, 
-                    split='val', 
-                    batch=1, 
-                    verbose=False, 
+                    data=self.dataset,
+                    split='val',
+                    batch=1,
+                    verbose=False,
                     device=self.device
                 )
                 self.usage_stats = tracker.usage_stats
                 LOGGER.info(f"✅ Collected usage stats for {len(self.usage_stats)} layers")
             except Exception as e:
                 raise RuntimeError(f"Diagnosis failed: {e}")
+
+    def collect_usage(self) -> Dict[str, Dict[int, Any]]:
+        """Load the model and collect expert usage statistics once.
+
+        Returns:
+            Mapping from layer name to per-expert usage statistics.
+        """
+        if not self.usage_stats:
+            self._load_model()
+            self._diagnose_usage()
+        return self.usage_stats
     
     def _create_pruning_plan(self) -> None:
         """Create pruning plan based on usage statistics"""
@@ -113,11 +137,22 @@ class MoEPruner:
             
             experts_to_keep = []
             LOGGER.info(f"\n   Layer: {layer_name}")
-            
-            # Determine which experts to keep based on threshold
-            for expert_id, expert_stats in sorted(stats.items()):
+
+            scored = [
+                (self._expert_score(expert_stats, total_hits), int(expert_id), expert_stats)
+                for expert_id, expert_stats in stats.items()
+            ]
+            scored.sort(key=lambda item: (-item[0], item[1]))
+            threshold_kept = {
+                expert_id for score, expert_id, _ in scored if score >= float(self.threshold)
+            }
+            top_kept = {
+                expert_id for _, expert_id, _ in scored[: max(int(self.keep_top_m or 0), 0)]
+            }
+            keep_set = threshold_kept | top_kept
+            for _, expert_id, expert_stats in sorted(scored, key=lambda item: item[1]):
                 usage_pct = expert_stats.hits / total_hits
-                if usage_pct >= self.threshold:
+                if expert_id in keep_set:
                     experts_to_keep.append(expert_id)
                     LOGGER.info(f"     ✅ Keep E{expert_id} (Usage: {usage_pct:.1%})")
                 else:
@@ -125,7 +160,7 @@ class MoEPruner:
             
             # Safety check: ensure at least one expert remains
             if len(experts_to_keep) == 0:
-                LOGGER.info(f"     ❌ Error: All experts would be pruned! Keeping top expert.")
+                LOGGER.info("     ❌ Error: All experts would be pruned! Keeping top expert.")
                 # Keep the expert with highest usage
                 top_expert = max(stats.items(), key=lambda x: x[1].hits)[0]
                 experts_to_keep = [top_expert]
@@ -156,11 +191,11 @@ class MoEPruner:
         parts = layer_name.split(".")
         return ".".join(parts[:-1]) if len(parts) > 1 else ""
     
-    def _find_projection_layer(
+    def _find_projection_layers(
         self, 
         router: nn.Module, 
         num_experts: int
-    ) -> Optional[Tuple[nn.Module, str]]:
+    ) -> List[Tuple[nn.Module, str]]:
         """
         Find the projection layer in router that outputs to experts
         
@@ -168,30 +203,34 @@ class MoEPruner:
             router: Router module
             num_experts: Original number of experts
             
-        Returns:
-            Tuple of (projection_layer, layer_path) or None if not found
+        Returns every expert-output projection. Gated routers commonly expose
+        more than one branch, and all branches must be sliced before the
+        expert list is changed.
         """
-        # Check common router structures
-        candidates = [
-            ('router', 'router'),
-            ('routing_network', 'routing_network'),
-        ]
-        
-        for attr_name, path_name in candidates:
-            if hasattr(router, attr_name):
-                sequential = getattr(router, attr_name)
-                if isinstance(sequential, nn.Sequential) and len(sequential) > 0:
-                    last_layer = sequential[-1]
-                    
-                    # Check if it's the projection layer
-                    if isinstance(last_layer, nn.Conv2d):
-                        if last_layer.out_channels == num_experts:
-                            return last_layer, f"{path_name}[-1]"
-                    elif isinstance(last_layer, nn.Linear):
-                        if last_layer.out_features == num_experts:
-                            return last_layer, f"{path_name}[-1]"
-        
-        return None
+        found: List[Tuple[nn.Module, str]] = []
+        for path, module in router.named_modules():
+            if not path:
+                continue
+            output_size = getattr(module, "out_channels", None)
+            if output_size is None:
+                output_size = getattr(module, "out_features", None)
+            if not isinstance(module, (nn.Conv2d, nn.Linear)) or output_size != num_experts:
+                continue
+            parent = router
+            if "." in path:
+                parent_path, child_name = path.rsplit(".", 1)
+                parent = router.get_submodule(parent_path)
+            else:
+                child_name = path
+            if isinstance(parent, nn.Sequential) and child_name.isdigit() and int(child_name) != len(parent) - 1:
+                continue
+            found.append((module, path))
+        return found
+
+    def _find_projection_layer(self, router: nn.Module, num_experts: int):
+        """Return the first expert-output projection for legacy callers."""
+        layers = self._find_projection_layers(router, num_experts)
+        return layers[0] if layers else None
     
     def _prune_experts(
         self, 
@@ -205,17 +244,43 @@ class MoEPruner:
             moe_module: MoE module containing experts
             keep_indices: Indices of experts to keep
         """
-        old_experts = moe_module.experts
+        container, attr_name = self._expert_container(moe_module)
+        old_experts = getattr(container, attr_name)
         new_experts = nn.ModuleList([old_experts[i] for i in keep_indices])
-        
-        moe_module.experts = new_experts
+        setattr(container, attr_name, new_experts)
         moe_module.num_experts = len(keep_indices)
+        if hasattr(container, "num_experts"):
+            container.num_experts = len(keep_indices)
+        loss_fn = getattr(moe_module, "moe_loss_fn", None)
+        if loss_fn is not None and hasattr(loss_fn, "num_experts"):
+            loss_fn.num_experts = len(keep_indices)
+
+        # ES_MOE keeps a non-persistent per-expert diagnostics buffer.  It is
+        # still present after deepcopy even though it is omitted from the
+        # checkpoint state_dict.  Leaving its original length makes the first
+        # post-pruning forward fail when the new usage vector is copied into
+        # it (for example, 3 experts -> 2 experts).
+        usage = getattr(moe_module, "expert_usage_counts", None)
+        if isinstance(usage, torch.Tensor) and usage.numel() == len(old_experts):
+            moe_module._buffers["expert_usage_counts"] = usage.detach()[keep_indices].clone()
         
         # Adjust top_k if necessary
         if hasattr(moe_module, 'top_k') and moe_module.top_k > moe_module.num_experts:
             old_top_k = moe_module.top_k
             moe_module.top_k = moe_module.num_experts
             LOGGER.info(f"     📉 Reduced top_k from {old_top_k} to {moe_module.top_k}")
+        if hasattr(container, "top_k"):
+            container.top_k = min(int(container.top_k), len(keep_indices))
+
+    @staticmethod
+    def _expert_container(moe_module: nn.Module) -> Tuple[nn.Module, str]:
+        """Resolve conventional and fused expert containers."""
+        if hasattr(moe_module, "experts"):
+            return moe_module, "experts"
+        fused = getattr(moe_module, "fused_experts", None)
+        if fused is not None and hasattr(fused, "expert_projections"):
+            return fused, "expert_projections"
+        raise RuntimeError("MoE module has no supported expert container")
     
     def _prune_router_weights(
         self, 
@@ -234,46 +299,51 @@ class MoEPruner:
         Returns:
             True if successful, False otherwise
         """
-        result = self._find_projection_layer(router, num_old_experts)
-        
-        if result is None:
-            LOGGER.info(f"     ⚠️  Could not locate router projection layer. "
-                  f"Skipping weight pruning.")
+        results = self._find_projection_layers(router, num_old_experts)
+        if not results:
+            LOGGER.info("     ⚠️  Could not locate router projection layer. "
+                  "Skipping weight pruning.")
             return False
-        
-        proj_layer, layer_path = result
-        LOGGER.info(f"     ✂️  Pruning router projection ({layer_path})")
-        
-        # Create new projection layer with reduced output dimension
-        if isinstance(proj_layer, nn.Conv2d):
-            new_proj = nn.Conv2d(
-                in_channels=proj_layer.in_channels,
-                out_channels=len(keep_indices),
-                kernel_size=proj_layer.kernel_size,
-                stride=proj_layer.stride,
-                padding=proj_layer.padding,
-                bias=(proj_layer.bias is not None)
-            )
-        elif isinstance(proj_layer, nn.Linear):
-            new_proj = nn.Linear(
-                in_features=proj_layer.in_features,
-                out_features=len(keep_indices),
-                bias=(proj_layer.bias is not None)
-            )
-        else:
-            return False
-        
-        # Copy weights for kept experts
-        with torch.no_grad():
-            new_proj.weight.data = proj_layer.weight.data[keep_indices].clone()
-            if proj_layer.bias is not None:
-                new_proj.bias.data = proj_layer.bias.data[keep_indices].clone()
-        
-        # Replace the layer in the sequential container
-        if 'routing_network' in layer_path:
-            router.routing_network[-1] = new_proj
-        elif 'router' in layer_path:
-            router.router[-1] = new_proj
+        for proj_layer, layer_path in results:
+            LOGGER.info(f"     ✂️  Pruning router projection ({layer_path})")
+            if isinstance(proj_layer, nn.Conv2d):
+                new_proj = nn.Conv2d(
+                    in_channels=proj_layer.in_channels,
+                    out_channels=len(keep_indices),
+                    kernel_size=proj_layer.kernel_size,
+                    stride=proj_layer.stride,
+                    padding=proj_layer.padding,
+                    dilation=proj_layer.dilation,
+                    groups=proj_layer.groups,
+                    bias=(proj_layer.bias is not None),
+                    padding_mode=proj_layer.padding_mode,
+                )
+            elif isinstance(proj_layer, nn.Linear):
+                new_proj = nn.Linear(
+                    in_features=proj_layer.in_features,
+                    out_features=len(keep_indices),
+                    bias=(proj_layer.bias is not None),
+                )
+            else:
+                return False
+            with torch.no_grad():
+                new_proj.weight.copy_(proj_layer.weight.data[keep_indices])
+                if proj_layer.bias is not None:
+                    new_proj.bias.copy_(proj_layer.bias.data[keep_indices])
+            if "." in layer_path:
+                parent_path, child_name = layer_path.rsplit(".", 1)
+                parent = router.get_submodule(parent_path)
+            else:
+                parent = router
+                child_name = layer_path
+            if child_name.isdigit():
+                parent[int(child_name)] = new_proj
+            else:
+                setattr(parent, child_name, new_proj)
+
+        prior = getattr(router, "expert_prior", None)
+        if isinstance(prior, nn.Parameter) and prior.numel() == num_old_experts:
+            router.expert_prior = nn.Parameter(prior.data[keep_indices].clone())
         
         # Update router attributes
         router.num_experts = len(keep_indices)
@@ -308,11 +378,14 @@ class MoEPruner:
             moe_module = modules_dict[parent_name]
             
             # Verify MoE structure
-            if not hasattr(moe_module, 'experts') or not hasattr(moe_module, 'routing'):
-                LOGGER.info(f"   ❌ {parent_name} missing 'experts' or 'routing' attributes")
+            if not hasattr(moe_module, 'routing'):
+                LOGGER.info(f"   ❌ {parent_name} missing 'routing' attribute")
                 continue
-            
-            num_old_experts = len(moe_module.experts)
+            try:
+                expert_container, expert_attr = self._expert_container(moe_module)
+            except RuntimeError:
+                raise RuntimeError(f"Cannot prune {parent_name}: missing a supported expert container.")
+            num_old_experts = len(getattr(expert_container, expert_attr))
             
             # Skip if no pruning needed
             if len(keep_indices) == num_old_experts:
@@ -323,29 +396,91 @@ class MoEPruner:
             LOGGER.info(f"     Experts: {num_old_experts} → {len(keep_indices)} "
                   f"(keeping {keep_indices})")
             
-            # Prune experts
-            self._prune_experts(moe_module, keep_indices)
-            
             # Prune router weights
-            self._prune_router_weights(
+            router_updated = self._prune_router_weights(
                 moe_module.routing, 
                 keep_indices, 
                 num_old_experts
             )
+            if not router_updated:
+                raise RuntimeError(
+                    f"Cannot prune {parent_name}: router has no expert-output projection that can be reduced safely."
+                )
+            # Mutate the expert list only after every router branch is ready.
+            self._prune_experts(moe_module, keep_indices)
         
         LOGGER.info("\n✅ Surgery completed")
         return new_model
     
+    def _sync_yaml_num_experts(self, pruned_model: nn.Module) -> None:
+        """Encode each ES_MOE's post-prune expert count into ``model.yaml``.
+
+        Without this, ``YOLO(pruned.pt).train()`` (the prune -> LoRA/full fine-tune
+        recovery workflow) rebuilds the model from ``model.yaml`` using ES_MOE's default
+        expert count, and ``intersect_dicts`` silently drops the reduced expert/router
+        weights on shape mismatch, re-inflating the model with randomly initialized
+        experts. Writing ``[out_channels, num_experts]`` into each pruned ES_MOE's YAML
+        args lets the pruned architecture survive the rebuild (ES_MOE clamps
+        ``top_k = min(top_k, num_experts)`` automatically).
+        """
+        from ultralytics.nn.modules.moe.modules import ES_MOE
+
+        y = getattr(pruned_model, "yaml", None)
+        if not isinstance(y, dict) or "backbone" not in y:
+            return
+        backbone, head = y["backbone"], y.get("head", [])
+        nb = len(backbone)
+        for name, mod in pruned_model.named_modules():
+            if not isinstance(mod, ES_MOE):
+                continue
+            parts = name.split(".")
+            if len(parts) < 2 or not parts[1].isdigit():
+                continue
+            idx = int(parts[1])
+            seq, j = (backbone, idx) if idx < nb else (head, idx - nb)
+            if not 0 <= j < len(seq) or len(seq[j]) < 4:
+                continue
+            args = list(seq[j][3]) if isinstance(seq[j][3], list) else [seq[j][3]]
+            out_ch = args[0] if args else getattr(mod, "out_channels", None)
+            # Recover the kept experts' actual depthwise kernel sizes; pruning keeps
+            # experts with heterogeneous kernels whose order/values are not the
+            # default [3, 5, 7...] a bare rebuild would assign. Writing the full
+            # positional arg list (incl. expert_kernel_sizes) lets YOLO(pruned.pt)
+            # .train() rebuild the exact experts so their weights survive
+            # intersect_dicts instead of being dropped on a kernel-shape mismatch.
+            kernels = []
+            for expert in mod.experts:
+                conv = getattr(expert, "conv", None)
+                depthwise = getattr(conv, "depthwise", None) if conv is not None else None
+                ks = getattr(depthwise, "kernel_size", None)
+                kernels.append(int(ks[0]) if isinstance(ks, (tuple, list)) else int(ks) if ks else 3)
+            top_k = int(mod.top_k) if getattr(mod, "use_top_k", True) else None
+            seq[j][3] = [
+                out_ch,
+                int(mod.num_experts),
+                int(getattr(mod, "reduction", 8)),
+                top_k,
+                bool(getattr(mod, "use_sparse_inference", True)),
+                float(getattr(mod, "dynamic_threshold", 0.4)),
+                int(getattr(mod, "max_kernel_size", 15)),
+                kernels,
+            ]
+        LOGGER.info("   Synced post-prune expert counts + kernel sizes into model.yaml")
+
     def _save_model(self, pruned_model: nn.Module, output_path: str) -> None:
         """
         Save pruned model to file
-        
+
         Args:
             pruned_model: Pruned model
             output_path: Output file path
         """
-        LOGGER.info(f"\n[Phase 4] Saving Pruned Model...")
-        
+        LOGGER.info("\n[Phase 4] Saving Pruned Model...")
+
+        # Keep model.yaml consistent with the pruned architecture so retraining
+        # (LoRA / full fine-tune recovery) does not silently re-inflate experts.
+        self._sync_yaml_num_experts(pruned_model)
+
         # Update YOLO wrapper
         self.model.model = pruned_model
         
@@ -360,6 +495,26 @@ class MoEPruner:
         }
         
         torch.save(checkpoint, output_path)
+        import json
+        from pathlib import Path
+
+        manifest_path = Path(output_path).with_suffix(Path(output_path).suffix + ".prune.json")
+        manifest_path.write_text(
+            json.dumps(
+                {
+                    "schema_version": 1,
+                    "source_model": str(self.model_path),
+                    "threshold": self.threshold,
+                    "importance_mode": self.importance_mode,
+                    "keep_top_m": self.keep_top_m,
+                    "pruning_plan": self.pruning_plan,
+                    "output_model": str(output_path),
+                },
+                indent=2,
+                sort_keys=True,
+            )
+            + "\n"
+        )
         LOGGER.info(f"✅ Saved to: {output_path}")
     
     def _verify_model(self, output_path: str) -> bool:
@@ -409,9 +564,9 @@ class MoEPruner:
             True if pruning successful
         """
         LOGGER.info(f"\n{'='*80}")
-        LOGGER.info(f"✂️  MoE MODEL PRUNING PIPELINE".center(80))
+        LOGGER.info("✂️  MoE MODEL PRUNING PIPELINE".center(80))
         LOGGER.info(f"{'='*80}")
-        LOGGER.info(f"\n📋 Configuration:")
+        LOGGER.info("\n📋 Configuration:")
         LOGGER.info(f"   • Input Model: {self.model_path}")
         LOGGER.info(f"   • Output Model: {output_path}")
         LOGGER.info(f"   • Usage Threshold: {self.threshold*100:.1f}%")
@@ -438,7 +593,7 @@ class MoEPruner:
             
             if success:
                 LOGGER.info(f"\n{'='*80}")
-                LOGGER.info(f"🎉 PRUNING COMPLETED SUCCESSFULLY".center(80))
+                LOGGER.info("🎉 PRUNING COMPLETED SUCCESSFULLY".center(80))
                 LOGGER.info(f"{'='*80}\n")
             
             return success
@@ -451,25 +606,50 @@ class MoEPruner:
 
 
 def prune_moe_model(
-    model_path: str, 
-    output_path: str, 
-    threshold: float = 0.15, 
-    dataset: str = 'coco8.yaml'
+    model_path: str,
+    output_path: str,
+    threshold: float = 0.15,
+    dataset: str = 'coco8.yaml',
+    device: Optional[str] = None,
+    importance_mode: str = "usage",
 ) -> bool:
     """
     Prune MoE model by removing underutilized experts
-    
+
     Args:
         model_path: Path to input model file
         output_path: Path to save pruned model
         threshold: Minimum usage percentage to keep expert (0.0-1.0)
         dataset: Dataset configuration for validation
-        
+        device: Ultralytics device string
+        importance_mode: Expert importance scoring mode
+
     Returns:
         True if pruning successful
     """
-    pruner = MoEPruner(model_path, threshold, dataset)
+    pruner = MoEPruner(model_path, threshold, dataset, device=device, importance_mode=importance_mode)
     return pruner.prune(output_path)
+
+
+def prune_moe_module(
+    model: nn.Module,
+    usage_stats: Dict[str, Dict[int, Any]],
+    *,
+    threshold: float = 0.15,
+    keep_top_m: Optional[int] = None,
+) -> Tuple[nn.Module, Dict[str, List[int]]]:
+    """Prune an in-memory MoE module tree using pre-collected usage statistics.
+
+    Export uses this wrapper around the existing surgery engine so calibration
+    never writes the source checkpoint. The returned module is a deep copy and
+    the pruning plan is suitable for JSON manifests.
+    """
+    from types import SimpleNamespace
+
+    pruner = MoEPruner("<in-memory>", threshold=threshold, keep_top_m=keep_top_m, usage_stats=usage_stats)
+    pruner.model = SimpleNamespace(model=model)
+    pruner._create_pruning_plan()
+    return pruner._perform_surgery(), dict(pruner.pruning_plan)
 
 
 def main():
@@ -488,9 +668,9 @@ def main():
         help="Path to save pruned model"
     )
     parser.add_argument(
-        "--threshold", 
-        type=float, 
-        default=0.15, 
+        "--threshold",
+        type=float,
+        default=0.15,
         help="Minimum usage percentage to keep expert (0.0-1.0)"
     )
     parser.add_argument(
@@ -498,18 +678,31 @@ def main():
         default="coco8.yaml",
         help="Dataset configuration for validation"
     )
-    
+    parser.add_argument(
+        "--device",
+        default=None,
+        help="Ultralytics device string, e.g. '0', '0,1,2,3', 'cpu'"
+    )
+    parser.add_argument(
+        "--importance-mode",
+        choices=("usage", "usage_weight"),
+        default="usage",
+        help="Expert importance scoring mode"
+    )
+
     args = parser.parse_args()
-    
+
     # Validate threshold
     if not 0.0 <= args.threshold <= 1.0:
         parser.error("Threshold must be between 0.0 and 1.0")
-    
+
     success = prune_moe_model(
-        args.model_path, 
-        args.output, 
+        args.model_path,
+        args.output,
         args.threshold,
-        args.dataset
+        args.dataset,
+        device=args.device,
+        importance_mode=args.importance_mode,
     )
     
     exit(0 if success else 1)

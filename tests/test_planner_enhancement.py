@@ -18,6 +18,8 @@ from torch.nn.parallel import DataParallel
 from ultralytics.utils.lora.planner import (
     ArchitectureFingerprint,
     DecisionAudit,
+    LOVODataCollector,
+    LOVODataPoint,
     PEFTPlanner,
     PEFTVariantProfile,
     PlacementDecision,
@@ -451,3 +453,78 @@ class TestPlannerCalibrationGates:
         assert decision.status == "REFUSE"
         assert decision.safety_overrides["uncertainty_guard"] is True
         assert decision.metadata["prediction_lower_95"] < planner.REFUSE_THRESHOLD
+
+
+class TestPlannerDecisionEvidence:
+    """Every planner outcome reports whether it used observations or a fallback rule."""
+
+    @staticmethod
+    def _model():
+        return nn.Sequential(nn.Conv2d(3, 16, 3), nn.ReLU())
+
+    @staticmethod
+    def _config(variant="lora"):
+        from ultralytics.utils.lora.config import LoRAConfig
+
+        return LoRAConfig(peft_type=variant, r=8)
+
+    def test_zero_observation_accept_is_explicit_low_confidence_cold_start(self):
+        decision = PEFTPlanner().plan(self._model(), self._config())
+
+        assert decision.status == "ACCEPT"
+        assert decision.evidence == {
+            "state": "cold_start",
+            "source": "default_prior",
+            "observation_count": 0,
+            "minimum_fit_observations": 5,
+            "confidence": "low",
+            "confidence_reasons": ["no_observations", "default_coefficients"],
+            "uses_learned_evidence": False,
+            "decision_basis": "prior_prediction",
+            "guardrails": [],
+        }
+        assert decision.metadata["low_confidence"] is True
+
+    def test_pre_fit_observations_are_counted_without_claiming_learned_evidence(self):
+        fingerprint = ArchitectureFingerprint(phi_attn=0.0, phi_dw=0.0)
+        collector = LOVODataCollector(
+            [LOVODataPoint(fingerprint=fingerprint, variant="lora", delta_mAP=0.05) for _ in range(4)]
+        )
+
+        decision = PEFTPlanner(lovo_collector=collector).plan(self._model(), self._config())
+
+        assert decision.evidence["state"] == "cold_start"
+        assert decision.evidence["observation_count"] == 4
+        assert decision.evidence["confidence_reasons"] == ["insufficient_observations", "default_coefficients"]
+        assert decision.evidence["uses_learned_evidence"] is False
+
+    def test_fitted_limited_evidence_is_distinct_from_cold_start(self):
+        planner = PEFTPlanner()
+        planner.fit(TestPlannerCalibrationGates._history())
+
+        decision = planner.plan(self._model(), self._config())
+
+        assert decision.status == "ADAPT"
+        assert decision.evidence["state"] == "limited_evidence"
+        assert decision.evidence["source"] == "learned_regression"
+        assert decision.evidence["observation_count"] == 10
+        assert decision.evidence["confidence"] == "low"
+        assert decision.evidence["uses_learned_evidence"] is True
+        assert decision.evidence["decision_basis"] == "learned_prediction"
+
+    def test_guardrail_refusal_identifies_rule_and_persists_in_audit(self, tmp_path):
+        class _RTDETR(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.conv = nn.Conv2d(3, 16, 3)
+                self.decoder = nn.Module()
+                self.decoder.__class__.__name__ = "RTDETRDecoder"
+
+        decision = PEFTPlanner(audit_dir=tmp_path).plan(_RTDETR(), self._config())
+
+        assert decision.status == "REFUSE"
+        assert decision.evidence["decision_basis"] == "guardrail_fallback"
+        assert decision.evidence["guardrails"] == ["rtdetr_lora_family"]
+        assert decision.evidence["uses_learned_evidence"] is False
+        audit = json.loads(next(tmp_path.glob("*.json")).read_text())
+        assert audit["evidence"] == decision.evidence

@@ -34,6 +34,7 @@ from __future__ import annotations
 
 import argparse
 import csv
+import platform
 import time
 import traceback
 from dataclasses import dataclass
@@ -144,9 +145,11 @@ _WANDB_METRICS = {
     "train/box_loss": "train/box_loss",
     "train/cls_loss": "train/cls_loss",
     "train/moe_loss": "train/moe_loss",
+    "train/mixture_aux_loss": "train/mixture_aux_loss",
     "val/box_loss": "val/box_loss",
     "val/cls_loss": "val/cls_loss",
     "val/moe_loss": "val/moe_loss",
+    "val/mixture_aux_loss": "val/mixture_aux_loss",
 }
 
 
@@ -212,6 +215,20 @@ def _make_wandb_callbacks(run_name: str, dataset: "DatasetSpec", spec: "ModelSpe
                     log[out_key] = float(v)
                 except (TypeError, ValueError):
                     pass
+
+        # Issue #49 requires the canonical metric name "moe_loss".
+        # Current trainers may expose the same routed auxiliary loss as
+        # "mixture_aux_loss", so publish both names without overwriting a
+        # native moe_loss value when one is available.
+        for prefix in ("train", "val"):
+            canonical = f"{prefix}/moe_loss"
+            fallback = f"{prefix}/mixture_aux_loss"
+            if canonical not in log and data.get(fallback) is not None:
+                try:
+                    log[canonical] = float(data[fallback])
+                except (TypeError, ValueError):
+                    pass
+
         try:
             run.log(log, step=epoch)
         except Exception as exc:  # noqa: BLE001
@@ -269,8 +286,15 @@ def write_summary(project: Path, dataset: DatasetSpec, models=MODELS, sparse_eva
                 "dense_eval": (spec.uses_esmoe and not sparse_eval) if spec.uses_esmoe else "n/a",
                 "epoch": res.get("epoch", ""),
             }
+            metric_fallbacks = {
+                "train/moe_loss": "train/mixture_aux_loss",
+                "val/moe_loss": "val/mixture_aux_loss",
+            }
             for k in METRIC_KEYS:
-                row[k] = _float_or_blank(res.get(k))
+                value = res.get(k)
+                if value in (None, "") and k in metric_fallbacks:
+                    value = res.get(metric_fallbacks[k])
+                row[k] = _float_or_blank(value)
             w.writerow(row)
     return out
 
@@ -361,7 +385,12 @@ def build_parser(dataset: DatasetSpec, models=MODELS) -> argparse.ArgumentParser
     p.add_argument("--imgsz", type=int, default=640)
     p.add_argument("--batch", type=int, default=64)
     p.add_argument("--device", default="0")
-    p.add_argument("--workers", type=int, default=16)
+    p.add_argument(
+        "--workers",
+        type=int,
+        default=0 if platform.system() == "Windows" else 16,
+        help="Data-loader workers (defaults to 0 on Windows to avoid multiprocessing I/O deadlocks).",
+    )
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--patience", type=int, default=0, help="0 disables early stopping.")
     p.add_argument("--amp", action=argparse.BooleanOptionalAction, default=True)
@@ -370,8 +399,9 @@ def build_parser(dataset: DatasetSpec, models=MODELS) -> argparse.ArgumentParser
                         "omit to disable. On network-volume (MFS) pods 'ram' can hang building the val "
                         "loader; 'disk' avoids that but writes .npy back to the same volume.")
     p.add_argument("--project", default=dataset.project)
-    p.add_argument("--model", choices=[m.name for m in models] + ["both"], default="both",
-                   help=f"Which model to train: {', '.join(m.name for m in models)}, or both (default).")
+    p.add_argument("--model", choices=[m.name for m in models] + ["both", "v01", "moe"], default="both",
+                   help=f"Which model to train: {', '.join(m.name for m in models)}, both (default), "
+                        "or compact aliases v01 / moe.")
     p.add_argument("--sparse-eval", action=argparse.BooleanOptionalAction, default=True,
                    help="ES_MOE sparse inference at validation/inference. Default True reproduces "
                         "EsMoE-N as-is (its sparse-eval path collapses mAP). Pass --no-sparse-eval "
@@ -395,7 +425,9 @@ def run_dataset(dataset: DatasetSpec, models=MODELS) -> int:
     """Entry point used by the per-dataset scripts."""
     args = build_parser(dataset, models).parse_args()
     project = Path(args.project) if Path(args.project).is_absolute() else ROOT / args.project
-    specs = list(models) if args.model == "both" else [m for m in models if m.name == args.model]
+    aliases = {"v01": "v0.1-N", "moe": "EsMoE-N"}
+    selected_model = aliases.get(args.model, args.model)
+    specs = list(models) if selected_model == "both" else [m for m in models if m.name == selected_model]
 
     wandb_desc = "off" if (not args.wandb or args.wandb_mode == "disabled") else args.wandb_mode
     print(f"[reproduce:{dataset.name}] data={dataset.data}  project={project}  "

@@ -9,7 +9,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from ultralytics.nn.modules._numeric import stable_normalize
+from ultralytics.nn.modules._numeric import FP32RouterMixin, disabled_autocast, stable_normalize
 from ultralytics.nn.modules.moe import loss as _moe_loss
 from ultralytics.nn.modules.routing_protocol import graph_connected_finite_zero
 from ultralytics.nn.modules.routing_protocol import routing_finite_diagnostics
@@ -58,7 +58,7 @@ def differentiable_balance_loss(
     return num_experts * torch.sum(importance * usage)
 
 
-class _MoTRouter(nn.Module):
+class _MoTRouter(FP32RouterMixin, nn.Module):
     """Content-aware router for MoT: assigns each token to Top-K experts.
 
     Architecture: global average pool → linear → softmax (soft) or
@@ -86,6 +86,7 @@ class _MoTRouter(nn.Module):
         exploration_eps: float = 0.02,
         scene_aware: bool = False,
         scene_hidden_dim: Optional[int] = None,
+        scene_inference_mode: str = "dynamic",
     ):
         super().__init__()
         if num_experts < 1:
@@ -128,12 +129,23 @@ class _MoTRouter(nn.Module):
 
         self.scene_aware = False
         self.scene_hidden_dim = scene_hidden_dim
+        self.scene_inference_mode = "dynamic"
         self.scene_projector: Optional[nn.Sequential] = None
         self.last_scene_stats: Optional[torch.Tensor] = None
         self.last_scene_bias: Optional[torch.Tensor] = None
+        self.last_scene_applied = False
+        self.last_scene_bypass_reason: Optional[str] = None
         self._last_scene_stats_for_loss: Optional[torch.Tensor] = None
+        self.set_scene_inference_mode(scene_inference_mode)
         if scene_aware:
             self.enable_scene_aware(scene_hidden_dim)
+
+    def set_scene_inference_mode(self, mode: str) -> None:
+        """Select whether scene statistics run during evaluation."""
+        normalized = str(mode).strip().lower()
+        if normalized not in {"dynamic", "bypass"}:
+            raise ValueError("scene_inference_mode must be 'dynamic' or 'bypass'")
+        self.scene_inference_mode = normalized
 
     def enable_scene_aware(self, hidden_dim: Optional[int] = None) -> None:
         """Enable the zero-initialized scene residual, creating parameters once."""
@@ -141,11 +153,12 @@ class _MoTRouter(nn.Module):
             hidden = int(hidden_dim or self.scene_hidden_dim or 3)
             if hidden <= 0:
                 raise ValueError("scene_hidden_dim must be positive")
+            reference = next(self.router.parameters())
             self.scene_projector = nn.Sequential(
                 nn.Linear(3, hidden),
                 nn.SiLU(inplace=False),
                 nn.Linear(hidden, self.num_experts),
-            )
+            ).to(device=reference.device, dtype=torch.float32)
             nn.init.zeros_(self.scene_projector[-1].weight)
             nn.init.zeros_(self.scene_projector[-1].bias)
             self.scene_hidden_dim = hidden
@@ -156,7 +169,8 @@ class _MoTRouter(nn.Module):
         """Compute differentiable high-frequency, heterogeneity, and scale statistics."""
         feature = x.float()
         eps = torch.finfo(feature.dtype).eps
-        rms = feature.square().mean(dim=(1, 2, 3)).sqrt().clamp_min(eps)
+        squared = feature.square()
+        rms = squared.mean(dim=(1, 2, 3)).sqrt().clamp_min(eps)
 
         dx = (feature[..., 1:] - feature[..., :-1]).abs().mean(dim=(1, 2, 3)) if feature.shape[-1] > 1 else rms * 0
         dy = (
@@ -164,7 +178,7 @@ class _MoTRouter(nn.Module):
         )
         high_frequency = 0.5 * (dx + dy) / rms
 
-        spatial_energy = feature.square().mean(dim=1)
+        spatial_energy = squared.mean(dim=1)
         heterogeneity = spatial_energy.flatten(1).std(dim=1, unbiased=False) / spatial_energy.flatten(1).mean(
             dim=1
         ).clamp_min(eps)
@@ -195,22 +209,27 @@ class _MoTRouter(nn.Module):
         return F.kl_div(probs.log(), target, reduction="batchmean")
 
     def _compute_logits(self, x: torch.Tensor) -> torch.Tensor:
-        logits = self.router(x)
-        if not self.use_spatial:
-            logits = logits.unsqueeze(-1).unsqueeze(-1)
-        if self.scene_aware:
-            if self.scene_projector is None:
-                raise RuntimeError("scene-aware MoT router is enabled without a scene projector")
-            scene_stats = self.compute_scene_stats(x)
-            scene_bias = self.scene_projector(scene_stats).to(dtype=logits.dtype)
-            logits = logits + scene_bias.unsqueeze(-1).unsqueeze(-1)
-            self._last_scene_stats_for_loss = scene_stats
-            self.last_scene_stats = scene_stats.detach()
-            self.last_scene_bias = scene_bias.detach()
-        else:
-            self._last_scene_stats_for_loss = None
-            self.last_scene_stats = None
-            self.last_scene_bias = None
+        with disabled_autocast(x.device.type):
+            route_input = x.float()
+            logits = self.router(route_input).float()
+            if not self.use_spatial:
+                logits = logits.unsqueeze(-1).unsqueeze(-1)
+            apply_scene = bool(self.scene_aware and (self.training or self.scene_inference_mode == "dynamic"))
+            self.last_scene_applied = apply_scene
+            self.last_scene_bypass_reason = "inference_policy_bypass" if self.scene_aware and not apply_scene else None
+            if apply_scene:
+                if self.scene_projector is None:
+                    raise RuntimeError("scene-aware MoT router is enabled without a scene projector")
+                scene_stats = self.compute_scene_stats(route_input)
+                scene_bias = self.scene_projector(scene_stats).float()
+                logits = logits + scene_bias.unsqueeze(-1).unsqueeze(-1)
+                self._last_scene_stats_for_loss = scene_stats
+                self.last_scene_stats = scene_stats.detach()
+                self.last_scene_bias = scene_bias.detach()
+            else:
+                self._last_scene_stats_for_loss = None
+                self.last_scene_stats = None
+                self.last_scene_bias = None
         return logits
 
     @staticmethod
@@ -221,7 +240,9 @@ class _MoTRouter(nn.Module):
         # Also clamp the z_loss result itself to prevent inf propagation
         return ((log_z**2).clamp(max=ROUTER_Z_LOSS_LIMIT)).mean()
 
-    def forward(self, x: torch.Tensor, return_logits: bool = False) -> Tuple[torch.Tensor, torch.Tensor]:
+    def forward(
+        self, x: torch.Tensor, return_logits: bool = False
+    ) -> Tuple[torch.Tensor, Optional[torch.Tensor]] | Tuple[torch.Tensor, Optional[torch.Tensor], torch.Tensor]:
         """
         Returns:
             weights : [B, num_experts, H, W] or [B, num_experts, 1, 1]  (soft, sum-to-1)
@@ -236,11 +257,18 @@ class _MoTRouter(nn.Module):
         temp = self.temperature
 
         # Soft weights (always computed for gradient flow)
-        weights = F.softmax(logits / temp, dim=1)  # [B, E, H, W]
+        with disabled_autocast(x.device.type):
+            weights = F.softmax(logits / temp.float(), dim=1)  # [B, E, H, W]
         dense_weights = weights
 
+        # ONNX and TorchScript tracing use dense blending. Besides being the
+        # documented export semantics, avoiding Top-K/scatter here prevents a
+        # PyTorch 2.9 legacy-exporter alias-analysis failure on bool scatter_.
+        exporting = torch.jit.is_tracing() or torch.onnx.is_in_onnx_export()
+        if exporting:
+            indices = None
         # Top-K mask
-        if self.top_k < self.num_experts:
+        elif self.top_k < self.num_experts:
             # get top-k indices [B, K, H, W]
             topk_vals, topk_idx = weights.topk(self.top_k, dim=1)
             # renormalize selected weights
@@ -259,6 +287,8 @@ class _MoTRouter(nn.Module):
                 .view(1, -1, 1, 1)
                 .expand(x.shape[0], -1, x.shape[2], x.shape[3])
             )
+
+        weights = weights.to(dtype=x.dtype)
 
         if return_logits:
             return weights, indices, logits

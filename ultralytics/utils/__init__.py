@@ -404,7 +404,13 @@ def plt_settings(rcparams=None, backend="Agg"):
 
         def wrapper(*args, **kwargs):
             """Set rc parameters and backend, call the original function, and restore the settings."""
-            import matplotlib.pyplot as plt  # scope for faster 'import ultralytics'
+            try:
+                import matplotlib.pyplot as plt  # scope for faster 'import ultralytics'
+            except Exception as exc:
+                raise ImportError(
+                    "Matplotlib is required for plotting but could not be imported. "
+                    "Install a Matplotlib build compatible with the active NumPy version."
+                ) from exc
 
             # Prepend Arial Unicode for non-Latin text (CJK, Arabic, etc.); matplotlib falls back if missing
             if "font.sans-serif" not in rcparams and not wrapper._fonts_registered:

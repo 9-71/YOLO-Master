@@ -5,13 +5,14 @@ the MoE registry, module attributes, and wrapper-specific collectors.  This
 module provides one small, weakly-referenced state channel while keeping the
 old registry available as a compatibility transport.
 """
+
 from __future__ import annotations
 
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
 from threading import Lock
-from typing import Any, Iterable, Protocol, runtime_checkable
+from typing import Any, Iterable, Mapping, Protocol, runtime_checkable
 import weakref
 
 import torch
@@ -33,14 +34,25 @@ class AuxLossRecord:
 class RoutingAuxPublisher(Protocol):
     """Protocol exposed by modules that publish routing regularisation."""
 
-    def publish_aux_loss(self, *, step: int, training: bool) -> torch.Tensor:
-        ...
+    def publish_aux_loss(self, *, step: int, training: bool) -> torch.Tensor: ...
 
-    def routing_snapshot(self) -> dict[str, Any]:
-        ...
+    def routing_snapshot(self) -> dict[str, Any]: ...
 
-    def export_capabilities(self) -> dict[str, Any]:
-        ...
+    def export_capabilities(self) -> dict[str, Any]: ...
+
+
+@runtime_checkable
+class RoutedModule(Protocol):
+    """Structural protocol shared by every expert-routing module."""
+
+    num_experts: int
+    top_k: int
+
+    @property
+    def aux_loss(self) -> torch.Tensor: ...
+
+    @property
+    def last_routing_snapshot(self) -> dict[str, Any]: ...
 
 
 _RECORDS: weakref.WeakKeyDictionary[nn.Module, AuxLossRecord] = weakref.WeakKeyDictionary()
@@ -52,6 +64,12 @@ def current_aux_step() -> int:
     """Return the active forward step used by implicit publications."""
 
     return int(_CURRENT_STEP.get())
+
+
+def is_export_or_tracing() -> bool:
+    """Return whether the current forward is being captured for export/tracing."""
+
+    return bool(torch.jit.is_tracing() or torch.onnx.is_in_onnx_export())
 
 
 def begin_aux_step(step: int | None = None) -> int:
@@ -98,7 +116,7 @@ def anneal_mixture_temperatures(
     *,
     factor: float = 0.97,
     min_temp: float = 0.3,
-    families: Iterable[str] = ("moe", "moa", "mot"),
+    families: Iterable[str] = ("moe", "moa", "mot", "latent"),
 ) -> int:
     """Anneal every enabled mixture router through one protocol-level entry point.
 
@@ -147,7 +165,7 @@ def configure_mixture_temperature_schedule(
     model: nn.Module,
     *,
     external: bool = True,
-    families: Iterable[str] = ("moe", "moa", "mot"),
+    families: Iterable[str] = ("moe", "moa", "mot", "latent"),
 ) -> int:
     """Select trainer-level scheduling and disable conflicting per-forward annealing."""
     family_tokens = tuple(str(item).lower() for item in families)
@@ -213,12 +231,14 @@ def get_aux_record(module: nn.Module) -> AuxLossRecord | None:
 
 
 def iter_aux_records(
-    model: nn.Module,
+    model: nn.Module | None,
     modules: Iterable[nn.Module] | None = None,
 ) -> list[tuple[nn.Module, AuxLossRecord]]:
-    """Return records in model traversal order for diagnostics and collectors."""
+    """Return records in model traversal order, or all records when model is None."""
 
     with _RECORDS_LOCK:
+        if model is None and modules is None:
+            return list(_RECORDS.items())
         candidates = model.modules() if modules is None else modules
         return [(module, _RECORDS[module]) for module in candidates if module in _RECORDS]
 
@@ -231,12 +251,14 @@ def export_capabilities(module: nn.Module) -> dict[str, Any]:
         or getattr(module, "sparse_train", False)
         or getattr(module, "use_sparse_inference", False)
     )
+    training_sparse = bool(getattr(module, "sparse_train", False))
     return {
         "routing_kind": getattr(module, "_routing_aux_kind", "unknown"),
         "supported": True,
         "dynamic_routing": True,
         "sparse_dispatch": eager_sparse,
         "eager_sparse_dispatch": eager_sparse,
+        "training_sparse_dispatch": training_sparse,
         "onnx_sparse_dispatch": False,
         "torchscript_trace_sparse_dispatch": False,
         "exact_sparse_export": False,
@@ -270,7 +292,7 @@ def routing_finite_diagnostics(
 ) -> dict[str, Any]:
     """Summarize the first non-finite routing boundary without retaining graphs."""
 
-    if torch.jit.is_tracing() or torch.onnx.is_in_onnx_export():
+    if is_export_or_tracing():
         return {
             "first_nonfinite_boundary": None,
             "logits_finite": None,
@@ -309,7 +331,110 @@ def routing_snapshot(module: nn.Module) -> dict[str, Any]:
     snapshot = getattr(module, "last_routing_snapshot", {})
     if not isinstance(snapshot, dict):
         return {}
-    return dict(snapshot)
+    result = dict(snapshot)
+    # Usage EMA and capacity counters are rank-local unless the producer
+    # explicitly publishes a reduced global value.
+    result.setdefault("usage_scope", "rank_local")
+    result.setdefault("global_usage_available", False)
+    return result
+
+
+def _routing_gini(usage: torch.Tensor) -> float:
+    """Compute a bounded Gini coefficient from detached expert usage."""
+
+    values = usage.detach().float().reshape(-1).clamp_min(0.0)
+    if values.numel() == 0 or not bool(torch.isfinite(values).all().item()):
+        return 0.0
+    total = values.sum()
+    if float(total) <= 0.0:
+        return 0.0
+    ordered = values.sort().values
+    index = torch.arange(1, ordered.numel() + 1, device=ordered.device, dtype=ordered.dtype)
+    gini = 2.0 * (index * ordered).sum() / (ordered.numel() * total) - (ordered.numel() + 1.0) / ordered.numel()
+    return float(gini.clamp(0.0, 1.0).item())
+
+
+def global_routing_metrics(
+    snapshot: Mapping[str, Any] | None,
+    *,
+    device: torch.device | None = None,
+) -> dict[str, Any]:
+    """Add optional all-reduced usage diagnostics without retaining gradients.
+
+    The producer's ``expert_usage`` remains rank-local. When a process group is
+    active, the detached usage vector is reduced independently and exposed as
+    ``global_expert_usage``, ``global_entropy``, and ``global_gini``. If no
+    process group exists, the local vector is reused and marked unavailable.
+    """
+
+    result = dict(snapshot or {})
+    usage = result.get("expert_usage", result.get("usage"))
+    if isinstance(usage, torch.Tensor):
+        local = usage.detach().float().reshape(-1)
+    elif usage is None:
+        local = torch.empty(0, dtype=torch.float32)
+    else:
+        local = torch.as_tensor(usage, dtype=torch.float32).reshape(-1)
+    local = torch.nan_to_num(local, nan=0.0, posinf=0.0, neginf=0.0).clamp_min(0.0)
+    global_usage = local.clone()
+    reduced = False
+    if local.numel() and torch.distributed.is_available() and torch.distributed.is_initialized():
+        world = int(torch.distributed.get_world_size())
+        if world > 1:
+            reduce_device = device
+            backend = str(torch.distributed.get_backend()).lower()
+            if backend == "nccl":
+                if reduce_device is None or reduce_device.type != "cuda":
+                    reduce_device = torch.device("cuda", torch.cuda.current_device())
+            elif reduce_device is not None and reduce_device.type != "cpu":
+                reduce_device = torch.device("cpu")
+            elif reduce_device is None and local.is_cuda:
+                reduce_device = torch.device("cpu")
+            if reduce_device is not None:
+                global_usage = local.to(reduce_device)
+            torch.distributed.all_reduce(global_usage, op=torch.distributed.ReduceOp.SUM)
+            global_usage = global_usage / world
+            reduced = True
+            if global_usage.device != local.device:
+                global_usage = global_usage.to(local.device)
+    total = global_usage.sum().clamp_min(1e-12)
+    probs = global_usage / total
+    entropy = float((-(probs * probs.clamp_min(1e-12).log()).sum()).item()) if probs.numel() else 0.0
+    result.update(
+        usage_scope=str(result.get("usage_scope", "rank_local")),
+        global_usage_available=bool(reduced),
+        global_expert_usage=global_usage.cpu(),
+        global_entropy=entropy,
+        global_gini=_routing_gini(global_usage),
+    )
+    result["diagnostics_schema_version"] = 1
+    return result
+
+
+def is_routed_module(module: nn.Module) -> bool:
+    """Return whether ``module`` exposes the common routed-module contract."""
+
+    if not isinstance(module, nn.Module):
+        return False
+    try:
+        num_experts = int(getattr(module, "num_experts"))
+        top_k = int(getattr(module, "top_k"))
+    except (AttributeError, TypeError, ValueError):
+        return False
+    return (
+        num_experts > 0
+        and 0 < top_k <= num_experts
+        and isinstance(getattr(module, "aux_loss", None), torch.Tensor)
+        and isinstance(getattr(module, "last_routing_snapshot", None), dict)
+    )
+
+
+def collect_routed_children(module: nn.Module) -> list[nn.Module]:
+    """Return nested routed modules, excluding the supplied root module."""
+
+    if not isinstance(module, nn.Module):
+        raise TypeError(f"module must be an nn.Module, got {type(module)!r}")
+    return [child for child in module.modules() if child is not module and is_routed_module(child)]
 
 
 def collect_aux_loss(
@@ -321,6 +446,8 @@ def collect_aux_loss(
     require_training: bool = True,
     ddp_sync: bool = False,
     return_diagnostics: bool = False,
+    return_tensor_values: bool = False,
+    return_value_scalars: bool = True,
     modules: Iterable[nn.Module] | None = None,
 ):
     """Collect canonical losses once, rejecting stale and eval publications."""
@@ -360,7 +487,10 @@ def collect_aux_loss(
         covered.add(id(module))
         covered.update(record.covered_modules)
         diagnostics["counts_by_kind"][record.kind] = diagnostics["counts_by_kind"].get(record.kind, 0) + 1
-        diagnostics["values_by_kind"].setdefault(record.kind, []).append(float(record.value.detach()))
+        if return_value_scalars:
+            diagnostics["values_by_kind"].setdefault(record.kind, []).append(float(record.value.detach()))
+        if return_tensor_values:
+            diagnostics.setdefault("_tensor_values_by_kind", {}).setdefault(record.kind, []).append(record.value)
         diagnostics["modules"].append(module.__class__.__name__)
 
     if selected:
@@ -386,6 +516,7 @@ def collect_aux_loss(
 __all__ = [
     "AuxLossRecord",
     "RoutingAuxPublisher",
+    "RoutedModule",
     "aux_step_scope",
     "begin_aux_step",
     "clear_aux_records",
@@ -395,7 +526,10 @@ __all__ = [
     "current_aux_step",
     "export_capabilities",
     "graph_connected_finite_zero",
+    "global_routing_metrics",
     "get_aux_record",
+    "is_routed_module",
+    "collect_routed_children",
     "iter_aux_records",
     "publish_aux_loss",
     "reset_routing_runtime_state",

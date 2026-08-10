@@ -11,6 +11,7 @@ from ultralytics.nn.modules.block import DyMoEBlock
 from ultralytics.nn.modules.moe import AdaptiveGateMoE
 from ultralytics.nn.modules.moe.modules import OptimizedMOE
 from ultralytics.nn.modules.mot import MoTBlock
+from ultralytics.nn.modules.latent_mixture import LatentMixture
 from ultralytics.nn.peft.molora.layer import MoLoRALayer
 from ultralytics.engine.exporter import export_formats
 from ultralytics.utils.export_capabilities import (
@@ -30,7 +31,7 @@ def test_canonical_export_matrix_is_valid_and_covers_routed_families():
     matrix = load_export_capability_matrix()
 
     assert matrix["schema_version"] == 1
-    assert {"MoE", "MoA", "MoT", "MoLoRA"} <= matrix["modules"].keys()
+    assert {"MoE", "MoA", "MoT", "MoLoRA", "Latent"} <= matrix["modules"].keys()
     assert {"supported", "dense_fallback", "requires_merge", "known_error"} <= matrix["modules"]["MoT"].keys()
 
 
@@ -47,7 +48,7 @@ def test_matrix_validation_rejects_missing_required_fields():
             {
                 "schema_version": 1,
                 "formats": {"onnx": {"supported": True, "default": "dense_fallback", "known_error": None}},
-                "modules": {name: {"supported": True} for name in ("MoE", "MoA", "MoT", "MoLoRA")},
+                "modules": {name: {"supported": True} for name in ("MoE", "MoA", "MoT", "MoLoRA", "Latent")},
             }
         )
 
@@ -60,6 +61,7 @@ def test_format_aliases_and_routed_module_classification():
     assert classify_routed_module(DyMoEBlock(16, num_experts=2, top_k=1)) == "MoE"
     assert classify_routed_module(MoABlock(16, num_heads=3)) == "MoA"
     assert classify_routed_module(MoTBlock(16, num_heads=2, top_k=1)) == "MoT"
+    assert classify_routed_module(LatentMixture([16, 16], 16)) == "Latent"
     assert classify_routed_module(MoLoRALayer(torch.nn.Linear(16, 16), r=2, num_experts=2, top_k=1)) == "MoLoRA"
 
 
@@ -99,6 +101,12 @@ def _matrix(*, mot_supported=True, molora_requires_merge=False):
                 "supported": True,
                 "dense_fallback": True,
                 "requires_merge": molora_requires_merge,
+                "known_error": None,
+            },
+            "Latent": {
+                "supported": True,
+                "dense_fallback": True,
+                "requires_merge": False,
                 "known_error": None,
             },
         },

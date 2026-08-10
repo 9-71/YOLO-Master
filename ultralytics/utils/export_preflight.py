@@ -30,6 +30,8 @@ class ExportDecision:
     requires_merge: bool
     known_error: str | None = None
     matrix_known_error: str | None = None
+    eager_compute_semantics: str | None = None
+    export_compute_semantics: str | None = None
 
 
 def _load_matrix(
@@ -80,6 +82,7 @@ def export_preflight(
     strict: bool = True,
     matrix: Mapping[str, Any] | None = None,
     matrix_path: str | Path | None = None,
+    routing_preserved: bool = False,
 ) -> dict[str, Any]:
     """Scan routed modules and select dynamic, dense fallback, merged, or refusal."""
     capability_matrix, matrix_source = _load_matrix(matrix, matrix_path)
@@ -146,6 +149,16 @@ def export_preflight(
             )
         elif merged:
             strategy = "merged"
+        elif routing_preserved and family == "MoLoRA":
+            if fmt not in {"onnx", "torchscript"}:
+                failure = f"routing_preserved MoLoRA export is only supported for ONNX/TorchScript, got {fmt}"
+            elif not runtime.get("onnx_routing_preserved", False):
+                failure = _join_reasons(
+                    runtime.get("known_error"),
+                    f"{type(module).__name__} does not advertise routing-preserved graph support",
+                )
+            else:
+                strategy = "routing_preserved"
         elif strategy == "dense_fallback" and not dense_fallback:
             failure = _join_reasons(
                 matrix_error,
@@ -169,6 +182,8 @@ def export_preflight(
             requires_merge=requires_merge,
             known_error=failure or _join_reasons(matrix_error, runtime.get("known_error")),
             matrix_known_error=matrix_error,
+            eager_compute_semantics=runtime.get("eager_compute_semantics"),
+            export_compute_semantics=runtime.get("export_compute_semantics"),
         )
         decisions.append(decision)
 

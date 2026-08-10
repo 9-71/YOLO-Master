@@ -116,7 +116,7 @@ jobs:
       - name: Upload Coverage Reports to CodeCov
         if: github.repository == 'ultralytics/ultralytics'
         continue-on-error: true
-        uses: codecov/codecov-action@v7
+        uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f  # v7
         with:
           flags: Benchmarks
           fail_ci_if_error: false
@@ -149,7 +149,28 @@ jobs:
         run: |
           python scripts/check_moe_ssot.py
           python tools/config_drift_detector.py
-          python -m torch.distributed.run --standalone --nproc_per_node=2 tests/ddp_moa_mot_smoke.py
+            python -m torch.distributed.run --standalone --nproc_per_node=2 tests/ddp_moa_mot_smoke.py
+
+  MixtureP0Regression:
+    if: github.event_name == 'pull_request' || github.event_name == 'push'
+    timeout-minutes: 20
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.11"
+      - uses: ultralytics/actions/setup-uv@main
+        with:
+          python-version: "3.11"
+          activate-environment: true
+      - name: Install package
+        run: uv pip install -e ".[dev]" --torch-backend cpu
+      - name: Run mixture P0/P1 regression gates
+        run: |
+          python -m pytest -q tests/test_default_config_integrity.py tests/test_master_model_configs.py --tb=long
+          python -m pytest -q tests/test_molora_dtype.py tests/test_molora_backend_roundtrip.py \
+            tests/test_molora_merge_semantics.py tests/test_adapter_backend_contract.py --tb=long
 
   Tests:
     if: github.event_name == 'pull_request' || github.event_name == 'push'
@@ -242,7 +263,7 @@ jobs:
       - name: Upload Coverage Reports to CodeCov
         if: github.repository == 'ultralytics/ultralytics' # && matrix.os == 'ubuntu-latest' && matrix.python == '3.13'
         continue-on-error: true
-        uses: codecov/codecov-action@v7
+        uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f  # v7
         with:
           flags: Tests
           fail_ci_if_error: false
@@ -495,7 +516,7 @@ jobs:
           PIP_BREAK_SYSTEM_PACKAGES: 1
       - name: Upload Coverage Reports to CodeCov
         continue-on-error: true
-        uses: codecov/codecov-action@v7
+        uses: codecov/codecov-action@fb8b3582c8e4def4969c97caa2f19720cb33a72f  # v7
         with:
           flags: GPU
           fail_ci_if_error: false

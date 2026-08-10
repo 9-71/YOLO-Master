@@ -523,21 +523,25 @@ def collect_model_metrics(
 def collect_routing_metrics(model: nn.Module, input_tensor: torch.Tensor) -> dict[str, Any]:
     """Capture cross-family routing health for the benchmark input."""
     from ultralytics.utils.routing_interpreter import RoutingInterpreter
+    from ultralytics.nn.modules.moe.diagnostics import routing_runtime_metrics
 
     interpreter = RoutingInterpreter(model)
     try:
         heatmaps = interpreter.capture_routing(input_tensor)
     except ValueError:
+        fallback = routing_runtime_metrics(model)
         return {
             "routed_layers": 0,
             "collapsed_layers": 0,
             "mean_normalized_gini": 0.0,
             "mean_normalized_entropy": 0.0,
             "mean_dominant_share": 0.0,
-            "layers": {},
+            "layers": fallback.get("layers", {}),
+            "expert_calls": fallback.get("expert_calls", 0),
         }
     reports = interpreter.detect_routing_collapse(heatmaps=heatmaps)
     values = list(reports.values())
+    runtime = routing_runtime_metrics(model)
     return {
         "routed_layers": len(values),
         "collapsed_layers": sum(report.collapsed for report in values),
@@ -545,6 +549,8 @@ def collect_routing_metrics(model: nn.Module, input_tensor: torch.Tensor) -> dic
         "mean_normalized_entropy": _mean([report.normalized_entropy for report in values]),
         "mean_dominant_share": _mean([report.dominant_share for report in values]),
         "layers": {name: report.to_dict() for name, report in reports.items()},
+        "expert_calls": runtime.get("expert_calls", 0),
+        "dispatch_layers": runtime.get("layers", {}),
     }
 
 

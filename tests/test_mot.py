@@ -8,7 +8,7 @@ from ultralytics.engine.trainer import BaseTrainer
 from ultralytics.nn.modules.moa import C2fMoA, MoABlock
 from ultralytics.nn.modules.mot import C2fMoT, MoTBlock, anneal_mot_temperature, collect_mot_aux_loss
 from ultralytics.nn.tasks import DetectionModel
-from ultralytics.utils.loss import _collect_mot_aux_loss
+from ultralytics.nn.mixture_loss import _collect_mot_aux_loss
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -42,7 +42,7 @@ def test_mot_block_forward_backward_all_experts_trainable():
     # Squared-sum produces O(1) per-element gradient (vs O(1/N) for mean),
     # ensuring non-selected experts' ~0.02-weighted contribution stays above
     # the float32 underflow threshold.
-    ((out ** 2).sum() + aux).backward()
+    ((out**2).sum() + aux).backward()
     assert _has_grad(block.router)
     for expert in block.experts:
         assert _has_grad(expert)
@@ -93,6 +93,32 @@ def test_mot_temperature_anneal():
     assert after == [max(t * 0.5, 0.3) for t in before]
 
 
+def test_localconv_window_attention_is_opt_in_and_shape_preserving():
+    """LocalConv keeps global attention by default and supports padded windows."""
+    from ultralytics.nn.modules.mot.experts import _LocalConvTransformerExpert
+
+    torch.manual_seed(0)
+    x = torch.randn(1, 24, 7, 9)
+    global_expert = _LocalConvTransformerExpert(24, 3).eval()
+    window_expert = _LocalConvTransformerExpert(24, 3, local_window_size=4).eval()
+    assert global_expert.local_window_size == 0
+    assert window_expert.local_window_size == 4
+    with torch.no_grad():
+        out = window_expert(x)
+    assert out.shape == x.shape
+
+
+def test_mot_local_window_config_applies_to_nested_expert():
+    model = C2fMoT(64, 64, n=1, num_heads=4)
+    resolved = __import__(
+        "ultralytics.nn.modules.moe.config", fromlist=["resolve_mixture_config"]
+    ).resolve_mixture_config(SimpleNamespace(mot_local_attn_window=4), model)
+    from ultralytics.nn.modules.moe.config import apply_mixture_config
+
+    apply_mixture_config(model, resolved)
+    assert model.m[0].experts[0].local_window_size == 4
+
+
 def test_trainer_detects_and_anneals_moa_mot_temperatures():
     trainer = object.__new__(BaseTrainer)
     trainer.args = SimpleNamespace(moa_mot_temperature_factor=0.5, moa_mot_min_temperature=0.3)
@@ -128,7 +154,6 @@ def test_mot_model_configs_parse():
 def test_mot_deformable_align_corners_option():
     block = MoTBlock(32, num_heads=4, top_k=2, window_size=4, n_points=2, grid_align_corners=False)
     assert block.experts[2].align_corners is False
-
 
 
 def test_mot_window_size_larger_than_feature_map():
@@ -220,6 +245,20 @@ def test_mot_deformable_attention_falls_back_for_non_grid_tokens():
     assert torch.isfinite(output).all()
 
 
+@pytest.mark.skipif(not torch.backends.mps.is_available(), reason="requires Apple MPS")
+def test_mot_deformable_reference_grid_cache_clears_on_module_apply():
+    """Cached grids must not survive checkpoint device or dtype migration."""
+    from ultralytics.nn.modules.mot.mot import _DeformableTransformerExpert
+
+    expert = _DeformableTransformerExpert(16, num_heads=4, n_points=2).eval()
+    with torch.no_grad():
+        expert(torch.randn(1, 16, 2, 2))
+
+    assert expert._reference_grid_cache
+    expert.to("mps")
+    assert not expert._reference_grid_cache
+
+
 def test_mot_inference_sparsity_skips_inactive_experts():
     """At eval with top_k<E, a per-sample inactive expert must not be invoked."""
     torch.manual_seed(0)
@@ -234,6 +273,7 @@ def test_mot_inference_sparsity_skips_inactive_experts():
 
 
 # ── Boundary regression tests (issue #54) ──────────────────────────────────
+
 
 def test_mot_block_handles_1x1_feature_map():
     """MoTBlock must not crash on the smallest possible spatial input (1×1)."""
@@ -251,8 +291,7 @@ def test_mot_block_handles_all_zero_input():
     """All-zero input must not produce NaN or Inf in output or aux loss."""
     torch.manual_seed(0)
     # Use balance_loss_coeff > 0 so aux loss is computed even on zero input
-    block = MoTBlock(32, num_heads=4, top_k=2, window_size=4, n_points=2,
-                     balance_loss_coeff=0.01).train()
+    block = MoTBlock(32, num_heads=4, top_k=2, window_size=4, n_points=2, balance_loss_coeff=0.01).train()
     x = torch.zeros(2, 32, 8, 8)
     out, aux = block(x)
     assert out.shape == x.shape
@@ -312,8 +351,7 @@ def test_c2fmot_handles_minimal_channels():
 
 def test_mot_router_z_loss_handles_extreme_logits():
     """Router z-loss must guard against overflow on extreme logit values."""
-    block = MoTBlock(32, num_heads=4, top_k=2, window_size=4, n_points=2,
-                     balance_loss_coeff=0.01).eval()
+    block = MoTBlock(32, num_heads=4, top_k=2, window_size=4, n_points=2, balance_loss_coeff=0.01).eval()
     # Simulate extreme router output
     extreme_logits = torch.full((1, 3, 4, 4), 100.0)
     z = block.router.z_loss_from_logits(extreme_logits)
@@ -327,8 +365,7 @@ def test_mot_router_z_loss_handles_extreme_logits():
 def test_mot_sparse_train_mode():
     """sparse_train=True must only dispatch to selected experts."""
     torch.manual_seed(0)
-    block = MoTBlock(24, num_heads=3, top_k=1, window_size=4, n_points=2,
-                     sparse_train=True).train()
+    block = MoTBlock(24, num_heads=3, top_k=1, window_size=4, n_points=2, sparse_train=True).train()
     x = torch.randn(1, 24, 6, 6)
     out, aux = block(x)
     assert out.shape == x.shape
@@ -361,8 +398,7 @@ def test_c2fmot_aux_loss_aggregation():
     module = C2fMoT(32, 32, n=3, num_heads=4, top_k=2, balance_loss_coeff=0.01).train()
     module(torch.randn(2, 32, 8, 8))
     # Each block contributes to total
-    block_aux = [m.last_aux_loss for m in module.m
-                 if isinstance(getattr(m, 'last_aux_loss', None), torch.Tensor)]
+    block_aux = [m.last_aux_loss for m in module.m if isinstance(getattr(m, "last_aux_loss", None), torch.Tensor)]
     assert len(block_aux) == 3
     assert torch.allclose(module.last_aux_loss, sum(block_aux))
 # Additional boundary & stability tests for MoT (犀牛鸟 #54)

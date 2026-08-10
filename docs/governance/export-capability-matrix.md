@@ -31,6 +31,7 @@
 
 | Module family | Supported | Dense fallback | Requires merge | Known limitation |
 |---|---:|---:|---:|---|
+| `Latent` | yes | yes | no | - |
 | `MoA` | yes | yes | no | - |
 | `MoE` | yes | yes | no | - |
 | `MoLoRA` | yes | yes | no | dynamic router cannot be represented as an exact static merge |
@@ -42,6 +43,26 @@ The effective policy intersects each format default with the module policy. Runt
 
 | Module family | Format | Effective strategy | Dense fallback | Requires merge | Known limitation |
 |---|---|---|---:|---:|---|
+| `Latent` | `pytorch` | `dynamic` | yes | no | - |
+| `Latent` | `torchscript` | `dense_fallback` | yes | no | trace uses shape-specific dense fallback |
+| `Latent` | `onnx` | `dense_fallback` | yes | no | data-dependent routing is replaced by dense fallback |
+| `Latent` | `openvino` | `dense_fallback` | yes | no | inherits ONNX dense fallback limitations |
+| `Latent` | `engine` | `dense_fallback` | yes | no | TensorRT verification is backend and hardware specific |
+| `Latent` | `coreml` | `dense_fallback` | yes | no | dynamic sparse dispatch is not preserved |
+| `Latent` | `saved_model` | `dense_fallback` | yes | no | dynamic sparse dispatch is not preserved |
+| `Latent` | `pb` | `dense_fallback` | yes | no | dynamic sparse dispatch is not preserved |
+| `Latent` | `edgetpu` | `dense_fallback` | yes | no | Edge TPU support requires downstream operator validation |
+| `Latent` | `paddle` | `dense_fallback` | yes | no | component roundtrip is unverified |
+| `Latent` | `mnn` | `dense_fallback` | yes | no | component roundtrip is unverified |
+| `Latent` | `ncnn` | `dense_fallback` | yes | no | component roundtrip is unverified |
+| `Latent` | `imx` | `dense_fallback` | yes | no | hardware-specific validation is required |
+| `Latent` | `rknn` | `dense_fallback` | yes | no | hardware-specific validation is required |
+| `Latent` | `executorch` | `dense_fallback` | yes | no | component roundtrip is unverified |
+| `Latent` | `axelera` | `refuse` | no | no | routed module export has not been validated for Axelera |
+| `Latent` | `deepx` | `refuse` | no | no | routed module export has not been validated for DEEPX |
+| `Latent` | `qnn` | `refuse` | no | no | routed module export has not been validated for Qualcomm QNN |
+| `Latent` | `litert` | `dense_fallback` | yes | no | dynamic sparse dispatch is not preserved |
+| `Latent` | `hailo` | `refuse` | no | no | routed module export has not been validated for Hailo |
 | `MoA` | `pytorch` | `dynamic` | yes | no | - |
 | `MoA` | `torchscript` | `dense_fallback` | yes | no | trace uses shape-specific dense fallback |
 | `MoA` | `onnx` | `dense_fallback` | yes | no | data-dependent routing is replaced by dense fallback |

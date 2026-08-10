@@ -61,6 +61,8 @@ from ultralytics.nn.modules import (
     HGStem,
     ImagePoolingAttn,
     Index,
+    MultiTaskHead,
+    SharedExpertMoE,
     LRPCHead,
     Pose,
     Pose26,
@@ -225,6 +227,7 @@ class BaseModel(torch.nn.Module):
         if not any(True for _ in module.parameters()):
             return module(inputs)
         if isinstance(inputs, list):
+
             def wrapper(*args):
                 output = module(list(args))
                 return tuple(output) if isinstance(output, list) else output
@@ -241,6 +244,8 @@ class BaseModel(torch.nn.Module):
                 continue
             path = child.__class__.__module__
             if path.startswith(("ultralytics.nn.modules.moe", "ultralytics.nn.peft.molora")):
+                return True
+            if getattr(child, "publishes_aux_loss", False):
                 return True
         return False
 
@@ -836,6 +841,73 @@ class PoseModel(DetectionModel):
         return build_composite_criterion(self, native)
 
 
+class MultiTaskModel(DetectionModel):
+    """YOLO Multi-Task Vision Model.
+
+    Simultaneously supports detection, segmentation, pose estimation,
+    classification, depth estimation, and oriented bounding box detection
+    in a single unified real-time architecture.
+
+    MOT-inspired design:
+    - MoT blocks in neck: token-level expert routing for adaptive features
+    - TaskRouter: routes tokens to task-specific heads (ByteTracker-style)
+    - Cross-task association: shared features across task branches
+
+    Attributes:
+        active_tasks (set[str]): Set of active task names.
+        task_weights (dict[str, float]): Per-task loss weighting.
+
+    Methods:
+        __init__: Initialize the multi-task model.
+        init_criterion: Initialize the combined multi-task loss.
+        has_task: Check if a task is active.
+
+    Examples:
+        >>> model = MultiTaskModel("yolo26-master-mt-n.yaml", ch=3, nc=80)
+        >>> results = model.predict(image_tensor)  # returns (det, task_outputs)
+    """
+
+    def __init__(self, cfg="yolo26-master-mt-n.yaml", ch=3, nc=None, verbose=True):
+        """Initialize the multi-task model.
+
+        Args:
+            cfg (str | dict): Model configuration file path or dictionary.
+            ch (int): Number of input channels.
+            nc (int, optional): Number of classes.
+            verbose (bool): Display model information.
+        """
+        super().__init__(cfg=cfg, ch=ch, nc=nc, verbose=verbose)
+        # Extract task config from YAML
+        cfg_dict = self.yaml if isinstance(self.yaml, dict) else yaml_model_load(self.yaml)
+        self.active_tasks = set(cfg_dict.get("tasks", ["detect", "segment", "pose"]))
+        # Default training args (normally set by Model wrapper; needed for loss init)
+        if not hasattr(self, "args"):
+            from ultralytics.utils import IterableSimpleNamespace
+
+            self.args = IterableSimpleNamespace(**DEFAULT_CFG_DICT)
+        # Default task weights (can be overridden)
+        self.task_weights = {
+            "detect": 1.0,
+            "segment": 0.5,
+            "pose": 1.0,
+            "classify": 0.3,
+            "depth": 0.3,
+            "normal": 0.3,
+            "semantic": 0.5,
+            "obb": 0.5,
+        }
+
+    def has_task(self, task: str) -> bool:
+        """Check if a task is active in this model."""
+        return task in self.active_tasks
+
+    def init_criterion(self):
+        """Initialize the combined multi-task loss criterion."""
+        from ultralytics.utils.loss import MultiTaskLoss
+
+        return build_composite_criterion(self, MultiTaskLoss(self))
+
+
 class ClassificationModel(BaseModel):
     """YOLO classification model.
 
@@ -1234,6 +1306,37 @@ class YOLOEModel(DetectionModel):
         """
         super().__init__(cfg=cfg, ch=ch, nc=nc, verbose=verbose)
         self.text_model = self.yaml.get("text_model", "mobileclip:blt")
+
+    def load(self, weights, verbose=True):
+        """Load weights and preserve released segmentation checkpoint execution semantics when fully shared."""
+        source = weights["model"] if isinstance(weights, dict) else weights
+        super().load(weights, verbose=verbose)
+        migrated = self._migrate_released_segmentation_execution_semantics(source)
+        if verbose and migrated:
+            LOGGER.info(f"Migrated released YOLOE segmentation execution semantics: {', '.join(migrated)}")
+
+    def _migrate_released_segmentation_execution_semantics(self, source):
+        """Migrate non-state SPPF activation metadata for fully shared released segmentation sources only."""
+        if isinstance(self, YOLOESegModel) or not isinstance(source, YOLOESegModel):
+            return ()
+
+        migrated = []
+        for index, (source_layer, target_layer) in enumerate(zip(source.model, self.model)):
+            if type(source_layer) is not SPPF or type(target_layer) is not SPPF:
+                continue
+            if type(source_layer.cv1) is not type(target_layer.cv1):
+                continue
+            source_state, target_state = source_layer.state_dict(), target_layer.state_dict()
+            if source_state.keys() != target_state.keys() or any(
+                source_value.shape != target_state[name].shape or not torch.equal(source_value, target_state[name])
+                for name, source_value in source_state.items()
+            ):
+                continue
+            if not isinstance(source_layer.cv1.act, nn.SiLU) or not isinstance(target_layer.cv1.act, nn.Identity):
+                continue
+            target_layer.cv1.act = deepcopy(source_layer.cv1.act)
+            migrated.append(f"model.{index}.cv1.act")
+        return tuple(migrated)
 
     @smart_inference_mode()
     def get_text_pe(self, text, batch=80, cache_clip_model=False, without_reprta=False):
@@ -1930,6 +2033,9 @@ def parse_model(d, ch, verbose=True):
     """
     import ast
 
+    # Scope named shared-expert pools to this model build.
+    SharedExpertMoE.reset_shared_pools()
+
     # Args
     legacy = True  # backward compatibility for v3/v5/v8/v9 models
     max_channels = float("inf")
@@ -2093,13 +2199,42 @@ def parse_model(d, ch, verbose=True):
                 Pose26,
                 OBB,
                 OBB26,
+                MultiTaskHead,
             }
         ):
-            args.extend([reg_max, end2end, [ch[x] for x in f]])
-            if m is Segment or m is YOLOESegment or m is Segment26 or m is YOLOESegment26:
-                args[2] = make_divisible(min(args[2], max_channels) * width, 8)
-            if m in {Detect, YOLOEDetect, Segment, Segment26, YOLOESegment, YOLOESegment26, Pose, Pose26, OBB, OBB26}:
-                m.legacy = legacy
+            if m is MultiTaskHead:
+                # MultiTaskHead(nc, ch, tasks, nm, npr, kpt_shape, depth_bins, semantic_nc, reg_max, end2end, use_task_router)
+                args = [
+                    args[0],  # nc
+                    [ch[x] for x in f],  # ch (feature map channels)
+                    d.get("tasks", ["detect"]),  # tasks
+                    d.get("nm", 32),  # nm
+                    d.get("npr", 256),  # npr
+                    d.get("kpt_shape", [17, 3]),  # kpt_shape
+                    d.get("depth_bins", 80),  # depth_bins
+                    d.get("semantic_nc", 0),  # semantic_nc
+                    reg_max,  # reg_max
+                    end2end,  # end2end
+                    d.get("use_task_router", True),  # use_task_router
+                ]
+                m.legacy = False
+            else:
+                args.extend([reg_max, end2end, [ch[x] for x in f]])
+                if m is Segment or m is YOLOESegment or m is Segment26 or m is YOLOESegment26:
+                    args[2] = make_divisible(min(args[2], max_channels) * width, 8)
+                if m in {
+                    Detect,
+                    YOLOEDetect,
+                    Segment,
+                    Segment26,
+                    YOLOESegment,
+                    YOLOESegment26,
+                    Pose,
+                    Pose26,
+                    OBB,
+                    OBB26,
+                }:
+                    m.legacy = legacy
         elif m is SemanticSegment:
             args.append([ch[x] for x in f])  # nc, ch tuple
         elif m is v10Detect:
@@ -2133,7 +2268,9 @@ def parse_model(d, ch, verbose=True):
         if i == 0:
             ch = []
         ch.append(c2)
-    return torch.nn.Sequential(*layers), sorted(save)
+    model = torch.nn.Sequential(*layers)
+    SharedExpertMoE.reset_shared_pools()
+    return model, sorted(save)
 
 
 def yaml_model_load(path):
@@ -2199,6 +2336,8 @@ def guess_model_task(model):
             return "pose"
         if "obb" in m:
             return "obb"
+        if "multitask" in m:
+            return "multitask"
 
     # Guess from model cfg
     if isinstance(model, dict):

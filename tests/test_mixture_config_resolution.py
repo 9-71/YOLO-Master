@@ -21,13 +21,16 @@ def _args(**overrides):
         moe_temperature=0.6,
         moe_weight_threshold=0.03,
         moa_local_window_size=9,
+        moa_regional_max_kv_tokens=8192,
         moa_aux_loss_coeff=0.2,
         mot_balance_loss=0.4,
         mot_router_z_loss=0.5,
         mot_sparse_train=True,
+        mot_sparse_train_warmup_steps=3,
         mot_scene_aware_router=True,
         mot_scene_hidden_dim=5,
         mot_scene_consistency=0.03,
+        mot_scene_inference_mode="bypass",
     )
     defaults.update(overrides)
     return SimpleNamespace(**defaults)
@@ -49,6 +52,7 @@ def test_yaml_explicit_values_override_cli_and_are_inherited_by_children():
     apply_mixture_config(model, resolved)
     assert model.m[0].router.temperature == 1.0
     assert model.m[0].local_head.window_size == 11
+    assert model.m[0].region_head.max_kv_tokens == 8192
 
 
 def test_mot_cli_values_apply_to_wrapper_and_nested_blocks():
@@ -61,9 +65,11 @@ def test_mot_cli_values_apply_to_wrapper_and_nested_blocks():
     assert all(block.balance_loss_coeff == 0.4 for block in model.m)
     assert all(block.router_z_loss_coeff == 0.5 for block in model.m)
     assert all(block.sparse_train is True for block in model.m)
+    assert all(block.sparse_train_warmup_steps == 3 for block in model.m)
     assert all(block.router.scene_aware is True for block in model.m)
     assert all(block.router.scene_hidden_dim == 5 for block in model.m)
     assert all(block.scene_consistency_coeff == 0.03 for block in model.m)
+    assert all(block.router.scene_inference_mode == "bypass" for block in model.m)
 
 
 def test_moe_module_receives_cli_values_and_audit_records_sources():
@@ -101,7 +107,9 @@ def test_resolver_has_safe_defaults_without_args_or_model():
     assert resolved.values["moe"]["router_z_loss_coeff"] == 0.1
     assert resolved.values["moa"]["local_window_size"] == 7
     assert resolved.values["mot"]["sparse_train"] is False
+    assert resolved.values["mot"]["sparse_train_warmup_steps"] == 0
     assert resolved.values["mot"]["scene_aware_router"] is False
+    assert resolved.values["mot"]["scene_inference_mode"] == "dynamic"
     assert resolved.values["molora"]["router_hidden_dim"] is None
 
 

@@ -2,9 +2,47 @@
 
 from __future__ import annotations
 
+from contextlib import nullcontext
+
 import torch
 import torch.distributed as dist
 import torch.nn as nn
+
+
+def _autocast_is_available(device_type: str) -> bool:
+    """Return whether this PyTorch build exposes autocast for ``device_type``."""
+    checker = getattr(getattr(torch, "amp", None), "autocast_mode", None)
+    checker = getattr(checker, "is_autocast_available", None)
+    if checker is not None:
+        try:
+            return bool(checker(device_type))
+        except (RuntimeError, TypeError):
+            return False
+    # PyTorch 2.2 does not expose the capability query and has no MPS
+    # autocast implementation. CPU and CUDA autocast are supported there.
+    return device_type in {"cpu", "cuda"}
+
+
+def disabled_autocast(device_type: str):
+    """Disable autocast when supported, otherwise return a no-op context."""
+    if _autocast_is_available(device_type):
+        return torch.autocast(device_type=device_type, enabled=False)
+    return nullcontext()
+
+
+class FP32RouterMixin:
+    """Keep router parameters in FP32 across model-wide dtype conversions."""
+
+    def _apply(self, fn):
+        super()._apply(fn)
+        for parameter in self.parameters(recurse=True):
+            parameter.data = parameter.data.float()
+            if parameter.grad is not None:
+                parameter.grad.data = parameter.grad.data.float()
+        for buffer in self.buffers(recurse=True):
+            if buffer.is_floating_point():
+                buffer.data = buffer.data.float()
+        return self
 
 
 def should_reduce_ddp(module: nn.Module | None = None, *, training: bool | None = None) -> bool:

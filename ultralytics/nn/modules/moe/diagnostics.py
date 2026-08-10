@@ -7,6 +7,8 @@ from typing import Any
 
 import torch
 
+from .protocol import routing_metrics, usage_gini
+
 
 @dataclass
 class MoELayerDiagnostic:
@@ -42,18 +44,19 @@ def collect_moe_diagnostics(model: torch.nn.Module, collapse_threshold: float = 
         if not snapshot or num_experts <= 0:
             continue
 
-        usage = _tensor_to_list(snapshot.get("expert_usage")) or [0.0] * num_experts
-        counts = _tensor_to_list(snapshot.get("topk_counts")) or [0.0] * num_experts
-        dominant_share = max(usage) if usage else 0.0
-        dominant_expert = int(max(range(len(usage)), key=usage.__getitem__)) if usage else -1
+        metrics = routing_metrics(snapshot, num_experts=num_experts, top_k=int(getattr(module, "top_k", 0)))
+        usage = metrics.expert_usage
+        counts = metrics.topk_counts
+        dominant_share = metrics.dominant_share
+        dominant_expert = metrics.dominant_expert
 
         diagnostics.append(
             MoELayerDiagnostic(
                 name=name,
                 module_type=type(module).__name__,
                 num_experts=num_experts,
-                top_k=int(snapshot.get("top_k", getattr(module, "top_k", 0))),
-                aux_loss=float(snapshot.get("aux_loss", 0.0)),
+                top_k=metrics.top_k,
+                aux_loss=metrics.aux_loss,
                 usage=usage,
                 counts=counts,
                 dominant_expert=dominant_expert,
@@ -70,6 +73,51 @@ def collect_moe_diagnostics(model: torch.nn.Module, collapse_threshold: float = 
 def diagnostics_to_dict(diagnostics: list[MoELayerDiagnostic]) -> list[dict[str, Any]]:
     """Convert diagnostics to JSON-serializable dictionaries."""
     return [diag.__dict__.copy() for diag in diagnostics]
+
+
+def routing_runtime_metrics(model: torch.nn.Module, collapse_threshold: float = 0.8) -> dict[str, Any]:
+    """Return JSON-safe routing health and dispatch metrics after a forward."""
+    layers: dict[str, dict[str, Any]] = {}
+    for name, module in model.named_modules():
+        snapshot = getattr(module, "last_routing_snapshot", None)
+        if not isinstance(snapshot, dict) or not snapshot:
+            continue
+        usage = _tensor_to_list(snapshot.get("expert_usage"))
+        if not usage:
+            continue
+        usage_tensor = torch.tensor(usage, dtype=torch.float32).clamp_min(1e-12)
+        dispatch = getattr(module, "_last_dispatch_stats", {}) or {}
+        if not dispatch:
+            sparse = bool(
+                not module.training
+                and getattr(module, "use_sparse_inference", False)
+                and int(snapshot.get("top_k", 0)) < len(usage)
+            )
+            dispatch = {
+                "mode": "sparse" if sparse else "dense",
+                "expert_calls": int(snapshot.get("top_k", len(usage))) if sparse else len(usage),
+            }
+        layers[name] = {
+            "module_type": type(module).__name__,
+            "num_experts": int(snapshot.get("num_experts", len(usage))),
+            "top_k": int(snapshot.get("top_k", getattr(module, "top_k", 0))),
+            "expert_usage": usage,
+            "gini": usage_gini(usage),
+            "entropy": float((-usage_tensor * torch.log(usage_tensor)).sum()),
+            "dominant_share": max(usage),
+            "collapse_flag": max(usage) >= float(collapse_threshold),
+            "dispatch_mode": dispatch.get("mode"),
+            "expert_calls": dispatch.get("expert_calls"),
+        }
+    values = list(layers.values())
+    return {
+        "layers": layers,
+        "routed_layers": len(values),
+        "collapsed_layers": sum(bool(item["collapse_flag"]) for item in values),
+        "mean_gini": sum(float(item["gini"]) for item in values) / len(values) if values else 0.0,
+        "mean_dominant_share": sum(float(item["dominant_share"]) for item in values) / len(values) if values else 0.0,
+        "expert_calls": sum(int(item["expert_calls"] or 0) for item in values),
+    }
 
 
 def format_moe_diagnostics(diagnostics: list[MoELayerDiagnostic], title: str = "MoE Routing Diagnostics") -> str:

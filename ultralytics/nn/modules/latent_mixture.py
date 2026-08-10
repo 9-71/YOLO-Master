@@ -1,0 +1,855 @@
+"""Dense latent mixture modules for YOLO feature routing."""
+
+from __future__ import annotations
+
+import math
+from dataclasses import dataclass
+from typing import Any, Sequence
+
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+from ultralytics.nn.modules._numeric import all_reduce_mean, disabled_autocast, should_reduce_ddp
+from ultralytics.nn.modules.routing_protocol import (
+    export_capabilities as _export_routing_capabilities,
+    graph_connected_finite_zero,
+    publish_aux_loss as _publish_aux_loss,
+    routing_finite_diagnostics,
+)
+from ultralytics.utils.ops import make_divisible
+
+
+_ROUTER_LOGIT_LIMIT = 30.0
+
+
+@dataclass(frozen=True)
+class LatentRoutingContext:
+    latent: torch.Tensor
+    scale_tokens: torch.Tensor
+    logits: torch.Tensor
+    probs: torch.Tensor
+
+
+def _positive_int(value: int | float, name: str) -> int:
+    value = int(value)
+    if value <= 0:
+        raise ValueError(f"{name} must be positive, got {value}")
+    return value
+
+
+def _non_negative_float(value: float, name: str) -> float:
+    value = float(value)
+    if value < 0.0 or not torch.isfinite(torch.tensor(value)):
+        raise ValueError(f"{name} must be finite and non-negative, got {value}")
+    return value
+
+
+def _conv1x1(c1: int, c2: int) -> nn.Module:
+    return nn.Sequential(
+        nn.Conv2d(c1, c2, kernel_size=1, bias=False),
+        nn.GroupNorm(1, c2),
+        nn.SiLU(inplace=True),
+    )
+
+
+def _validate_inputs(
+    xs: Sequence[torch.Tensor],
+    channels: Sequence[int],
+    *,
+    require_same_spatial: bool,
+) -> list[torch.Tensor]:
+    if not isinstance(xs, (list, tuple)):
+        raise TypeError(f"expected a list/tuple of tensors, got {type(xs)!r}")
+    if len(xs) != len(channels):
+        raise ValueError(f"expected {len(channels)} input tensors, got {len(xs)}")
+    if not xs:
+        raise ValueError("latent mixture requires at least one input tensor")
+
+    first = xs[0]
+    if not isinstance(first, torch.Tensor):
+        raise TypeError(f"input 0 must be a Tensor, got {type(first)!r}")
+    if first.ndim != 4:
+        raise ValueError(f"input 0 must be BCHW, got shape {tuple(first.shape)}")
+    if not first.is_floating_point():
+        raise TypeError(f"input 0 must be floating point, got dtype {first.dtype}")
+    if first.shape[0] <= 0 or first.shape[2] <= 0 or first.shape[3] <= 0:
+        raise ValueError(f"input 0 has invalid shape {tuple(first.shape)}")
+
+    batch, _, height, width = first.shape
+    device, dtype = first.device, first.dtype
+    checked: list[torch.Tensor] = []
+    for i, (x, expected_channels) in enumerate(zip(xs, channels)):
+        if not isinstance(x, torch.Tensor):
+            raise TypeError(f"input {i} must be a Tensor, got {type(x)!r}")
+        if x.ndim != 4:
+            raise ValueError(f"input {i} must be BCHW, got shape {tuple(x.shape)}")
+        if not x.is_floating_point():
+            raise TypeError(f"input {i} must be floating point, got dtype {x.dtype}")
+        if x.shape[0] != batch:
+            raise ValueError(f"input {i} batch {x.shape[0]} does not match input 0 batch {batch}")
+        if x.device != device:
+            raise ValueError(f"input {i} device {x.device} does not match input 0 device {device}")
+        if x.dtype != dtype:
+            raise ValueError(f"input {i} dtype {x.dtype} does not match input 0 dtype {dtype}")
+        if int(x.shape[1]) != int(expected_channels):
+            raise ValueError(f"input {i} channels {x.shape[1]} do not match expected {expected_channels}")
+        if x.shape[2] <= 0 or x.shape[3] <= 0:
+            raise ValueError(f"input {i} has invalid spatial size {tuple(x.shape[2:])}")
+        if require_same_spatial and tuple(x.shape[2:]) != (height, width):
+            raise ValueError(f"input {i} spatial size {tuple(x.shape[2:])} does not match input 0 {(height, width)}")
+        if not torch.jit.is_tracing() and not torch.onnx.is_in_onnx_export():
+            if not bool(torch.isfinite(x.detach()).all().item()):
+                raise FloatingPointError(f"input {i} contains non-finite values")
+        checked.append(x)
+    return checked
+
+
+class DenseChannelExpert(nn.Module):
+    """Lightweight shape-preserving expert."""
+
+    def __init__(self, channels: int, expert_ratio: float = 0.25):
+        super().__init__()
+        channels = _positive_int(channels, "channels")
+        expert_ratio = float(expert_ratio)
+        if not 0.0 < expert_ratio <= 1.0:
+            raise ValueError(f"expert_ratio must be in (0, 1], got {expert_ratio}")
+        hidden = make_divisible(max(8, int(round(channels * expert_ratio))), 8)
+        self.net = nn.Sequential(
+            nn.Conv2d(channels, hidden, 1, bias=False),
+            nn.GroupNorm(1, hidden),
+            nn.SiLU(inplace=True),
+            nn.Conv2d(hidden, hidden, 3, padding=1, groups=hidden, bias=False),
+            nn.GroupNorm(1, hidden),
+            nn.SiLU(inplace=True),
+            nn.Conv2d(hidden, channels, 1, bias=False),
+        )
+        nn.init.normal_(self.net[-1].weight, mean=0.0, std=1e-3)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.net(x)
+
+
+class LatentRouter(nn.Module):
+    """FP32 router with persistent temperature and train-only logit noise."""
+
+    def __init__(
+        self,
+        latent_dim: int,
+        num_experts: int,
+        router_hidden_dim: int | None = None,
+        temperature: float = 1.0,
+        noise_std: float = 0.0,
+        router_init_std: float = 0.0,
+        num_tokens: int | None = None,
+        per_token: bool = False,
+    ):
+        super().__init__()
+        self.latent_dim = _positive_int(latent_dim, "latent_dim")
+        self.num_experts = _positive_int(num_experts, "num_experts")
+        hidden = self.latent_dim if router_hidden_dim is None else _positive_int(router_hidden_dim, "router_hidden_dim")
+        temperature = float(temperature)
+        if temperature <= 0.0:
+            raise ValueError(f"temperature must be positive, got {temperature}")
+        self.router_init_std = _non_negative_float(router_init_std, "router_init_std")
+        self.num_tokens = None if num_tokens is None else _positive_int(num_tokens, "num_tokens")
+        self.per_token = bool(per_token)
+        self.norm = nn.LayerNorm(self.latent_dim)
+        self.trunk = nn.Sequential(
+            nn.Linear(self.latent_dim, hidden),
+            nn.SiLU(),
+            nn.Linear(hidden, self.latent_dim),
+            nn.SiLU(),
+        )
+        self.expert_head = nn.Linear(self.latent_dim, self.num_experts)
+        if self.num_tokens is None:
+            self.register_parameter("scale_embedding", None)
+        else:
+            self.scale_embedding = nn.Parameter(torch.empty(self.num_tokens, self.latent_dim, dtype=torch.float32))
+            nn.init.normal_(self.scale_embedding, mean=0.0, std=0.02)
+        self.register_buffer("_temperature", torch.tensor(float(temperature), dtype=torch.float32), persistent=True)
+        self.register_buffer("_noise_std", torch.tensor(float(noise_std), dtype=torch.float32), persistent=True)
+        if self.router_init_std > 0.0:
+            nn.init.normal_(self.expert_head.weight, mean=0.0, std=self.router_init_std)
+            nn.init.normal_(self.expert_head.bias, mean=0.0, std=self.router_init_std)
+        else:
+            nn.init.zeros_(self.expert_head.weight)
+            nn.init.zeros_(self.expert_head.bias)
+        self._cast_fp32()
+
+    @property
+    def temperature(self) -> torch.Tensor:
+        return self._temperature
+
+    @temperature.setter
+    def temperature(self, value: float | torch.Tensor) -> None:
+        value_f = float(value.detach().reshape(())) if isinstance(value, torch.Tensor) else float(value)
+        if value_f <= 0.0:
+            raise ValueError(f"temperature must be positive, got {value_f}")
+        with torch.no_grad():
+            self._temperature.fill_(value_f)
+
+    @property
+    def noise_std(self) -> float:
+        return float(self._noise_std.detach())
+
+    @noise_std.setter
+    def noise_std(self, value: float | torch.Tensor) -> None:
+        self.set_noise_std(value)
+
+    def set_noise_std(self, value: float | torch.Tensor) -> None:
+        value_f = float(value.detach().reshape(())) if isinstance(value, torch.Tensor) else float(value)
+        value_f = _non_negative_float(value_f, "noise_std")
+        with torch.no_grad():
+            self._noise_std.fill_(value_f)
+
+    def _cast_fp32(self) -> None:
+        for parameter in self.parameters(recurse=True):
+            parameter.data = parameter.data.float()
+            if parameter.grad is not None:
+                parameter.grad.data = parameter.grad.data.float()
+        for buffer in self.buffers(recurse=True):
+            buffer.data = buffer.data.float()
+
+    def _apply(self, fn):  # noqa: D401
+        """Keep router math in FP32 after device/dtype transforms."""
+        super()._apply(fn)
+        self._cast_fp32()
+        return self
+
+    def forward(self, tokens: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        if tokens.ndim not in {2, 3}:
+            raise ValueError(f"LatentRouter expects [B,D] or [B,T,D], got shape {tuple(tokens.shape)}")
+        if tokens.shape[-1] != self.latent_dim:
+            raise ValueError(f"token dim {tokens.shape[-1]} does not match latent_dim {self.latent_dim}")
+        with disabled_autocast(tokens.device.type):
+            x = tokens.float()
+            if x.ndim == 3:
+                if self.num_tokens is not None and x.shape[1] != self.num_tokens:
+                    raise ValueError(f"token count {x.shape[1]} does not match configured {self.num_tokens}")
+                if self.scale_embedding is not None:
+                    x = x + self.scale_embedding.to(device=x.device, dtype=torch.float32).unsqueeze(0)
+                routed = x if self.per_token else x.mean(dim=1)
+            else:
+                routed = x
+            hidden = self.trunk(self.norm(routed))
+            logits = self.expert_head(hidden)
+            if self.training and float(self._noise_std.detach()) > 0.0:
+                logits = logits + torch.randn_like(logits) * float(self._noise_std.detach())
+            safe_logits = torch.nan_to_num(logits, nan=0.0, posinf=_ROUTER_LOGIT_LIMIT, neginf=-_ROUTER_LOGIT_LIMIT)
+            safe_logits = safe_logits.clamp(min=-_ROUTER_LOGIT_LIMIT, max=_ROUTER_LOGIT_LIMIT)
+            probs = F.softmax(safe_logits / self._temperature.clamp_min(0.1), dim=-1)
+        return safe_logits, probs
+
+
+class _LatentAuxMixin:
+    _routing_aux_kind = "latent"
+
+    def _init_runtime_state(self) -> None:
+        self._last_aux_loss = torch.zeros((), dtype=torch.float32)
+        self._last_ddp_balance_synced = False
+        self.last_routing_snapshot: dict[str, Any] = {}
+        self.last_routing_diagnostics: dict[str, Any] = {}
+
+    @property
+    def aux_loss(self) -> torch.Tensor:
+        return self._last_aux_loss
+
+    @property
+    def last_aux_loss(self) -> torch.Tensor:
+        return self._last_aux_loss
+
+    @last_aux_loss.setter
+    def last_aux_loss(self, value: torch.Tensor) -> None:
+        self._last_aux_loss = value
+
+    @property
+    def routing(self) -> LatentRouter:
+        return self.router
+
+    @property
+    def temperature(self) -> torch.Tensor:
+        return self.router.temperature
+
+    @temperature.setter
+    def temperature(self, value: float | torch.Tensor) -> None:
+        self.router.temperature = value
+
+    @property
+    def noise_std(self) -> float:
+        return self.router.noise_std
+
+    @noise_std.setter
+    def noise_std(self, value: float | torch.Tensor) -> None:
+        self.router.noise_std = value
+
+    def set_noise_std(self, value: float | torch.Tensor) -> None:
+        self.router.set_noise_std(value)
+
+    def _compute_aux(
+        self, logits: torch.Tensor, probs: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        if not self.training or (float(self.balance_loss_coeff) == 0.0 and float(self.router_z_loss_coeff) == 0.0):
+            self._last_ddp_balance_synced = False
+            zero = graph_connected_finite_zero(logits, probs)
+            return zero, zero.detach(), zero.detach()
+        p = probs.float()
+        importance = p.reshape(-1, p.shape[-1]).mean(dim=0)
+        self._last_ddp_balance_synced = bool(float(self.balance_loss_coeff) > 0.0 and should_reduce_ddp(self))
+        if self._last_ddp_balance_synced:
+            importance = all_reduce_mean(importance)
+        balance = self.num_experts * torch.sum(importance.square()) - 1.0
+        balance = balance.clamp_min(0.0)
+        z_loss = torch.logsumexp(logits.float(), dim=-1).square().mean()
+        aux = float(self.balance_loss_coeff) * balance + float(self.router_z_loss_coeff) * z_loss
+        return aux.reshape(()), balance.detach().reshape(()), z_loss.detach().reshape(())
+
+    def _record_routing(
+        self,
+        logits: torch.Tensor,
+        probs: torch.Tensor,
+        aux: torch.Tensor,
+        balance: torch.Tensor,
+        z_loss: torch.Tensor,
+        *,
+        executed_experts: int | None = None,
+        dispatch_policy: str | None = None,
+    ) -> None:
+        with torch.no_grad():
+            p = probs.detach().float()
+            mean_probs = p.reshape(-1, p.shape[-1]).mean(dim=0)
+            entropy = -(p.clamp_min(1e-12) * p.clamp_min(1e-12).log()).sum(dim=-1).mean()
+            residual_gain = getattr(self, "residual_gain", None)
+            residual_gain_magnitude = 0.0
+            if isinstance(residual_gain, torch.Tensor) and residual_gain.numel():
+                residual_gain_magnitude = float(residual_gain.detach().float().abs().max().cpu())
+            router_head_magnitude = max(
+                (
+                    float(parameter.detach().float().abs().max().cpu())
+                    for parameter in self.router.expert_head.parameters()
+                    if parameter.numel()
+                ),
+                default=0.0,
+            )
+            snapshot: dict[str, Any] = {
+                "family": "latent",
+                "num_experts": int(self.num_experts),
+                "top_k": int(self.top_k),
+                "training_top_k": int(self.top_k),
+                "inference_top_k": int(getattr(self, "inference_top_k", self.top_k)),
+                "configured_top_k": int(self.top_k),
+                "executed_experts": int(executed_experts if executed_experts is not None else self.num_experts),
+                "active_experts_per_sample": torch.full(
+                    (p.shape[0],),
+                    int(executed_experts if executed_experts is not None else self.num_experts),
+                    dtype=torch.long,
+                ),
+                "mean_active_experts_per_sample": float(
+                    executed_experts if executed_experts is not None else self.num_experts
+                ),
+                "batch_expert_union": int(executed_experts if executed_experts is not None else self.num_experts),
+                "kernel_calls": int(executed_experts if executed_experts is not None else self.num_experts),
+                "mean_router_probs": mean_probs.cpu(),
+                "expert_usage": mean_probs.cpu(),
+                "entropy": float(entropy.cpu()),
+                "balance_loss": float(balance.cpu()),
+                "z_loss": float(z_loss.cpu()),
+                "aux_loss": float(aux.cpu()),
+                "temperature": float(self.router.temperature.detach().cpu()),
+                "noise_std": float(self.router._noise_std.detach().cpu()),
+                "router_init_std": float(getattr(self.router, "router_init_std", 0.0)),
+                "identity_cold_start": residual_gain_magnitude == 0.0 and router_head_magnitude == 0.0,
+                "residual_gain_magnitude": residual_gain_magnitude,
+                "router_output_head_magnitude": router_head_magnitude,
+                "router_aux_gradient_enabled": bool(
+                    self.training and (float(self.balance_loss_coeff) > 0.0 or float(self.router_z_loss_coeff) > 0.0)
+                ),
+                "ddp_balance_synced": bool(self._last_ddp_balance_synced),
+                "dispatch_policy": dispatch_policy or "dense",
+                "finite": bool(
+                    routing_finite_diagnostics(logits=logits, probabilities=probs, aux_loss=aux).get("all_finite", True)
+                ),
+            }
+            if probs.ndim == 3:
+                snapshot["routing_axis"] = "scale_expert"
+                snapshot["num_scales"] = int(probs.shape[1])
+                snapshot["scale_mean_probs"] = p.mean(dim=0).cpu()
+            else:
+                snapshot["routing_axis"] = "expert"
+            if hasattr(self, "value_fusion_mode"):
+                snapshot["value_fusion_mode"] = self.value_fusion_mode
+                snapshot["value_fusion_weights"] = self.value_fusion_weights.detach().float().cpu()
+                snapshot["inference_calibrated"] = bool(getattr(self, "_inference_calibrated", True))
+                snapshot["inference_calibration_error"] = getattr(self, "_inference_calibration_error", None)
+                snapshot["inference_calibration_batches"] = int(getattr(self, "_inference_calibration_batches", 0))
+                snapshot["inference_calibration_tolerance"] = getattr(self, "_inference_calibration_tolerance", None)
+            if hasattr(self, "residual_gain"):
+                snapshot["residual_gain"] = self.residual_gain.detach().float().cpu()
+            self.last_routing_snapshot = snapshot
+            self.last_routing_diagnostics = routing_finite_diagnostics(logits=logits, probabilities=probs, aux_loss=aux)
+
+    def routing_snapshot(self) -> dict[str, Any]:
+        return dict(self.last_routing_snapshot)
+
+    def publish_aux_loss(self, *, step: int, training: bool) -> torch.Tensor:
+        return _publish_aux_loss(self, self.aux_loss, step=step, kind="latent", training=training)
+
+    def export_capabilities(self) -> dict[str, Any]:
+        capabilities = _export_routing_capabilities(self)
+        eager_sparse = bool(getattr(self, "inference_top_k", self.num_experts) < self.num_experts)
+        capabilities.update(
+            routing_kind="latent",
+            sparse_dispatch=eager_sparse,
+            eager_sparse_dispatch=eager_sparse,
+            training_sparse_dispatch=False,
+            sparse_export_limitation=(
+                "Latent mixture optional eager inference dispatches image-level Top-K experts; ONNX and TorchScript "
+                "tracing use the dense fallback."
+                if eager_sparse
+                else "Latent mixture uses dense expert execution only."
+            ),
+            inference_top_k=int(getattr(self, "inference_top_k", self.num_experts)),
+            inference_calibrated=bool(getattr(self, "_inference_calibrated", True)),
+            sparse_inference_requires_calibration=bool(getattr(self, "require_inference_calibration", False)),
+            eager_compute_semantics=(
+                "top_k_sparse"
+                if getattr(self, "inference_top_k", self.num_experts) < self.num_experts
+                else "dense_all_experts"
+            ),
+            export_compute_semantics="dense_all_experts",
+            inference_calibration_error=getattr(self, "_inference_calibration_error", None),
+            inference_calibration_batches=int(getattr(self, "_inference_calibration_batches", 0)),
+            inference_calibration_tolerance=getattr(self, "_inference_calibration_tolerance", None),
+        )
+        return capabilities
+
+
+class LatentMixture(_LatentAuxMixin, nn.Module):
+    """Single-scale latent mixture: multiple aligned features in, one feature out."""
+
+    def __init__(
+        self,
+        in_channels: Sequence[int],
+        out_channels: int,
+        num_experts: int = 4,
+        expert_ratio: float = 0.25,
+        router_hidden_dim: int | None = None,
+        temperature: float = 1.0,
+        balance_loss_coeff: float = 1e-2,
+        router_z_loss_coeff: float = 1e-3,
+        residual_init: float = 0.0,
+        noise_std: float = 0.0,
+        router_init_std: float = 0.0,
+        inference_top_k: int | None = None,
+        value_fusion_mode: str = "router_only",
+        value_fusion_weights: Sequence[float] | None = None,
+        require_inference_calibration: bool = False,
+    ):
+        super().__init__()
+        if isinstance(in_channels, int):
+            in_channels = [in_channels]
+        self.in_channels = tuple(_positive_int(c, "in_channels") for c in in_channels)
+        if not self.in_channels:
+            raise ValueError("LatentMixture requires at least one input channel")
+        self.out_channels = _positive_int(out_channels, "out_channels")
+        self.num_inputs = len(self.in_channels)
+        self.value_fusion_mode = str(value_fusion_mode)
+        if self.value_fusion_mode not in {"router_only", "weighted_sum"}:
+            raise ValueError(
+                f"value_fusion_mode must be 'router_only' or 'weighted_sum', got {self.value_fusion_mode!r}"
+            )
+        if value_fusion_weights is None:
+            weights = torch.ones(self.num_inputs, dtype=torch.float32)
+        else:
+            if len(value_fusion_weights) != self.num_inputs:
+                raise ValueError(
+                    f"value_fusion_weights must contain {self.num_inputs} values, got {len(value_fusion_weights)}"
+                )
+            weights = torch.as_tensor(value_fusion_weights, dtype=torch.float32)
+            if not bool(torch.isfinite(weights).all()) or bool((weights < 0).any()) or float(weights.sum()) <= 0.0:
+                raise ValueError("value_fusion_weights must be finite, non-negative, and have a positive sum")
+        self.register_buffer("value_fusion_weights", weights / weights.sum(), persistent=False)
+        self.num_experts = _positive_int(num_experts, "num_experts")
+        self.top_k = self.num_experts
+        self.inference_top_k = self.num_experts if inference_top_k is None else int(inference_top_k)
+        if not 1 <= self.inference_top_k <= self.num_experts:
+            raise ValueError(f"inference_top_k must be in [1, {self.num_experts}]")
+        self.require_inference_calibration = bool(require_inference_calibration)
+        self._inference_calibrated = self.inference_top_k == self.num_experts
+        self._inference_calibration_error = None
+        self._inference_calibration_batches = 0
+        self._inference_calibration_tolerance = None
+        self._dispatch_override = None
+        self.balance_loss_coeff = _non_negative_float(balance_loss_coeff, "balance_loss_coeff")
+        self.router_z_loss_coeff = _non_negative_float(router_z_loss_coeff, "router_z_loss_coeff")
+        self.base_proj = (
+            nn.Identity()
+            if self.in_channels[0] == self.out_channels
+            else _conv1x1(self.in_channels[0], self.out_channels)
+        )
+        self.token_projs = nn.ModuleList(
+            [nn.Identity() if c == self.out_channels else _conv1x1(c, self.out_channels) for c in self.in_channels]
+        )
+        self.router = LatentRouter(
+            self.out_channels,
+            self.num_experts,
+            router_hidden_dim=router_hidden_dim,
+            temperature=temperature,
+            noise_std=noise_std,
+            router_init_std=router_init_std,
+            num_tokens=self.num_inputs,
+            per_token=False,
+        )
+        self.experts = nn.ModuleList(
+            DenseChannelExpert(self.out_channels, expert_ratio) for _ in range(self.num_experts)
+        )
+        self.residual_gain = nn.Parameter(torch.tensor(float(residual_init), dtype=torch.float32))
+        self._init_runtime_state()
+
+    def get_extra_state(self) -> dict[str, Any]:
+        """Persist non-parameter routing configuration in the module state."""
+
+        return {
+            "schema_version": 1,
+            "value_fusion_mode": self.value_fusion_mode,
+            "value_fusion_weights": self.value_fusion_weights.detach().float().cpu().tolist(),
+            "inference_top_k": int(self.inference_top_k),
+            "require_inference_calibration": self.require_inference_calibration,
+            "inference_calibrated": self._inference_calibrated,
+            "inference_calibration_error": self._inference_calibration_error,
+            "inference_calibration_batches": self._inference_calibration_batches,
+            "inference_calibration_tolerance": self._inference_calibration_tolerance,
+        }
+
+    def set_extra_state(self, state: Any) -> None:
+        """Restore and validate non-parameter routing configuration."""
+
+        if not isinstance(state, dict):
+            raise ValueError("LatentMixture extra state must be a dictionary")
+        if int(state.get("schema_version", 0)) != 1:
+            raise ValueError("Unsupported LatentMixture extra-state schema")
+        mode = str(state.get("value_fusion_mode", self.value_fusion_mode))
+        if mode not in {"router_only", "weighted_sum"}:
+            raise ValueError(f"Invalid LatentMixture value_fusion_mode in checkpoint: {mode!r}")
+        if mode != self.value_fusion_mode:
+            raise ValueError(
+                "LatentMixture checkpoint value_fusion_mode does not match the constructed module: "
+                f"checkpoint={mode!r}, module={self.value_fusion_mode!r}. "
+                "Construct the model with the checkpoint's fusion mode before strict loading."
+            )
+        weights = torch.as_tensor(state.get("value_fusion_weights", ()), dtype=torch.float32)
+        if weights.numel() != self.num_inputs or not bool(torch.isfinite(weights).all()) or bool((weights < 0).any()):
+            raise ValueError("Invalid LatentMixture value_fusion_weights in checkpoint")
+        if float(weights.sum()) <= 0:
+            raise ValueError("LatentMixture value_fusion_weights must have a positive sum")
+        self.value_fusion_weights.copy_(weights.to(self.value_fusion_weights.device) / weights.sum())
+        inference_top_k = int(state.get("inference_top_k", self.inference_top_k))
+        if not 1 <= inference_top_k <= self.num_experts:
+            raise ValueError("LatentMixture checkpoint inference_top_k is outside the expert range")
+        self.inference_top_k = inference_top_k
+        self.require_inference_calibration = bool(
+            state.get("require_inference_calibration", self.require_inference_calibration)
+        )
+        self._inference_calibrated = bool(state.get("inference_calibrated", inference_top_k == self.num_experts))
+        error = state.get("inference_calibration_error")
+        self._inference_calibration_error = None if error is None else float(error)
+        self._inference_calibration_batches = int(state.get("inference_calibration_batches", 0))
+        tolerance = state.get("inference_calibration_tolerance")
+        self._inference_calibration_tolerance = None if tolerance is None else float(tolerance)
+
+    def set_inference_calibration(self, calibrated: bool = True) -> None:
+        """Record whether sparse inference top-k has been compared with dense routing."""
+        self._inference_calibrated = bool(calibrated)
+        if not calibrated:
+            self._inference_calibration_error = None
+            self._inference_calibration_batches = 0
+            self._inference_calibration_tolerance = None
+        if self.last_routing_snapshot:
+            self.last_routing_snapshot.update(
+                inference_calibrated=self._inference_calibrated,
+                inference_calibration_error=self._inference_calibration_error,
+                inference_calibration_batches=self._inference_calibration_batches,
+                inference_calibration_tolerance=self._inference_calibration_tolerance,
+            )
+
+    @staticmethod
+    def _calibration_inputs(batch: Any) -> list[torch.Tensor]:
+        """Normalize a calibration item to the aligned feature list expected by ``forward``."""
+        if isinstance(batch, torch.Tensor):
+            return [batch]
+        if isinstance(batch, (list, tuple)) and batch and all(isinstance(value, torch.Tensor) for value in batch):
+            return list(batch)
+        raise TypeError("LatentMixture calibration data must yield a Tensor or a list/tuple of feature tensors")
+
+    def calibrate_inference(
+        self,
+        calibration_data: Any,
+        *,
+        max_batches: int | None = 32,
+        tolerance: float = 1e-3,
+        strict: bool = True,
+    ) -> dict[str, Any]:
+        """Compare dense and sparse eager outputs and arm the sparse-inference gate.
+
+        ``calibration_data`` must yield the same aligned feature lists used by the
+        module's forward call. The returned report is persisted in module metadata,
+        making the sparse-vs-dense error visible in checkpoints and export manifests.
+        """
+        if self.inference_top_k >= self.num_experts:
+            self._inference_calibrated = True
+            return {"batches": 0, "relative_l2_error": 0.0, "tolerance": float(tolerance), "calibrated": True}
+        tolerance = float(tolerance)
+        if not math.isfinite(tolerance) or tolerance < 0.0:
+            raise ValueError("calibration tolerance must be finite and non-negative")
+        if max_batches is not None and int(max_batches) <= 0:
+            raise ValueError("max_batches must be positive or None")
+        was_training = self.training
+        self.eval()
+        dense_error = []
+        batches = 0
+        iterator = iter(calibration_data)
+        try:
+            while max_batches is None or batches < int(max_batches):
+                try:
+                    item = next(iterator)
+                except StopIteration:
+                    break
+                xs = self._calibration_inputs(item)
+                with torch.no_grad():
+                    self._dispatch_override = "dense"
+                    dense = self(xs).detach().float()
+                    self._dispatch_override = "sparse"
+                    sparse = self(xs).detach().float()
+                denominator = torch.linalg.vector_norm(dense).clamp_min(1e-8)
+                dense_error.append(float((torch.linalg.vector_norm(sparse - dense) / denominator).cpu()))
+                batches += 1
+        finally:
+            self._dispatch_override = None
+            self.train(was_training)
+        if not batches:
+            raise ValueError("calibration_data produced no batches")
+        error = max(dense_error)
+        calibrated = bool(error <= tolerance)
+        self._inference_calibration_error = error
+        self._inference_calibration_batches = batches
+        self._inference_calibration_tolerance = tolerance
+        self._inference_calibrated = calibrated
+        if self.last_routing_snapshot:
+            self.last_routing_snapshot.update(
+                inference_calibrated=calibrated,
+                inference_calibration_error=error,
+                inference_calibration_batches=batches,
+                inference_calibration_tolerance=tolerance,
+            )
+        report = {"batches": batches, "relative_l2_error": error, "tolerance": tolerance, "calibrated": calibrated}
+        if strict and not calibrated:
+            raise ValueError(
+                f"LatentMixture sparse inference calibration error {error:.6g} exceeds tolerance {tolerance:.6g}"
+            )
+        return report
+
+    def load_state_dict(self, state_dict, strict: bool = True, assign: bool = False):
+        """Load weights while keeping non-strict ablation transfers constructor-driven.
+
+        ``strict=False`` is used by model surgery and ablation tests to transfer
+        compatible tensors across intentionally different fusion configurations.
+        In that mode the serialized extra state is validated by the normal
+        checkpoint path only when callers request a strict restore, and is
+        otherwise ignored so the destination configuration remains authoritative.
+        """
+
+        state_dict = dict(state_dict)
+        if "_extra_state" not in state_dict:
+            # Checkpoints written before fusion metadata was introduced remain
+            # valid; their constructor configuration is the only available
+            # source of truth.
+            state_dict["_extra_state"] = self.get_extra_state()
+        elif not strict:
+            state_dict.pop("_extra_state", None)
+        return super().load_state_dict(state_dict, strict=strict, assign=assign)
+
+    def _load_from_state_dict(
+        self,
+        state_dict,
+        prefix,
+        local_metadata,
+        strict,
+        missing_keys,
+        unexpected_keys,
+        error_msgs,
+    ):
+        """Accept pre-metadata checkpoints when this module is loaded as a child."""
+
+        extra_state_key = prefix + "_extra_state"
+        if extra_state_key not in state_dict:
+            state_dict[extra_state_key] = self.get_extra_state()
+        super()._load_from_state_dict(
+            state_dict,
+            prefix,
+            local_metadata,
+            strict,
+            missing_keys,
+            unexpected_keys,
+            error_msgs,
+        )
+
+    def _build_context(self, xs: Sequence[torch.Tensor]) -> tuple[torch.Tensor, LatentRoutingContext]:
+        checked = _validate_inputs(xs, self.in_channels, require_same_spatial=True)
+        projected = [proj(x) for x, proj in zip(checked, self.token_projs)]
+        if self.value_fusion_mode == "weighted_sum":
+            weights = self.value_fusion_weights.to(device=projected[0].device, dtype=projected[0].dtype)
+            base = sum(value * weights[i] for i, value in enumerate(projected))
+        else:
+            base = self.base_proj(checked[0])
+        tokens = [F.adaptive_avg_pool2d(token, 1).flatten(1).float() for token in projected]
+        scale_tokens = torch.stack(tokens, dim=1)
+        logits, probs = self.router(scale_tokens)
+        return base, LatentRoutingContext(
+            latent=scale_tokens.mean(dim=1), scale_tokens=scale_tokens, logits=logits, probs=probs
+        )
+
+    def forward(self, xs: Sequence[torch.Tensor]) -> torch.Tensor:
+        base, context = self._build_context(xs)
+        sparse_eval = (
+            not self.training
+            and self.inference_top_k < self.num_experts
+            and (
+                self._dispatch_override == "sparse"
+                or (
+                    self._dispatch_override is None
+                    and (not self.require_inference_calibration or self._inference_calibrated)
+                )
+            )
+            and not torch.jit.is_tracing()
+            and not torch.onnx.is_in_onnx_export()
+        )
+        if sparse_eval:
+            top_probs, top_indices = context.probs.topk(self.inference_top_k, dim=-1)
+            top_probs = top_probs / top_probs.sum(dim=-1, keepdim=True).clamp_min(1e-6)
+            mixed = torch.zeros_like(base)
+            # Image-level routing permits one expert call for the subset of
+            # samples that selected it, rather than evaluating all experts.
+            for expert_idx, expert in enumerate(self.experts):
+                selected = (top_indices == expert_idx).any(dim=1)
+                batch_indices = torch.nonzero(selected, as_tuple=True)[0]
+                if batch_indices.numel() == 0:
+                    continue
+                gates = (top_probs[batch_indices] * (top_indices[batch_indices] == expert_idx)).sum(dim=1)
+                mixed[batch_indices] = mixed[batch_indices] + expert(base[batch_indices]) * gates.to(
+                    device=base.device, dtype=base.dtype
+                ).view(-1, 1, 1, 1)
+            executed_experts = int((top_indices.unique()).numel())
+            dispatch_policy = "sparse_eval"
+        else:
+            mixed = torch.zeros_like(base)
+            for e, expert in enumerate(self.experts):
+                gate = context.probs[:, e].to(device=base.device, dtype=base.dtype).view(-1, 1, 1, 1)
+                mixed = mixed + expert(base) * gate
+            executed_experts = self.num_experts
+            dispatch_policy = (
+                "dense_uncalibrated_inference"
+                if not self.training
+                and self.inference_top_k < self.num_experts
+                and self.require_inference_calibration
+                and not self._inference_calibrated
+                else "dense"
+            )
+        output = base + self.residual_gain.to(device=base.device, dtype=base.dtype) * mixed
+        aux, balance, z_loss = self._compute_aux(context.logits, context.probs)
+        published = _publish_aux_loss(self, aux, kind="latent", training=self.training)
+        self._last_aux_loss = published.detach()
+        self._record_routing(
+            context.logits,
+            context.probs,
+            self._last_aux_loss,
+            balance,
+            z_loss,
+            executed_experts=executed_experts,
+            dispatch_policy=dispatch_policy,
+        )
+        return output
+
+
+class MultiScaleLatentMixture(_LatentAuxMixin, nn.Module):
+    """Multi-scale list-to-list latent mixture kept for compatibility/tests."""
+
+    def __init__(
+        self,
+        channels: Sequence[int],
+        latent_dim: int = 128,
+        num_experts: int = 4,
+        expert_ratio: float = 0.25,
+        router_hidden_dim: int | None = None,
+        temperature: float = 1.0,
+        balance_loss_coeff: float = 1e-2,
+        router_z_loss_coeff: float = 1e-3,
+        residual_init: float = 0.0,
+        noise_std: float = 0.0,
+        router_init_std: float = 0.0,
+    ):
+        super().__init__()
+        self.channels = tuple(_positive_int(c, "channels") for c in channels)
+        if not self.channels:
+            raise ValueError("MultiScaleLatentMixture requires at least one scale")
+        self.latent_dim = _positive_int(latent_dim, "latent_dim")
+        self.num_scales = len(self.channels)
+        self.num_experts = _positive_int(num_experts, "num_experts")
+        self.top_k = self.num_experts
+        self.balance_loss_coeff = _non_negative_float(balance_loss_coeff, "balance_loss_coeff")
+        self.router_z_loss_coeff = _non_negative_float(router_z_loss_coeff, "router_z_loss_coeff")
+        self.input_projs = nn.ModuleList(
+            [nn.Identity() if c == self.latent_dim else _conv1x1(c, self.latent_dim) for c in self.channels]
+        )
+        self.router = LatentRouter(
+            self.latent_dim,
+            self.num_experts,
+            router_hidden_dim=router_hidden_dim,
+            temperature=temperature,
+            noise_std=noise_std,
+            router_init_std=router_init_std,
+            num_tokens=self.num_scales,
+            per_token=True,
+        )
+        self.experts = nn.ModuleList(
+            nn.ModuleList(DenseChannelExpert(c, expert_ratio) for _ in range(self.num_experts)) for c in self.channels
+        )
+        self.residual_gain = nn.Parameter(torch.full((self.num_scales,), float(residual_init), dtype=torch.float32))
+        self._init_runtime_state()
+
+    def _build_context(self, xs: Sequence[torch.Tensor]) -> LatentRoutingContext:
+        checked = _validate_inputs(xs, self.channels, require_same_spatial=False)
+        tokens = []
+        for x, proj in zip(checked, self.input_projs):
+            token = proj(x)
+            tokens.append(F.adaptive_avg_pool2d(token, 1).flatten(1).float())
+        scale_tokens = torch.stack(tokens, dim=1)
+        logits, probs = self.router(scale_tokens)
+        return LatentRoutingContext(
+            latent=scale_tokens.mean(dim=1), scale_tokens=scale_tokens, logits=logits, probs=probs
+        )
+
+    def forward(self, xs: Sequence[torch.Tensor]) -> list[torch.Tensor]:
+        checked = _validate_inputs(xs, self.channels, require_same_spatial=False)
+        context = self._build_context(checked)
+        outputs: list[torch.Tensor] = []
+        for s, x in enumerate(checked):
+            mixed = torch.zeros_like(x)
+            for e, expert in enumerate(self.experts[s]):
+                gate = context.probs[:, s, e].to(device=x.device, dtype=x.dtype).view(-1, 1, 1, 1)
+                mixed = mixed + expert(x) * gate
+            gain = self.residual_gain[s].to(device=x.device, dtype=x.dtype)
+            outputs.append(x + gain * mixed)
+        aux, balance, z_loss = self._compute_aux(context.logits, context.probs)
+        published = _publish_aux_loss(self, aux, kind="latent", training=self.training)
+        self._last_aux_loss = published.detach()
+        self._record_routing(context.logits, context.probs, self._last_aux_loss, balance, z_loss)
+        return outputs
+
+
+__all__ = [
+    "DenseChannelExpert",
+    "LatentMixture",
+    "LatentRouter",
+    "LatentRoutingContext",
+    "MultiScaleLatentMixture",
+]

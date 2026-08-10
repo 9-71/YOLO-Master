@@ -15,7 +15,6 @@ import csv
 import os
 import re
 import subprocess
-import sys
 import time
 from pathlib import Path
 from typing import Iterable
@@ -36,6 +35,28 @@ SCENES = {
         "base_name": "yolo_master_brain_tumor_lora",
     },
 }
+
+SUMMARY_FIELDS = [
+    "protocol_id",
+    "dataset",
+    "rank",
+    "alpha",
+    "epochs",
+    "fraction",
+    "amp",
+    "batch",
+    "imgsz",
+    "mAP50_95",
+    "best_epoch",
+    "trainable_params",
+    "adapter_params",
+    "train_time_min",
+    "peak_gpu_memory_gb",
+    "status",
+    "return_code",
+    "log",
+    "run_dir",
+]
 
 
 def run_command(cmd: list[str], dry_run: bool) -> float:
@@ -151,7 +172,8 @@ def summarize_run(
     metrics = read_results(run_dir / "results.csv")
     log_info = parse_log(log_path)
     return {
-        "scene": scene,
+        "protocol_id": protocol_id,
+        "dataset": scene,
         "rank": rank,
         "alpha": rank * 2,
         "lora_module_count": log_info.get("lora_module_count", ""),
@@ -216,6 +238,13 @@ def main() -> None:
     parser.add_argument("--log-dir", default="runs/lora_examples/logs")
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
+
+    safe_protocol = re.sub(r"[^A-Za-z0-9_.-]+", "_", args.protocol_id).strip("._")
+    if not safe_protocol:
+        parser.error("--protocol-id must contain at least one filename-safe character")
+    output = Path(args.output or f"examples/lora_examples/yolo_master_lora_rank_sweep_results_{safe_protocol}.csv")
+    if output.exists() and not args.overwrite:
+        parser.error(f"output already exists: {output}; pass --overwrite to replace it explicitly")
 
     selected = SCENES if args.scene == "all" else {args.scene: SCENES[args.scene]}
     rows = []

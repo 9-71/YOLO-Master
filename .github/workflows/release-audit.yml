@@ -1,0 +1,56 @@
+name: Release Audit
+
+on:
+  workflow_dispatch:
+    inputs:
+      manifest:
+        description: Path to an Agent skill_manifest.json
+        required: true
+        type: string
+      artifact_root:
+        description: Optional permitted root for referenced evidence
+        required: false
+        type: string
+      fail_on:
+        description: Decision threshold for the job
+        required: true
+        default: refused
+        type: choice
+        options:
+          - refused
+          - experimental
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install audit dependency
+        run: python -m pip install --disable-pip-version-check pyyaml
+      - name: Audit release manifest
+        env:
+          MANIFEST: ${{ inputs.manifest }}
+          ARTIFACT_ROOT: ${{ inputs.artifact_root }}
+          FAIL_ON: ${{ inputs.fail_on }}
+        run: |
+          set -euo pipefail
+          args=("$MANIFEST" "--fail-on" "$FAIL_ON" "--output" "release_bundle.json")
+          if [[ -n "$ARTIFACT_ROOT" ]]; then
+            args+=("--artifact-root" "$ARTIFACT_ROOT")
+          fi
+          python scripts/audit_release_manifest.py "${args[@]}"
+      - name: Upload release bundle
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-audit-bundle
+          path: release_bundle.json
+          if-no-files-found: ignore

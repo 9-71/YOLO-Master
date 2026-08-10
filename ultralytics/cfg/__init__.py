@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import json
 import os
 import shutil
 import subprocess
@@ -56,7 +57,7 @@ SOLUTION_MAP = {
 
 # Define valid tasks and modes
 MODES = frozenset({"train", "val", "predict", "export", "track", "benchmark"})
-TASKS = frozenset({"detect", "segment", "classify", "pose", "obb", "semantic"})
+TASKS = frozenset({"detect", "segment", "classify", "pose", "obb", "semantic", "multitask"})
 TASK2DATA = {
     "detect": "coco8.yaml",
     "segment": "coco8-seg.yaml",
@@ -64,6 +65,7 @@ TASK2DATA = {
     "pose": "coco8-pose.yaml",
     "obb": "dota8.yaml",
     "semantic": "cityscapes8.yaml",
+    "multitask": "coco8.yaml",
 }
 TASK2CALIBRATIONDATA = {
     "detect": "coco128.yaml",
@@ -72,6 +74,7 @@ TASK2CALIBRATIONDATA = {
     "pose": "coco8-pose.yaml",
     "obb": "dota128.yaml",
     "semantic": "cityscapes8.yaml",
+    "multitask": "coco128.yaml",
 }
 TASK2MODEL = {
     "detect": "yolo26n.pt",
@@ -80,6 +83,7 @@ TASK2MODEL = {
     "pose": "yolo26n-pose.pt",
     "obb": "yolo26n-obb.pt",
     "semantic": "yolo26n-sem.pt",
+    "multitask": "yolo26-master-mt-n.yaml",
 }
 TASK2METRIC = {
     "detect": "metrics/mAP50-95(B)",
@@ -88,6 +92,7 @@ TASK2METRIC = {
     "pose": "metrics/mAP50-95(P)",
     "obb": "metrics/mAP50-95(B)",
     "semantic": "metrics/mIoU",
+    "multitask": "metrics/mAP50-95(B)",
 }
 
 ARGV = sys.argv or ["", ""]  # sometimes sys.argv = []
@@ -161,6 +166,7 @@ CLI_HELP_MSG = f"""
         yolo checks
         yolo version
         yolo settings
+        yolo mixtures kind=mot task=detect family=master/v0_10
         yolo copy-cfg
         yolo cfg
         yolo solutions help
@@ -216,6 +222,7 @@ MIXTURE_FLOAT_KEYS = frozenset(
         "lora_oft_eps",
         "lora_orth_reg_weight",
         "lora_ortho_weight",
+        "latent_aux_gain",
         "mixture_aux_budget",
         "moa_aux_gain",
         "moa_aux_loss_coeff",
@@ -226,6 +233,11 @@ MIXTURE_FLOAT_KEYS = frozenset(
         "moe_aux_gain",
         "moe_balance_loss",
         "moe_collapse_threshold",
+        "moe_dynamic_balance_max",
+        "moe_dynamic_balance_min",
+        "moe_dynamic_gini_alpha",
+        "moe_dynamic_gini_beta",
+        "moe_dynamic_gini_target",
         "moe_map_saturation_decay_factor",
         "moe_map_saturation_min_scale",
         "moe_map_saturation_threshold",
@@ -234,6 +246,7 @@ MIXTURE_FLOAT_KEYS = frozenset(
         "moe_router_z_loss",
         "moe_temperature",
         "moe_weight_threshold",
+        "moe_prune_threshold",
         "molora_balance_loss",
         "molora_capacity_factor",
         "molora_diversity_loss",
@@ -312,6 +325,7 @@ MIXTURE_INT_KEYS = frozenset(
         "lora_sensitivity_num_batches",
         "lora_sensitivity_max_layers",
         "moa_local_window_size",
+        "moa_regional_max_kv_tokens",
         "moe_expert_warmup_epochs",
         "moe_map_saturation_window_size",
         "moe_num_experts",
@@ -321,6 +335,10 @@ MIXTURE_INT_KEYS = frozenset(
         "molora_r",
         "molora_top_k",
         "molora_warmup_steps",
+        "moe_prune_keep_top_m",
+        "moe_prune_calibration_steps",
+        "mot_sparse_train_warmup_steps",
+        "mot_local_attn_window",
         "slice_size",
     }
 )
@@ -345,6 +363,10 @@ CFG_INT_MIN = {  # minimum valid values for integer arguments used as divisors, 
     "mask_ratio": 1,
     "vid_stride": 1,
     "seed": 0,
+    "moe_prune_calibration_steps": 1,
+    "mot_sparse_train_warmup_steps": 0,
+    "mot_local_attn_window": 0,
+    "moa_regional_max_kv_tokens": 0,
 }
 MIXTURE_BOOL_KEYS = frozenset(
     {
@@ -420,6 +442,7 @@ CFG_BOOL_KEYS = frozenset(
         "dynamic",
         "simplify",
         "nms",
+        "pre_export_prune",
         "profile",
         "end2end",
         "cls_remap",
@@ -437,8 +460,11 @@ MIXTURE_STR_KEYS = frozenset(
         "lora_type",
         "lora_variant",
         "lora_planner_solver",
+        "lora_planner_backend",
         "molora_expert_init",
         "molora_router_type",
+        "molora_export_mode",
+        "mot_scene_inference_mode",
     }
 )
 CFG_STR_KEYS = frozenset({"optimizer", "split", "copy_paste_mode", "auto_augment"}) | MIXTURE_STR_KEYS
@@ -1045,6 +1071,57 @@ def handle_yolo_solutions(args: list[str]) -> None:
             cap.release()
 
 
+def _format_mixture_profiles(profiles: tuple) -> str:
+    """Format mixture catalog profiles as a deterministic plain-text table."""
+    headers = ("PROFILE", "TASK", "FAMILY", "KINDS", "SCALES", "MODULES")
+    rows = [
+        (
+            profile.profile_id,
+            profile.task,
+            profile.family,
+            ",".join(profile.mixture_kinds),
+            ",".join(profile.scales) or "-",
+            ",".join(profile.mixture_modules),
+        )
+        for profile in profiles
+    ]
+    widths = [max((len(headers[index]), *(len(row[index]) for row in rows))) for index in range(len(headers))]
+
+    def render(row: tuple[str, ...]) -> str:
+        """Render one left-aligned table row."""
+        return "  ".join(value.ljust(widths[index]) for index, value in enumerate(row)).rstrip()
+
+    lines = [render(headers), render(tuple("-" * width for width in widths))]
+    lines.extend(render(row) for row in rows)
+    count = len(rows)
+    lines.append(f"{count} mixture profile{'s' if count != 1 else ''}")
+    return "\n".join(lines)
+
+
+def handle_yolo_mixtures(args: list[str]) -> None:
+    """List packaged mixture model profiles without constructing model instances."""
+    from ultralytics.cfg import mixture_catalog
+
+    options = {"kind": None, "task": None, "family": None, "format": "table"}
+    for argument in merge_equals_args(args):
+        if "=" not in argument:
+            raise ValueError(f"invalid mixtures argument {argument!r}; expected key=value")
+        key, value = parse_key_value_pair(argument)
+        if key not in options:
+            raise ValueError(f"unknown mixtures argument {key!r}; expected one of {tuple(options)}")
+        options[key] = value
+
+    output_format = str(options.pop("format")).casefold()
+    if output_format not in {"table", "json"}:
+        raise ValueError(f"unknown mixtures format {output_format!r}; expected 'table' or 'json'")
+    filters = {key: str(value) for key, value in options.items() if value is not None}
+    profiles = mixture_catalog.list_mixture_profiles(**filters)
+    if output_format == "json":
+        LOGGER.info(json.dumps([profile.as_dict() for profile in profiles], indent=2, sort_keys=False))
+    else:
+        LOGGER.info(_format_mixture_profiles(profiles))
+
+
 def parse_key_value_pair(pair: str = "key=value") -> tuple:
     """Parse a key-value pair string into separate key and value components.
 
@@ -1160,6 +1237,7 @@ def entrypoint(debug: str = "") -> None:
         "checks": checks.collect_system_info,
         "version": lambda: LOGGER.info(__version__),
         "settings": lambda: handle_yolo_settings(args[1:]),
+        "mixtures": lambda: handle_yolo_mixtures(args[1:]),
         "cfg": lambda: YAML.print(DEFAULT_CFG_PATH),
         "hub": lambda: handle_yolo_hub(args[1:]),
         "login": lambda: handle_yolo_hub(args),

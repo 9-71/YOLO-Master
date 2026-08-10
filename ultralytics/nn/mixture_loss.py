@@ -10,33 +10,18 @@ import torch.nn as nn
 
 from ultralytics.utils import LOGGER
 
+
 def _collect_moe_aux_loss(model: nn.Module | None, device: torch.device) -> torch.Tensor:
-    """Collect canonical MoE and MoLoRA losses with registry fallback semantics."""
+    """Collect canonical current-step MoE and MoLoRA losses."""
     if model is None or not getattr(model, "training", True):
         return torch.tensor(0.0, device=device)
-    from ultralytics.nn.modules.routing_protocol import collect_aux_loss, get_aux_record
+    from ultralytics.nn.modules.routing_protocol import collect_aux_loss
 
     moe_loss = collect_aux_loss(
         model,
         device=device,
         include_kinds=("moe", "molora"),
     )
-    # Compatibility bridge for callers that intentionally populate only the
-    # legacy registry (older hooks/checkpoint tests). Canonical publications
-    # always win, so this cannot double-count normal forwards.
-    try:
-        from ultralytics.nn.modules.moe.modules import MOE_LOSS_REGISTRY
-        for module in model.modules():
-            if get_aux_record(module) is not None:
-                continue
-            value = MOE_LOSS_REGISTRY.get(module)
-            if not isinstance(value, torch.Tensor):
-                continue
-            value = value.to(device)
-            if torch.isfinite(value).all():
-                moe_loss = moe_loss + value
-    except Exception:
-        pass
     if not torch.isfinite(moe_loss):
         LOGGER.warning(f"[NaN guard] canonical MoE/MoLoRA aux_loss is non-finite ({moe_loss}), skipping")
         return moe_loss.new_zeros(())
@@ -82,59 +67,65 @@ def _collect_moa_aux_loss(model: nn.Module | None, device: torch.device) -> torc
 
 
 _MIXTURE_LOSS_EMA_DECAY = 0.99
-_MIXTURE_LOSS_EMA_FLOOR   = 1e-4
-_MIXTURE_LOSS_MAX_ENTRY   = 1e4    # clamp EMA entry to prevent runaway growth
-_MIXTURE_LOSS_EMA_DEFAULTS = {"moe": 1.0, "mot": 0.1, "moa": 0.1}
+_MIXTURE_LOSS_EMA_FLOOR = 1e-4
+_MIXTURE_LOSS_MAX_ENTRY = 1e4  # clamp EMA entry to prevent runaway growth
+_MIXTURE_LOSS_EMA_DEFAULTS = {"moe": 1.0, "mot": 0.1, "moa": 0.1, "latent": 0.1}
 # Keys in fixed order for buffer indexing.
-_MIXTURE_LOSS_EMA_KEYS = ("moe", "mot", "moa")
-
-
-def initialize_mixture_loss_ema_buffer(model: nn.Module | None) -> torch.Tensor | None:
-    """Deterministically register the persistent mixture-loss EMA buffer."""
-    if model is None:
-        return None
-    parameter = next(model.parameters(), None)
-    existing_buffer = next(model.buffers(), None)
-    target_device = (
-        parameter.device
-        if parameter is not None
-        else existing_buffer.device
-        if existing_buffer is not None
-        else torch.device("cpu")
-    )
-    existing = getattr(model, "_mixture_loss_ema_buf", None)
-    if existing is not None:
-        if "_mixture_loss_ema_buf" not in model._buffers:
-            raise RuntimeError("_mixture_loss_ema_buf exists but is not registered as a model buffer")
-        if not isinstance(existing, torch.Tensor) or existing.shape != (len(_MIXTURE_LOSS_EMA_KEYS),):
-            raise RuntimeError(
-                "Invalid _mixture_loss_ema_buf schema: expected "
-                f"shape ({len(_MIXTURE_LOSS_EMA_KEYS)},), got {getattr(existing, 'shape', None)}"
-            )
-        if existing.dtype != torch.float32 or existing.device != target_device:
-            model._buffers["_mixture_loss_ema_buf"] = existing.to(device=target_device, dtype=torch.float32)
-        model._non_persistent_buffers_set.discard("_mixture_loss_ema_buf")
-        return model._mixture_loss_ema_buf
-    defaults = [_MIXTURE_LOSS_EMA_DEFAULTS[key] for key in _MIXTURE_LOSS_EMA_KEYS]
-    model.register_buffer(
-        "_mixture_loss_ema_buf",
-        torch.tensor(defaults, dtype=torch.float32, device=target_device),
-        persistent=True,
-    )
-    return model._mixture_loss_ema_buf
+_MIXTURE_LOSS_EMA_KEYS = ("moe", "mot", "moa", "latent")
 
 
 def _get_mixture_loss_ema(model: nn.Module | None) -> dict[str, float] | None:
     """Return (and lazily init) EMA scales for MoE/MoT/MoA aux-loss magnitudes.
 
     The EMA state is stored as a **persistent buffer** ``_mixture_loss_ema_buf``
-    (shape [3], float32) on the model so it survives ``state_dict()`` round-trips
+    (shape [4], float32) on the model so it survives ``state_dict()`` round-trips
     and is correctly restored on resume.  Previously a plain dict attribute was
     used, which silently reset to defaults after checkpoint resume.
     """
     if model is None:
         return None
-    buf = initialize_mixture_loss_ema_buffer(model)
+    buf = getattr(model, "_mixture_loss_ema_buf", None)
+    if buf is not None and "_mixture_loss_ema_buf" not in model._buffers:
+        raise RuntimeError("_mixture_loss_ema_buf exists but is not registered as a model buffer")
+    # Determine target device from model parameters so the buffer stays aligned
+    # with the model even after ``.to(device)`` calls.
+    parameter = next(model.parameters(), None)
+    if parameter is not None:
+        target_device = parameter.device
+    elif torch.cuda.is_available():
+        # No parameters available (e.g. frozen params, stripped model).
+        # Default to CUDA so the buffer doesn't end up on CPU, which would
+        # break NCCL validation broadcasts.
+        target_device = torch.device("cuda")
+    else:
+        target_device = torch.device("cpu")
+    if buf is None:
+        defaults = [_MIXTURE_LOSS_EMA_DEFAULTS[k] for k in _MIXTURE_LOSS_EMA_KEYS]
+        model.register_buffer(
+            "_mixture_loss_ema_buf",
+            torch.tensor(defaults, dtype=torch.float32, device=target_device),
+            persistent=True,
+        )
+        buf = model._mixture_loss_ema_buf
+    elif not isinstance(buf, torch.Tensor):
+        raise RuntimeError("_mixture_loss_ema_buf must be a torch.Tensor")
+    elif buf.numel() == 3:
+        # Migrate the pre-latent three-slot buffer in place while preserving
+        # strict checkpoint compatibility for models created by older code.
+        old = buf.detach().to(target_device)
+        migrated = torch.tensor(
+            [float(old[i]) for i in range(3)] + [_MIXTURE_LOSS_EMA_DEFAULTS["latent"]],
+            dtype=torch.float32,
+            device=target_device,
+        )
+        model._buffers["_mixture_loss_ema_buf"] = migrated
+        buf = migrated
+    elif buf.numel() != len(_MIXTURE_LOSS_EMA_KEYS):
+        raise ValueError(f"invalid mixture EMA buffer shape {tuple(buf.shape)}")
+    if buf.device != target_device:
+        # Re-align buffer device if model was moved after lazy-init
+        # (e.g. CPU checkpoint resumed then moved to CUDA).
+        buf.data = buf.to(target_device)
     result = {}
     for i in range(len(_MIXTURE_LOSS_EMA_KEYS)):
         v = float(buf[i])
@@ -146,6 +137,14 @@ def _get_mixture_loss_ema(model: nn.Module | None) -> dict[str, float] | None:
     return result
 
 
+def initialize_mixture_loss_ema_buffer(model: nn.Module | None) -> torch.Tensor | None:
+    """Ensure the persistent mixture-loss EMA buffer exists and return it."""
+    if model is None:
+        return None
+    _get_mixture_loss_ema(model)
+    return model._mixture_loss_ema_buf
+
+
 def _mixture_aux_isolation_enabled(model: nn.Module | None) -> bool:
     """Return whether explicitly opted-in auxiliary-loss isolation is enabled."""
     args = getattr(model, "args", None)
@@ -154,11 +153,8 @@ def _mixture_aux_isolation_enabled(model: nn.Module | None) -> bool:
 
 def _mixture_aux_isolation_flags(losses: tuple[torch.Tensor, ...]) -> list[bool]:
     """Synchronize finite flags so every DDP rank makes the identical isolation choice."""
-    flags = torch.tensor(
-        [int(not bool(torch.isfinite(loss).all().item())) for loss in losses],
-        dtype=torch.int32,
-        device=losses[0].device,
-    )
+    finite = torch.stack([torch.isfinite(loss).all() for loss in losses])
+    flags = (~finite).to(dtype=torch.int32)
     if dist.is_available() and dist.is_initialized():
         try:
             dist.all_reduce(flags, op=dist.ReduceOp.MAX)
@@ -168,7 +164,9 @@ def _mixture_aux_isolation_flags(losses: tuple[torch.Tensor, ...]) -> list[bool]
             # local flags.  This prevents a 600-second NCCL timeout; training
             # will likely fail soon anyway, but we get a cleaner traceback.
             pass
-    return [bool(flag) for flag in flags.cpu().tolist()]
+    # One host transfer for all routed loss flags instead of one ``.item()``
+    # synchronization per component.
+    return [bool(flag) for flag in flags.detach().cpu().tolist()]
 
 
 def _update_mixture_loss_ema(model: nn.Module | None, key: str, loss_t: torch.Tensor) -> None:
@@ -177,7 +175,8 @@ def _update_mixture_loss_ema(model: nn.Module | None, key: str, loss_t: torch.Te
         return
     buf = getattr(model, "_mixture_loss_ema_buf", None)
     if buf is None:
-        buf = initialize_mixture_loss_ema_buffer(model)
+        _get_mixture_loss_ema(model)  # lazy-init buffer
+        buf = model._mixture_loss_ema_buf
     idx = _MIXTURE_LOSS_EMA_KEYS.index(key)
     with torch.no_grad():
         val = float(loss_t.detach().abs().reshape(-1)[0]) if loss_t.numel() else 0.0
@@ -191,12 +190,41 @@ def _update_mixture_loss_ema(model: nn.Module | None, key: str, loss_t: torch.Te
             buf[idx] = _MIXTURE_LOSS_EMA_DECAY * float(buf[idx]) + (1.0 - _MIXTURE_LOSS_EMA_DECAY) * val
 
 
+def _update_mixture_loss_ema_batch(model: nn.Module | None, losses: tuple[torch.Tensor, ...]) -> tuple[float, ...]:
+    """Update all mixture-loss EMA entries with one device-to-host read.
+
+    The old per-kind helper converted each scalar independently, which caused
+    four CUDA synchronizations before every loss composition.  Keep the EMA
+    buffer on-device and only materialize the four values together for the
+    Python-side normalization factors.
+    """
+    if model is None or not getattr(model, "training", False):
+        return tuple()
+    buf = getattr(model, "_mixture_loss_ema_buf", None)
+    if buf is None:
+        _get_mixture_loss_ema(model)
+        buf = model._mixture_loss_ema_buf
+    values = torch.stack(
+        [
+            loss.detach().abs().reshape(()) if isinstance(loss, torch.Tensor) and loss.numel() else buf.new_zeros(())
+            for loss in losses
+        ]
+    ).to(device=buf.device, dtype=buf.dtype)
+    defaults = buf.new_tensor([_MIXTURE_LOSS_EMA_DEFAULTS[key] for key in _MIXTURE_LOSS_EMA_KEYS])
+    with torch.no_grad():
+        safe_buf = torch.where(torch.isfinite(buf), buf, defaults)
+        values = values.clamp(_MIXTURE_LOSS_EMA_FLOOR, _MIXTURE_LOSS_MAX_ENTRY)
+        buf.copy_(safe_buf.mul(_MIXTURE_LOSS_EMA_DECAY).add(values * (1.0 - _MIXTURE_LOSS_EMA_DECAY)))
+    return tuple(float(value) for value in buf.detach().tolist())
+
+
 def _collect_mixture_aux_loss(
     model: nn.Module | None,
     device: torch.device,
     moe_gain: float = 1.0,
     mot_gain: float = 1.0,
     moa_gain: float = 1.0,
+    latent_gain: float = 0.1,
     aux_budget: float = 3.0,
 ) -> torch.Tensor:
     """Collect all mixture-routing auxiliary losses with **independent** gains.
@@ -217,54 +245,72 @@ def _collect_mixture_aux_loss(
         return torch.tensor(0.0, device=device)
     from ultralytics.nn.modules.routing_protocol import collect_aux_loss
 
-    # Keep a structured per-kind view for logging/debugging. The numerical
-    # path below remains unchanged, including the existing three EMA scales.
+    # Collect every routed family in one model traversal.  The canonical
+    # collector also applies wrapper/child de-duplication via covered_modules.
+    grouped: dict[str, list[torch.Tensor]] = {}
+    diagnostics: dict[str, Any] = {}
     if model is not None:
-        _, model._mixture_aux_diagnostics = collect_aux_loss(
-            model, device=device, return_diagnostics=True
+        _, diagnostics = collect_aux_loss(
+            model,
+            device=device,
+            return_diagnostics=True,
+            return_tensor_values=True,
+            return_value_scalars=False,
+            include_kinds=("moe", "moa", "mot", "molora", "latent"),
         )
-    moe_l = _collect_moe_aux_loss(model, device)
-    mot_l = _collect_mot_aux_loss(model, device)
-    moa_l = _collect_moa_aux_loss(model, device)
-    aux_losses = (moe_l, mot_l, moa_l)
+        grouped = diagnostics.pop("_tensor_values_by_kind", {})
+
+    def _sum_kind(*kinds: str) -> torch.Tensor:
+        values = [value.to(device=device) for kind in kinds for value in grouped.get(kind, ())]
+        if not values:
+            return torch.zeros((), device=device)
+        total = values[0]
+        for value in values[1:]:
+            total = total + value.to(dtype=total.dtype)
+        return total
+
+    moe_l = _sum_kind("moe", "molora")
+    mot_l = _sum_kind("mot")
+    moa_l = _sum_kind("moa")
+    latent_l = _sum_kind("latent")
+    if model is not None:
+        model._mixture_aux_diagnostics = diagnostics
+    aux_losses = (moe_l, mot_l, moa_l, latent_l)
     nonfinite = _mixture_aux_isolation_flags(aux_losses)
-    aux_names = ("moe", "mot", "moa")
+    aux_names = ("moe", "mot", "moa", "latent")
     if model is not None:
         model._mixture_aux_nonfinite = {name: bad for name, bad in zip(aux_names, nonfinite)}
         model._mixture_aux_isolated = False
     if any(nonfinite):
+        for name, bad in zip(aux_names, nonfinite):
+            if bad:
+                LOGGER.warning("[NaN guard] %s aux_loss is non-finite, skipping", name)
         # Always isolate non-finite aux components — never let raw NaN/Inf
         # propagate to the main loss.  This replaces the old `mixture_aux_isolate_nonfinite`
         # flag which was never enabled in any config (it is now always on).
         # The flag is synchronized above: every DDP rank substitutes the same
         aux_losses = tuple(loss.new_zeros(()) if bad else loss for loss, bad in zip(aux_losses, nonfinite))
-        moe_l, mot_l, moa_l = aux_losses
+        moe_l, mot_l, moa_l, latent_l = aux_losses
 
-    _update_mixture_loss_ema(model, "moe", moe_l)
-    _update_mixture_loss_ema(model, "mot", mot_l)
-    _update_mixture_loss_ema(model, "moa", moa_l)
-
-    ema = _get_mixture_loss_ema(model)
-    if ema is not None:
-        moe_scale_val = max(ema["moe"], _MIXTURE_LOSS_EMA_FLOOR)
-        mot_scale_val = max(ema["mot"], _MIXTURE_LOSS_EMA_FLOOR)
-        moa_scale_val = max(ema["moa"], _MIXTURE_LOSS_EMA_FLOOR)
+    ema_values = _update_mixture_loss_ema_batch(model, (moe_l, mot_l, moa_l, latent_l))
+    if ema_values:
+        moe_scale_val, mot_scale_val, moa_scale_val, latent_scale_val = ema_values
     else:
-        moe_scale_val = float(moe_l.detach().clamp(min=_MIXTURE_LOSS_EMA_FLOOR).item())
-        mot_scale_val = float(mot_l.detach().clamp(min=_MIXTURE_LOSS_EMA_FLOOR).item())
-        moa_scale_val = float(moa_l.detach().clamp(min=_MIXTURE_LOSS_EMA_FLOOR).item())
+        moe_scale_val = mot_scale_val = moa_scale_val = latent_scale_val = _MIXTURE_LOSS_EMA_FLOOR
 
     # Guard: clamp scales to finite range before division — prevents NaN from
     # corrupted EMA buffers propagating through the normalisation step.
     SAFE_SCALE_RANGE = (1e-6, 1e6)
-    moe_scale_val = float(torch.tensor(moe_scale_val).clamp(min=SAFE_SCALE_RANGE[0], max=SAFE_SCALE_RANGE[1]).item())
-    mot_scale_val = float(torch.tensor(mot_scale_val).clamp(min=SAFE_SCALE_RANGE[0], max=SAFE_SCALE_RANGE[1]).item())
-    moa_scale_val = float(torch.tensor(moa_scale_val).clamp(min=SAFE_SCALE_RANGE[0], max=SAFE_SCALE_RANGE[1]).item())
+    moe_scale_val = min(max(float(moe_scale_val), SAFE_SCALE_RANGE[0]), SAFE_SCALE_RANGE[1])
+    mot_scale_val = min(max(float(mot_scale_val), SAFE_SCALE_RANGE[0]), SAFE_SCALE_RANGE[1])
+    moa_scale_val = min(max(float(moa_scale_val), SAFE_SCALE_RANGE[0]), SAFE_SCALE_RANGE[1])
+    latent_scale_val = min(max(float(latent_scale_val), SAFE_SCALE_RANGE[0]), SAFE_SCALE_RANGE[1])
 
     terms = (
         moe_l / moe_scale_val * float(moe_gain),
         mot_l / mot_scale_val * float(mot_gain),
         moa_l / moa_scale_val * float(moa_gain),
+        latent_l / latent_scale_val * float(latent_gain),
     )
     # Enforce one global normalized budget without detaching the individual
     # terms' gradients. The scale is detached so budget control cannot create a
@@ -311,6 +357,15 @@ class CompositeCriterion:
         self.native_criterion = native_criterion
         self.enabled = has_routed_modules(model)
 
+    @property
+    def updates(self) -> int:
+        """Expose the native criterion schedule position."""
+        return int(getattr(self.native_criterion, "updates", 0))
+
+    @updates.setter
+    def updates(self, value: int) -> None:
+        setattr(self.native_criterion, "updates", int(value))
+
     def __getattr__(self, name: str):
         if name in {"model", "native_criterion", "enabled"}:
             raise AttributeError(name)
@@ -331,6 +386,7 @@ class CompositeCriterion:
             moe_gain=_model_arg(self.model, "moe_aux_gain", 1.0),
             mot_gain=_model_arg(self.model, "mot_aux_gain", 1.0),
             moa_gain=_model_arg(self.model, "moa_aux_gain", 1.0),
+            latent_gain=_model_arg(self.model, "latent_aux_gain", 0.1),
             aux_budget=_model_arg(self.model, "mixture_aux_budget", 3.0),
         )
         self.model._last_mixture_aux_loss = aux.detach()
@@ -365,6 +421,7 @@ def compose_native_result(model: nn.Module, native_loss: torch.Tensor, native_it
         moe_gain=_model_arg(model, "moe_aux_gain", 1.0),
         mot_gain=_model_arg(model, "mot_aux_gain", 1.0),
         moa_gain=_model_arg(model, "moa_aux_gain", 1.0),
+        latent_gain=_model_arg(model, "latent_aux_gain", 0.1),
         aux_budget=_model_arg(model, "mixture_aux_budget", 3.0),
     )
     model._last_mixture_aux_loss = aux.detach()

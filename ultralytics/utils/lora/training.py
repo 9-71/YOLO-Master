@@ -251,7 +251,9 @@ class LoraTrainingStrategy:
             # PEFT >= 0.18 uses nn.ModuleDict for lora_A (e.g. {'default': Conv2d}).
             # Older PEFT stores lora_A as a single Parameter or Module with .weight.
             is_lora_layer = False
-            if isinstance(lora_a, nn.ModuleDict):
+            if isinstance(lora_a, nn.Parameter):
+                is_lora_layer = True
+            elif isinstance(lora_a, nn.ModuleDict):
                 # Check that at least one adapter entry has a weight attribute
                 is_lora_layer = any(hasattr(child, 'weight') for child in lora_a.values())
             elif hasattr(lora_a, 'weight'):

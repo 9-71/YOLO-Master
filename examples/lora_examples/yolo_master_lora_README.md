@@ -56,6 +56,23 @@ runs/lora_examples/
 | `warmup_epochs` | 0 | 5 | 医学小数据预热稳定 |
 | `lr0` | 0.0005 | 0.001 | 全量数据降低基学习率 |
 
+### 历史结果协议
+
+仓库保留了两套独立完成的历史实验。它们使用相同的两个数据集和 `r=4,8,16`，但 VisDrone
+的数据比例和 AMP 设置不同，因此不能合并为同一组 rank 扫描，也不能把两套协议间的指标差异归因于 rank。
+
+| protocol_id | 数据集 | Epochs | Fraction | AMP | Batch | Imgsz | 结果文件 | 适用范围 |
+| --- | --- | ---: | ---: | --- | ---: | ---: | --- | --- |
+| `legacy_rank_sweep_v1` | Brain Tumor | 40 | 1.0 | True | 16 | 640 | `yolo_master_lora_rank_sweep_results.csv` | 早期统一扫描脚本结果 |
+| `legacy_rank_sweep_v1` | VisDrone | 30 | 0.25 | False | 8 | 768 | `yolo_master_lora_rank_sweep_results.csv` | 早期 25% 数据、FP32 协议 |
+| `pr135_summary_v1` | Brain Tumor | 40 | 1.0 | True | 16 | 640 | `yolo_master_lora_results.csv` | 当前 README 的详细结果 |
+| `pr135_summary_v1` | VisDrone | 30 | 0.2 | True | 8 | 768 | `yolo_master_lora_results.csv` | PR #135 的 20% 数据、AMP 协议 |
+
+两个 CSV 的协议字段来自各自提交时的 YAML、历史说明和现存结果行；原始指标没有跨协议转写。
+精确训练时间以对应 CSV 的 `train_time_min` 为准，README 不重复维护该数值，避免文档与数据漂移。
+旧 rank-sweep CSV 原先没有 `status` 字段；虽然保留了 `return_code=0`，仍将新增的 `status` 标为
+`unknown`，避免把缺失的完成状态证据推断为已验证。
+
 ## 配置文件关键差异
 
 | 配置项 | VisDrone | Brain Tumor | 设计理由 |

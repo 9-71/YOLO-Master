@@ -41,3 +41,8 @@ modules:
     dense_fallback: true
     requires_merge: false
     known_error: dynamic router cannot be represented as an exact static merge
+  Latent:
+    supported: true
+    dense_fallback: true
+    requires_merge: false
+    known_error: null

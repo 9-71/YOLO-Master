@@ -3,20 +3,13 @@ import torch
 import torch.nn as nn
 import gc
 import inspect
-import json
-import math
-import types
-from dataclasses import dataclass, field
-from typing import Optional, List, Union, Dict, Any, Set, Tuple, TYPE_CHECKING
-from pathlib import Path
+from dataclasses import dataclass
+from typing import Any, Dict, List, Optional, Union
 
 import re
 
 from ultralytics.utils import LOGGER
-from ultralytics.nn.tasks import (
-    DetectionModel, SegmentationModel, PoseModel, ClassificationModel, 
-    OBBModel, RTDETRDetectionModel, WorldModel
-)
+from ultralytics.nn.tasks import DetectionModel, RTDETRDetectionModel
 
 # Attempt to import PEFT with graceful degradation
 try:
@@ -29,7 +22,7 @@ try:
 except ImportError:
     LoraConfig = LoHaConfig = LoKrConfig = AdaLoraConfig = None
     IA3Config = OFTConfig = BOFTConfig = HRAConfig = None
-    get_peft_model = PeftModel = None
+    get_peft_model = None
     PEFT_AVAILABLE = False
     
     # Define a dummy class to pass type checks when PEFT is missing
@@ -315,7 +308,140 @@ def _attach_planner_decision(
         )
     metadata["planner_decision"] = payload
     model.lora_runtime_metadata = metadata
+    from ultralytics.vpeft import PlannerResult
+
+    return _attach_planner_result(
+        model,
+        PlannerResult.from_legacy_decision(decision, strict=bool(getattr(config, "vpeft_strict", False))),
+    )
+
+
+def _attach_planner_result(model: nn.Module, result: Any) -> nn.Module:
+    """Persist the stable external planner contract without replacing legacy metadata."""
+    payload = result.to_dict() if hasattr(result, "to_dict") else dict(result or {})
+    model.lora_planner_result = payload
+    inner = getattr(model, "model", None)
+    if isinstance(inner, nn.Module):
+        inner.lora_planner_result = payload
+    metadata = dict(getattr(model, "lora_runtime_metadata", {}) or {})
+    metadata["planner_result"] = payload
+    model.lora_runtime_metadata = metadata
     return model
+
+
+def _attach_placement_plan(model: nn.Module, plan: Any) -> nn.Module:
+    """Persist a V-PEFT placement plan on the model and runtime metadata."""
+    payload = plan.to_dict() if hasattr(plan, "to_dict") else dict(plan or {})
+    model.lora_placement_plan = payload
+    inner = getattr(model, "model", None)
+    if isinstance(inner, nn.Module):
+        inner.lora_placement_plan = payload
+    metadata = dict(getattr(model, "lora_runtime_metadata", {}) or {})
+    metadata["placement_plan"] = payload
+    model.lora_runtime_metadata = metadata
+    return model
+
+
+def _record_vpeft_fallback(
+    model: nn.Module,
+    *,
+    category: str,
+    reason: str,
+    exception_type: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Persist a structured, serializable reason for a V-PEFT compatibility fallback."""
+    fallback = {"category": category, "reason": reason, "message": reason}
+    if exception_type:
+        fallback["exception_type"] = exception_type
+    from ultralytics.vpeft import PlannerResult
+
+    _attach_planner_result(
+        model,
+        PlannerResult(
+            status="FALLBACK",
+            backend="vpeft",
+            reason=fallback,
+            fallback=True,
+            strict=False,
+        ),
+    )
+    metadata = dict(getattr(model, "lora_runtime_metadata", {}) or {})
+    metadata["vpeft_fallback"] = fallback
+    model.lora_runtime_metadata = metadata
+    model._vpeft_fallback_metadata = fallback
+    inner = getattr(model, "model", None)
+    if isinstance(inner, nn.Module):
+        inner_metadata = dict(getattr(inner, "lora_runtime_metadata", {}) or {})
+        inner_metadata["vpeft_fallback"] = fallback
+        inner.lora_runtime_metadata = inner_metadata
+    return fallback
+
+
+def _vpeft_model_fingerprint(model: nn.Module) -> str:
+    """Hash module names, types, and parameter shapes for plan/model binding."""
+    from ultralytics.vpeft.placement_plan import _model_fingerprint
+
+    return _model_fingerprint(model)
+
+
+def _build_vpeft_placement_plan(model: nn.Module, config: "LoRAConfig") -> Any:
+    """Compile a V-PEFT graph into the stable PlacementPlan contract."""
+    from ultralytics.vpeft import (
+        AlternatingOptimizationSolver,
+        ConstraintRegistry,
+        ComputationGraphBuilder,
+        DifferentiableOptimizationSolver,
+        MIPRelaxationSolver,
+        PlacementPlan,
+        PlacementTarget,
+    )
+
+    graph = ComputationGraphBuilder().build(model)
+    variant = _effective_peft_variant(config)
+    budget = int(config.adapter_budget or 2_100_000)
+    constraints = ConstraintRegistry.default(
+        {
+            "max_params": budget,
+            "allow_depthwise": bool(config.allow_depthwise),
+            "include_head": bool(config.include_head),
+            "only_backbone": bool(config.only_backbone),
+            "exclude_modules": config.exclude_modules,
+        }
+    )
+    solver_name = str(getattr(config, "planner_solver", "ao") or "ao").lower()
+    solver_cls = {
+        "ao": AlternatingOptimizationSolver,
+        "dco": DifferentiableOptimizationSolver,
+        "mip": MIPRelaxationSolver,
+    }.get(solver_name)
+    if solver_cls is None:
+        raise ValueError(f"unsupported lora_planner_solver={solver_name!r}")
+    decision = solver_cls().solve(graph, budget, variant, constraints)
+    targets = tuple(
+        PlacementTarget(name, variant, int(decision.ranks[index].item()))
+        for index, name in enumerate(graph.get_module_names())
+        if decision.placement[index] > 0.5 and int(decision.ranks[index].item()) > 0
+    )
+    status = "REFUSE" if decision.status == "REFUSE" or not targets else decision.status
+    reason = decision.reason or ("solver returned no feasible targets" if not targets else None)
+    return PlacementPlan(
+        model_fingerprint=_vpeft_model_fingerprint(model),
+        planner_backend="vpeft",
+        solver=solver_name,
+        budget={"max_adapter_params": budget, "used_adapter_params": int(decision.budget_used)},
+        targets=targets,
+        constraints={"hard": [constraint.name for constraint in constraints._hard_constraints], "soft": [constraint.name for constraint in constraints._soft_constraints]},
+        predicted_delta=None,
+        confidence=None,
+        status=status,
+        refusal_reason=reason,
+        metadata={
+            "utility": float(decision.utility),
+            "reason": decision.reason,
+            "graph_nodes": graph.n_nodes,
+            "solver_diagnostics": dict(decision.metadata or {}),
+        },
+    )
 
 
 def build_lora_target_audit(
@@ -493,13 +619,12 @@ def load_lora_compatible_state_dict(
 
 
 
-from .config import LoRAConfig, LoRAConfigBuilder
-from .fallback import (
+from .config import LoRAConfig, LoRAConfigBuilder  # noqa: E402
+from .fallback import (  # noqa: E402
     FewShotLoRAConv,
     LoRADetectionModel,
     ManualLoRAConv,
     PeftProxy,
-    _build_peft_exact_target_regex,
     _clear_lora_runtime_state,
     _collect_fallback_adapter_state,
     _filter_target_modules,
@@ -507,7 +632,6 @@ from .fallback import (
     _load_fallback_adapter_state,
     _merge_fallback_modules,
     _merge_manual_lora_conv,
-    _validate_peft_init_compatibility,
     _wrap_top_level_lora_model,
     apply_manual_lora,
     supports_fallback_request,
@@ -681,10 +805,68 @@ def apply_lora(
         return model
 
     # ------------------------------------------------------------------
+    # V-PEFT compiler — explicit opt-in budgeted placement
+    # ------------------------------------------------------------------
+    placement_plan = None
+    vpeft_plan_active = False
+    fallback_metadata = None
+    if str(getattr(config, "planner_backend", "legacy") or "legacy").lower() == "vpeft":
+        try:
+            placement_plan = _build_vpeft_placement_plan(
+                model.model if hasattr(model, "model") else model, config
+            )
+            placement_plan.validate_model(model.model if hasattr(model, "model") else model)
+            _attach_placement_plan(model, placement_plan)
+            from ultralytics.vpeft import PlannerResult
+
+            _attach_planner_result(
+                model,
+                PlannerResult.from_placement_plan(
+                    placement_plan, strict=bool(getattr(config, "vpeft_strict", False))
+                ),
+            )
+            if placement_plan.status in {"REFUSE", "FALLBACK"} or not placement_plan.targets:
+                reason = placement_plan.refusal_reason or "solver returned no feasible targets"
+                if bool(getattr(config, "vpeft_strict", False)):
+                    raise RuntimeError(f"V-PEFT strict planning failed: {reason}")
+                fallback_metadata = _record_vpeft_fallback(model, category="infeasible", reason=reason)
+                LOGGER.warning(f"[V-PEFT] No feasible placement ({reason}); using legacy/fixed-rank LoRA.")
+                config.planner_backend = "legacy"
+            else:
+                config.target_modules = [target.name for target in placement_plan.targets]
+                config.rank_pattern = {target.name: int(target.rank) for target in placement_plan.targets}
+                vpeft_plan_active = True
+                LOGGER.info(
+                    f"[V-PEFT] {placement_plan.status}: selected {len(config.target_modules)} "
+                    f"targets with ranks={sorted(set(config.rank_pattern.values()))}; base rank remains {config.r}."
+                )
+        except (ImportError, ModuleNotFoundError) as exc:
+            if bool(getattr(config, "vpeft_strict", False)):
+                raise
+            fallback_metadata = _record_vpeft_fallback(model, category="dependency", reason=str(exc), exception_type=type(exc).__name__)
+            LOGGER.warning(f"[V-PEFT] Dependency unavailable ({exc}); using legacy/fixed-rank LoRA.")
+            config.planner_backend = "legacy"
+        except (ValueError, TypeError) as exc:
+            if bool(getattr(config, "vpeft_strict", False)):
+                raise
+            fallback_metadata = _record_vpeft_fallback(model, category="configuration", reason=str(exc), exception_type=type(exc).__name__)
+            LOGGER.warning(f"[V-PEFT] Invalid or unsupported request ({exc}); using legacy/fixed-rank LoRA.")
+            config.planner_backend = "legacy"
+        except Exception as exc:
+            if bool(getattr(config, "vpeft_strict", False)):
+                raise
+            fallback_metadata = _record_vpeft_fallback(model, category="internal", reason=str(exc), exception_type=type(exc).__name__)
+            LOGGER.warning(f"[V-PEFT] Internal planner failure ({exc}); using legacy/fixed-rank LoRA.")
+            config.planner_backend = "legacy"
+
+    # ------------------------------------------------------------------
     # PEFT Planner — architecture-conditioned placement decision (opt-in)
     # ------------------------------------------------------------------
     planner_decision = None
-    if getattr(config, "planner_enabled", False) or getattr(config, "lora_planner_enabled", False):
+    planner_requested = getattr(config, "planner_enabled", False) or getattr(config, "lora_planner_enabled", False)
+    if planner_requested and vpeft_plan_active:
+        LOGGER.info("[V-PEFT] Skipping the legacy Planner because an accepted V-PEFT placement plan is active.")
+    if planner_requested and not vpeft_plan_active:
         from .planner import PEFTPlanner, RefusalError, is_planner_enabled
 
         if is_planner_enabled(config):
@@ -752,6 +934,16 @@ def apply_lora(
         model = apply_manual_lora(model, config, include_head=config.include_head)
         if planner_decision is not None:
             _attach_planner_decision(model, config, planner_decision)
+        if placement_plan is not None:
+            _attach_placement_plan(model, placement_plan)
+        planner_result = getattr(model, "lora_planner_result", None)
+        if planner_result is not None:
+            _attach_planner_result(model, planner_result)
+        fallback_metadata = fallback_metadata or getattr(model, "_vpeft_fallback_metadata", None)
+        if fallback_metadata:
+            metadata = dict(getattr(model, "lora_runtime_metadata", {}) or {})
+            metadata["vpeft_fallback"] = dict(fallback_metadata)
+            model.lora_runtime_metadata = metadata
         return model
 
     # 2. Check Dependencies for the PEFT path
@@ -762,7 +954,7 @@ def apply_lora(
     # Check bitsandbytes for quantization
     if kwargs.get('lora_quantization') in ['4bit', '8bit']:
         try:
-            import bitsandbytes as bnb
+            __import__("bitsandbytes")
             LOGGER.info(f"[LoRA] bitsandbytes available for {kwargs.get('lora_quantization')} quantization.")
         except ImportError:
             LOGGER.error("[LoRA] bitsandbytes not found. Install via `pip install bitsandbytes`. Quantization disabled.")
@@ -829,7 +1021,7 @@ def apply_lora(
 
     # 3. Logging
     LOGGER.info("-" * 60)
-    LOGGER.info(f"🚀 Initializing LoRA Strategy")
+    LOGGER.info("🚀 Initializing LoRA Strategy")
     for k, v in config.__dict__.items():
         if k not in ['target_modules', 'exclude_modules'] and v is not None:
             LOGGER.info(f"  - {k:<22}: {v}")
@@ -868,6 +1060,7 @@ def apply_lora(
         "skip_stem": getattr(config, "skip_stem", True),  # Default True: skip un-normalized stem layers (prevents FP16 NaN)
         "min_channels": getattr(config, "min_channels", 0),
         "target_modules": config.target_modules, # This might be ['conv']
+        "rank_pattern": getattr(config, "rank_pattern", None),
         "planner_enabled": False,
         "gradient_checkpointing": config.gradient_checkpointing,
         "auto_r_ratio": config.auto_r_ratio,
@@ -911,7 +1104,8 @@ def apply_lora(
     # Note: We scan model.model which is the nn.Sequential
     for name, module in model.model.named_modules():
          if isinstance(module, nn.Conv2d) and module.groups > 1:
-              if config.r > 0 and config.r % module.groups != 0:
+              effective_rank = (getattr(config, "rank_pattern", None) or {}).get(name, config.r)
+              if effective_rank > 0 and effective_rank % module.groups != 0:
                    incompatible_layers.append(name)
     
     if incompatible_layers:
@@ -991,8 +1185,13 @@ def apply_lora(
             
         if final_targets:
             builder_params["target_modules"] = final_targets
+            rank_pattern = builder_params.get("rank_pattern") or {}
+            builder_params["rank_pattern"] = {
+                name: int(rank_pattern[name]) for name in final_targets if name in rank_pattern
+            } or None
         else:
             builder_params["target_modules"] = None
+            builder_params["rank_pattern"] = None
 
         target_audit = build_lora_target_audit(
             valid_targets=valid_targets,
@@ -1050,6 +1249,7 @@ def apply_lora(
             safety_profile="rtdetr_lora" if rtdetr_safety_changes else None,
             safety_overrides=rtdetr_safety_changes or None,
             planner_decision=planner_decision.to_dict() if planner_decision else None,
+            placement_plan=placement_plan.to_dict() if placement_plan else None,
         )
 
         _validate_lora_runtime_model(model, expected_targets=final_targets, context="PEFT apply_lora")
@@ -1082,6 +1282,8 @@ def apply_lora(
                 model = apply_manual_lora(model, config, include_head=config.include_head)
                 if planner_decision is not None:
                     _attach_planner_decision(model, config, planner_decision)
+                if placement_plan is not None:
+                    _attach_placement_plan(model, placement_plan)
                 return model
             except Exception as fb_err:
                 LOGGER.error(f"[LoRA] Fallback path also failed: {fb_err}")
@@ -1144,6 +1346,14 @@ def apply_lora(
     # 8. Performance warning for slow PEFT variants
     _warn_slow_peft_variant(str(config.peft_type))
 
+    if placement_plan is not None:
+        _attach_placement_plan(model, placement_plan)
+    fallback_metadata = fallback_metadata or getattr(model, "_vpeft_fallback_metadata", None)
+    if fallback_metadata:
+        metadata = dict(getattr(model, "lora_runtime_metadata", {}) or {})
+        metadata["vpeft_fallback"] = dict(fallback_metadata)
+        model.lora_runtime_metadata = metadata
+
     return model
 
 
@@ -1178,8 +1388,6 @@ def _warn_slow_peft_variant(peft_type: str):
 
 def _activate_gradient_checkpointing(module: nn.Module):
     """Recursively enable gradient checkpointing for supported modules."""
-    from torch.utils.checkpoint import checkpoint_sequential
-    
     for name, child in module.named_children():
         # For C3k2-like blocks, we can wrap their forward with checkpoint
         child_name = type(child).__name__.lower()
@@ -1299,8 +1507,8 @@ def get_lora_param_groups(
 
 
 
-from .io import load_lora_adapters, merge_lora_weights, save_lora_adapters
-from .planner import (
+from .io import load_lora_adapters, merge_lora_weights, save_lora_adapters  # noqa: E402
+from .planner import (  # noqa: E402
     ArchitectureFingerprint,
     PEFTPlanner,
     PEFTVariantProfile,
@@ -1308,7 +1516,11 @@ from .planner import (
     RefusalError,
     is_planner_enabled,
 )
-from .training import LoraTrainingStrategy, get_lora_training_stats, suggest_lora_config_for_dataset
+from .training import (  # noqa: E402
+    LoraTrainingStrategy,
+    get_lora_training_stats,
+    suggest_lora_config_for_dataset,
+)
 
 __all__ = [
     "PEFT_AVAILABLE",
@@ -1338,6 +1550,10 @@ __all__ = [
     "_get_mps_memory",
     "_is_adapter_param",
     "_validate_lora_runtime_model",
+    "_clear_lora_runtime_state",
+    "_collect_fallback_adapter_state",
+    "_load_fallback_adapter_state",
+    "_merge_fallback_modules",
     "_merge_manual_lora_conv",
     "_unfreeze_detection_head",
     "ArchitectureFingerprint",

@@ -1,5 +1,5 @@
 """
-V-PEFT Solver Module — Constraint-aware Optimization Framework for AAAI 2026.
+V-PEFT Solver Module — Constraint-aware Optimization Framework.
 
 Implements three solvers for the combinatorial PEFT placement problem:
 1. AlternatingOptimizationSolver (AO) — block-coordinate ascent with greedy sub-routines.
@@ -10,9 +10,10 @@ Implements three solvers for the combinatorial PEFT placement problem:
 from __future__ import annotations
 
 import math
+import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple, Union
 
 import torch
 import torch.nn as nn
@@ -35,6 +36,7 @@ __all__ = [
 # Utility helpers
 # ---------------------------------------------------------------------------
 
+
 def _utility_per_rank(rank: float, rank_max: int = 64) -> float:
     """Marginal utility f(r) = log2(r) / log2(r_max)."""
     if rank <= 0:
@@ -51,20 +53,23 @@ def _project_discrete_solution(
     graph: ComputationGraph,
     placement: torch.Tensor,
     ranks: torch.Tensor,
-    variant: str,
+    variant: Union[str, Sequence[str]],
     constraints: ConstraintRegistry,
     candidate_ranks: List[int],
 ) -> Tuple[torch.Tensor, torch.Tensor]:
     """Project a discrete solution onto concrete per-node rank constraints."""
     projected_placement = placement.clone()
     projected_ranks = ranks.clone()
+    variants = [variant] * graph.n_nodes if isinstance(variant, str) else list(variant)
+    if len(variants) != graph.n_nodes:
+        raise ValueError("variant list must have one entry per graph node")
     rank_set = sorted({int(rank) for rank in candidate_ranks if int(rank) > 0})
 
     for i in range(graph.n_nodes):
         if projected_placement[i] <= 0.5:
             projected_ranks[i] = 0
             continue
-        feasible = [rank for rank in rank_set if constraints.is_rank_feasible(graph, i, variant, rank)]
+        feasible = [rank for rank in rank_set if constraints.is_rank_feasible(graph, i, variants[i], rank)]
         if not feasible:
             projected_placement[i] = 0.0
             projected_ranks[i] = 0
@@ -81,41 +86,49 @@ def _project_budget(
     placement: torch.Tensor,
     ranks: torch.Tensor,
     budget: int,
-    variant: str,
+    variant: Union[str, Sequence[str]],
     utilities: torch.Tensor,
 ) -> Tuple[torch.Tensor, torch.Tensor]:
-    """Drop lowest utility-density nodes until the hard budget is restored."""
+    """Drop the lowest utility-density nodes until the hard budget is restored."""
     placement = placement.clone()
     ranks = ranks.clone()
-    while True:
-        used = sum(
-            graph.estimate_params(i, int(ranks[i].item()), variant)
-            for i in range(graph.n_nodes)
-            if placement[i] > 0.5 and ranks[i] > 0
-        )
+    variants = [variant] * graph.n_nodes if isinstance(variant, str) else list(variant)
+    if len(variants) != graph.n_nodes:
+        raise ValueError("variant list must have one entry per graph node")
+    placed = [index for index in range(graph.n_nodes) if placement[index] > 0.5 and ranks[index] > 0]
+    if not placed:
+        return placement, ranks
+
+    # Compute each node's parameter cost once.  The old implementation
+    # recomputed the full graph sum after every drop, making large budgets
+    # quadratic in the number of candidate nodes.
+    costs = {index: int(graph.estimate_params(index, int(ranks[index].item()), variants[index])) for index in placed}
+    used = sum(costs.values())
+    if used <= budget:
+        return placement, ranks
+
+    utility_values = {index: float(utilities[index].detach().item()) for index in placed}
+    drop_order = sorted(
+        placed,
+        key=lambda index: (
+            utility_values[index] / max(costs[index], 1),
+            utility_values[index],
+            index,
+        ),
+    )
+    for drop in drop_order:
         if used <= budget:
-            return placement, ranks
-        placed = [
-            i for i in range(graph.n_nodes)
-            if placement[i] > 0.5 and ranks[i] > 0
-        ]
-        if not placed:
-            return placement, ranks
-        drop = min(
-            placed,
-            key=lambda i: (
-                utilities[i].item() / max(graph.estimate_params(i, int(ranks[i].item()), variant), 1),
-                utilities[i].item(),
-                i,
-            ),
-        )
+            break
         placement[drop] = 0.0
         ranks[drop] = 0
+        used -= costs[drop]
+    return placement, ranks
 
 
 # ---------------------------------------------------------------------------
 # PlacementDecision
 # ---------------------------------------------------------------------------
+
 
 @dataclass
 class PlacementDecision:
@@ -148,10 +161,23 @@ class PlacementDecision:
     utility: float
     """Total objective value U(π, r, ξ)."""
 
+    variants: Optional[List[str]] = None
+    """Per-node variants; defaults to the global ``variant`` for compatibility."""
+
+    metadata: Optional[Dict[str, object]] = None
+    """Solver diagnostics such as candidate count, elapsed time, and objective."""
+
+    def __post_init__(self) -> None:
+        if self.variants is None:
+            self.variants = [self.variant] * int(self.placement.numel())
+        if self.metadata is None:
+            self.metadata = {}
+
 
 # ---------------------------------------------------------------------------
 # Base class
 # ---------------------------------------------------------------------------
+
 
 class ConstraintSolver(ABC):
     """Abstract base for all V-PEFT constraint-aware optimizers."""
@@ -183,6 +209,7 @@ class ConstraintSolver(ABC):
 # 1. Alternating Optimization (AO)
 # ---------------------------------------------------------------------------
 
+
 class AlternatingOptimizationSolver(ConstraintSolver):
     """
     Block-coordinate ascent solver.
@@ -211,9 +238,7 @@ class AlternatingOptimizationSolver(ConstraintSolver):
         self.rank_max = rank_max
         self.rank_step = rank_step
         self.rank_set = list(range(rank_min, rank_max + 1, rank_step))
-        self._rank_allocator = GreedyRankAllocator(
-            rank_set=self.rank_set, r_max=self.rank_max
-        )
+        self._rank_allocator = GreedyRankAllocator(rank_set=self.rank_set, r_max=self.rank_max)
 
     # ------------------------------------------------------------------
     # Sub-routines
@@ -229,9 +254,7 @@ class AlternatingOptimizationSolver(ConstraintSolver):
         total = 0.0
         for i in range(graph.n_nodes):
             if pi[i] > 0.5 and r[i] > 0:
-                total += utilities[i].item() * _utility_per_rank(
-                    r[i].item(), self.rank_max
-                )
+                total += utilities[i].item() * _utility_per_rank(r[i].item(), self.rank_max)
         return total
 
     def _optimize_pi(
@@ -264,9 +287,7 @@ class AlternatingOptimizationSolver(ConstraintSolver):
             node_info = constraints._node_info_from_graph(graph, i)
             dual_penalty = sum(
                 float(lambda_dual.get(name, 0.0)) * value
-                for name, value in constraints.compute_penalty_breakdown(
-                    node_info, xi[i], int(r[i].item())
-                ).items()
+                for name, value in constraints.compute_penalty_breakdown(node_info, xi[i], int(r[i].item())).items()
             )
             scores[i] = (util - dual_penalty) / cost
 
@@ -297,7 +318,7 @@ class AlternatingOptimizationSolver(ConstraintSolver):
         """Local enumeration of a small candidate variant set per module."""
         n = graph.n_nodes
         # Small candidate set: current + two common variants
-        candidates = list(set([current_xi[0]] + ["lora", "ia3"]))
+        candidates = sorted(set(current_xi + ["lora", "ia3"]))
 
         xi_new = list(current_xi)
         for i in range(n):
@@ -329,6 +350,7 @@ class AlternatingOptimizationSolver(ConstraintSolver):
         variant: str,
         constraints: ConstraintRegistry,
     ) -> PlacementDecision:
+        started_at = time.perf_counter()
         n = graph.n_nodes
         utilities = graph.get_node_importances()
         hard_mask = constraints.get_hard_mask(graph, variant, candidate_ranks=self.rank_set).bool()
@@ -344,18 +366,18 @@ class AlternatingOptimizationSolver(ConstraintSolver):
             r[i] = self.rank_min
 
         # Project to budget (greedy drop if over)
-        used = constraints.get_budget_usage(graph, pi, r, variant)
+        used = constraints.get_budget_usage(graph, pi, r, xi)
         if used > budget:
             sorted_idx = feasible_idx[torch.argsort(utilities[feasible_idx])]
             for i in sorted_idx:
                 if used <= budget:
                     break
-                used -= graph.estimate_params(i.item(), r[i].item(), variant)
+                used -= graph.estimate_params(i.item(), r[i].item(), xi[i.item()])
                 pi[i] = 0.0
                 r[i] = 0
 
-        # Dual variables for budget / latency / memory / deploy
-        soft_keys = ["budget", "latency", "memory", "deploy"]
+        # Dual variables are keyed by the registry's canonical constraint ids.
+        soft_keys = constraints.soft_constraint_names()
         lambda_dual: Dict[str, float] = {k: 0.0 for k in soft_keys}
 
         # --- alternating optimisation loop ---------------------------------
@@ -365,24 +387,24 @@ class AlternatingOptimizationSolver(ConstraintSolver):
             xi_prev = list(xi)
 
             # Step 1: fix (r, ξ) → optimise π
-            pi = self._optimize_pi(
-                graph, r, xi, budget, utilities, hard_mask, constraints, lambda_dual
-            )
+            pi = self._optimize_pi(graph, r, xi, budget, utilities, hard_mask, constraints, lambda_dual)
 
             # Step 2: fix (π, ξ) → optimise r
-            r = self._rank_allocator.allocate(graph, pi, budget, variant, constraints=constraints)
+            r = self._rank_allocator.allocate(graph, pi, budget, xi, constraints=constraints)
 
             # Step 3: fix (π, r) → optimise ξ (local enumeration)
             xi = self._optimize_xi(graph, pi, r, utilities, constraints, xi)
 
             # Step 4: dual ascent on soft constraints
-            soft_violations = constraints.evaluate_soft(graph, pi, r, variant)
+            soft_violations = constraints.evaluate_soft(graph, pi, r, xi)
             for key in soft_keys:
                 violation = soft_violations.get(key, 0.0)
-                if key == "budget":
-                    used_now = constraints.get_budget_usage(graph, pi, r, variant)
+                if key == "C_budget":
+                    used_now = constraints.get_budget_usage(graph, pi, r, xi)
                     violation = max(0.0, used_now - budget)
-                lambda_dual[key] = max(0.0, lambda_dual[key] + self.dual_lr * violation)
+                if isinstance(violation, torch.Tensor):
+                    violation = float(violation.detach().item())
+                lambda_dual[key] = max(0.0, lambda_dual[key] + self.dual_lr * float(violation))
 
             # Convergence check: L1(π) + L2(r) + Hamming(ξ)
             delta_pi = torch.sum(torch.abs(pi - pi_prev)).item()
@@ -393,13 +415,11 @@ class AlternatingOptimizationSolver(ConstraintSolver):
 
         # --- post-processing -----------------------------------------------
         pi, r = _project_discrete_solution(graph, pi, r, variant, constraints, self.rank_set)
-        pi, r = constraints.enforce_moe_consistency(graph, pi, r, variant, self.rank_set)
-        pi, r = _project_budget(graph, pi, r, budget, variant, utilities)
-        budget_used = int(constraints.get_budget_usage(graph, pi, r, variant))
+        pi, r, xi = constraints.enforce_moe_consistency(graph, pi, r, xi, self.rank_set)
+        pi, r = _project_budget(graph, pi, r, budget, xi, utilities)
+        budget_used = int(constraints.get_budget_usage(graph, pi, r, xi))
         budget_remaining = max(0, budget - budget_used)
-        target_modules = [
-            graph.get_module_names()[i] for i in range(n) if pi[i] > 0.5
-        ]
+        target_modules = [graph.get_module_names()[i] for i in range(n) if pi[i] > 0.5]
         utility = self._compute_objective(graph, pi, r, utilities)
 
         if len(target_modules) == 0:
@@ -408,8 +428,7 @@ class AlternatingOptimizationSolver(ConstraintSolver):
         elif budget_used > budget:
             status = "ADAPT"
             reason = (
-                f"Budget exceeded ({budget_used} > {budget}); "
-                "solution was adapted by dropping low-utility modules."
+                f"Budget exceeded ({budget_used} > {budget}); solution was adapted by dropping low-utility modules."
             )
         else:
             status = "ACCEPT"
@@ -425,12 +444,28 @@ class AlternatingOptimizationSolver(ConstraintSolver):
             target_modules=target_modules,
             reason=reason,
             utility=utility,
+            variants=list(xi),
+            metadata={
+                "solver": self.__class__.__name__,
+                "n_nodes": n,
+                "n_variant_candidates": len(set([variant, "lora", "ia3"])),
+                "variant_candidates": sorted(set([variant, "lora", "ia3"])),
+                "optimize_variant": True,
+                "max_iter": int(self.max_iter),
+                "elapsed_seconds": time.perf_counter() - started_at,
+                "final_utility": float(utility),
+                "budget_used": int(budget_used),
+                "budget_remaining": int(budget_remaining),
+                "target_module_count": len(target_modules),
+                "status": status,
+            },
         )
 
 
 # ---------------------------------------------------------------------------
 # 2. Differentiable Constraint Optimization (DCO)
 # ---------------------------------------------------------------------------
+
 
 class DifferentiableOptimizationSolver(ConstraintSolver):
     """
@@ -515,9 +550,7 @@ class DifferentiableOptimizationSolver(ConstraintSolver):
         total = 0.0
         for i in range(graph.n_nodes):
             if pi[i] > 0.5 and r[i] > 0:
-                total += utilities[i].item() * _utility_per_rank(
-                    r[i].item(), self.rank_max
-                )
+                total += utilities[i].item() * _utility_per_rank(r[i].item(), self.rank_max)
         return total
 
     # ------------------------------------------------------------------
@@ -531,6 +564,7 @@ class DifferentiableOptimizationSolver(ConstraintSolver):
         variant: str,
         constraints: ConstraintRegistry,
     ) -> PlacementDecision:
+        started_at = time.perf_counter()
         n = graph.n_nodes
         utilities = graph.get_node_importances()
         hard_mask = constraints.get_hard_mask(graph, variant, candidate_ranks=self.rank_set).bool()
@@ -538,10 +572,11 @@ class DifferentiableOptimizationSolver(ConstraintSolver):
         # Feature vector: normalised utility per node (kept 1-D for the stub MLPs)
         feat = utilities.view(-1, 1)  # [N, 1]
 
-        soft_keys = ["budget", "latency", "memory", "deploy"]
-        lambda_dual = {k: 0.0 for k in soft_keys}
-        epsilon = {k: 0.0 for k in soft_keys}  # slack thresholds
-        epsilon["budget"] = budget
+        soft_keys = constraints.soft_constraint_names()
+        lambda_dual = {key: 1.0 for key in soft_keys}
+        epsilon = {key: 0.0 for key in soft_keys}
+        epsilon_budget = budget
+        epsilon["C_budget"] = epsilon_budget
 
         if self.optimize_variant:
             params = (
@@ -550,10 +585,7 @@ class DifferentiableOptimizationSolver(ConstraintSolver):
                 + list(self._variant_mlp.parameters())
             )
         else:
-            params = (
-                list(self._placement_mlp.parameters())
-                + list(self._rank_mlp.parameters())
-            )
+            params = list(self._placement_mlp.parameters()) + list(self._rank_mlp.parameters())
 
         optimizer = torch.optim.Adam(params, lr=self.lr)
 
@@ -563,7 +595,7 @@ class DifferentiableOptimizationSolver(ConstraintSolver):
 
             # Recompute forward pass (MLP parameters change each step)
             pi_logits = self._placement_mlp(feat).squeeze(-1)  # [N]
-            r_raw = self._rank_mlp(feat).squeeze(-1)           # [N]
+            r_raw = self._rank_mlp(feat).squeeze(-1)  # [N]
 
             if self.optimize_variant:
                 xi_logits = self._variant_mlp(feat)  # [N, n_variants]
@@ -572,15 +604,11 @@ class DifferentiableOptimizationSolver(ConstraintSolver):
             pi_hat = torch.sigmoid(pi_logits) * hard_mask.float()
 
             # Continuous rank in [rank_min, rank_max]
-            r_cont = self.rank_min + (self.rank_max - self.rank_min) * torch.sigmoid(
-                r_raw
-            )
+            r_cont = self.rank_min + (self.rank_max - self.rank_min) * torch.sigmoid(r_raw)
 
             # Variant relaxation (Gumbel-Softmax if multiple candidates)
             if self.optimize_variant and xi_logits is not None:
-                xi_soft = F.gumbel_softmax(
-                    xi_logits, tau=self.tau_gumbel, hard=False
-                )  # [N, n_variants]
+                xi_soft = F.gumbel_softmax(xi_logits, tau=self.tau_gumbel, hard=False)  # [N, n_variants]
             else:
                 xi_soft = None
 
@@ -602,21 +630,26 @@ class DifferentiableOptimizationSolver(ConstraintSolver):
             costs = torch.stack(costs)  # [N]
             budget_used = torch.sum(pi_hat * costs)
 
-            penalty = _softplus_penalty(
-                budget_used - epsilon["budget"], self.beta_softplus
-            )
+            penalty = _softplus_penalty(budget_used - epsilon_budget, self.beta_softplus)
 
             # Other soft constraints (via registry)
-            soft_violations = constraints.evaluate_soft(graph, pi_hat, r_cont, variant)
+            if self.optimize_variant and xi_soft is not None:
+                xi_for_constraints = [
+                    self.variant_candidates[index] for index in torch.argmax(xi_soft, dim=-1).tolist()
+                ]
+            else:
+                xi_for_constraints = [variant] * n
+            soft_violations = constraints.evaluate_soft(
+                graph, pi_hat, r_cont, xi_for_constraints, differentiable=True
+            )
             total_penalty = penalty
             for key in soft_keys:
-                if key == "budget":
+                if key == "C_budget":
                     continue
                 val = soft_violations.get(key, 0.0)
-                if isinstance(val, (int, float)):
-                    total_penalty = total_penalty + _softplus_penalty(
-                        torch.tensor(float(val)) - epsilon[key], self.beta_softplus
-                    )
+                if not isinstance(val, torch.Tensor):
+                    val = torch.as_tensor(float(val), device=feat.device)
+                total_penalty = total_penalty + _softplus_penalty(val - epsilon[key], self.beta_softplus)
 
             # Hard-constraint projection loss (penalise placement on forbidden nodes)
             L_hard = torch.sum(pi_hat * (1.0 - hard_mask.float()))
@@ -631,13 +664,12 @@ class DifferentiableOptimizationSolver(ConstraintSolver):
             # Dual ascent every 10 steps
             if iteration % 10 == 0 and iteration > 0:
                 for key in soft_keys:
-                    if key == "budget":
+                    if key == "C_budget":
                         violation = max(0.0, budget_used.item() - budget)
                     else:
-                        violation = max(0.0, soft_violations.get(key, 0.0))
-                    lambda_dual[key] = max(
-                        0.0, lambda_dual[key] + self.dual_lr * violation
-                    )
+                        raw = soft_violations.get(key, 0.0)
+                        violation = max(0.0, float(raw.detach().item() if isinstance(raw, torch.Tensor) else raw))
+                    lambda_dual[key] = max(0.0, lambda_dual[key] + self.dual_lr * violation)
 
         # --- discretisation ------------------------------------------------
         # Recompute one last time to get final continuous values
@@ -656,47 +688,42 @@ class DifferentiableOptimizationSolver(ConstraintSolver):
         pi_discrete = pi_discrete * hard_mask.float()
 
         r_discrete = torch.round(r_cont / self.rank_step) * self.rank_step
-        r_discrete = torch.clamp(
-            r_discrete, min=self.rank_min, max=self.rank_max
-        ).long()
+        r_discrete = torch.clamp(r_discrete, min=self.rank_min, max=self.rank_max).long()
 
         if self.optimize_variant and xi_soft is not None:
             xi_indices = torch.argmax(xi_soft, dim=-1)
             xi_selected = [self.variant_candidates[i] for i in xi_indices.tolist()]
             # Use the most common variant for the global field
             from collections import Counter
+
             variant_global = Counter(xi_selected).most_common(1)[0][0]
         else:
             xi_selected = [variant] * n
             variant_global = variant
 
         pi_discrete, r_discrete = _project_discrete_solution(
-            graph, pi_discrete, r_discrete, variant_global, constraints, self.rank_set
+            graph, pi_discrete, r_discrete, xi_selected, constraints, self.rank_set
         )
-        pi_discrete, r_discrete = constraints.enforce_moe_consistency(
-            graph, pi_discrete, r_discrete, variant_global, self.rank_set
+        pi_discrete, r_discrete, xi_selected = constraints.enforce_moe_consistency(
+            graph, pi_discrete, r_discrete, xi_selected, self.rank_set
         )
-        pi_discrete, r_discrete = _project_budget(
-            graph, pi_discrete, r_discrete, budget, variant_global, utilities
-        )
+        pi_discrete, r_discrete = _project_budget(graph, pi_discrete, r_discrete, budget, xi_selected, utilities)
 
         # Post-process: ensure budget is respected by dropping lowest-utility placed modules
-        used = int(constraints.get_budget_usage(graph, pi_discrete, r_discrete, variant_global))
+        used = int(constraints.get_budget_usage(graph, pi_discrete, r_discrete, xi_selected))
         if used > budget:
             placed = (pi_discrete > 0.5).nonzero(as_tuple=True)[0]
             sorted_by_util = placed[torch.argsort(utilities[placed])]
             for i in sorted_by_util:
                 if used <= budget:
                     break
-                used -= graph.estimate_params(i.item(), r_discrete[i].item(), variant_global)
+                used -= graph.estimate_params(i.item(), r_discrete[i].item(), xi_selected[i.item()])
                 pi_discrete[i] = 0.0
                 r_discrete[i] = 0
 
-        budget_used = int(constraints.get_budget_usage(graph, pi_discrete, r_discrete, variant_global))
+        budget_used = int(constraints.get_budget_usage(graph, pi_discrete, r_discrete, xi_selected))
         budget_remaining = max(0, budget - budget_used)
-        target_modules = [
-            graph.get_module_names()[i] for i in range(n) if pi_discrete[i] > 0.5
-        ]
+        target_modules = [graph.get_module_names()[i] for i in range(n) if pi_discrete[i] > 0.5]
         utility = self._compute_objective(graph, pi_discrete, r_discrete, utilities)
 
         if len(target_modules) == 0:
@@ -719,12 +746,28 @@ class DifferentiableOptimizationSolver(ConstraintSolver):
             target_modules=target_modules,
             reason=reason,
             utility=utility,
+            variants=list(xi_selected),
+            metadata={
+                "solver": self.__class__.__name__,
+                "n_nodes": n,
+                "n_variant_candidates": self.n_variants if self.optimize_variant else 1,
+                "variant_candidates": list(self.variant_candidates) if self.optimize_variant else [variant],
+                "optimize_variant": bool(self.optimize_variant),
+                "max_iter": int(self.max_iter),
+                "elapsed_seconds": time.perf_counter() - started_at,
+                "final_utility": float(utility),
+                "budget_used": int(budget_used),
+                "budget_remaining": int(budget_remaining),
+                "target_module_count": len(target_modules),
+                "status": status,
+            },
         )
 
 
 # ---------------------------------------------------------------------------
 # 3. MIP Relaxation (MIPR)
 # ---------------------------------------------------------------------------
+
 
 class MIPRelaxationSolver(ConstraintSolver):
     """
@@ -800,17 +843,12 @@ class MIPRelaxationSolver(ConstraintSolver):
             S_fixed.add(best_i)
 
             # Re-optimise ranks for all placed modules with remaining budget
-            remaining = budget - sum(
-                graph.estimate_params(i, r[i].item(), variant)
-                for i in range(n)
-                if pi[i] > 0.5
-            )
+            remaining = budget - sum(graph.estimate_params(i, r[i].item(), variant) for i in range(n) if pi[i] > 0.5)
             for i in range(n):
                 if pi[i] > 0.5 and i not in S_fixed:
                     for rank_val in reversed(self.rank_set):
-                        extra = (
-                            graph.estimate_params(i, rank_val, variant)
-                            - graph.estimate_params(i, r[i].item(), variant)
+                        extra = graph.estimate_params(i, rank_val, variant) - graph.estimate_params(
+                            i, r[i].item(), variant
                         )
                         if extra <= remaining:
                             remaining -= extra
@@ -818,19 +856,15 @@ class MIPRelaxationSolver(ConstraintSolver):
                             break
 
         # Final greedy upgrade pass (same as AO rank allocator)
-        allocator = GreedyRankAllocator(
-            rank_set=self.rank_set, r_max=self.rank_max
-        )
+        allocator = GreedyRankAllocator(rank_set=self.rank_set, r_max=self.rank_max)
         r = allocator.allocate(graph, pi, budget, variant, constraints=constraints)
         pi, r = _project_discrete_solution(graph, pi, r, variant, constraints, self.rank_set)
-        pi, r = constraints.enforce_moe_consistency(graph, pi, r, variant, self.rank_set)
-        pi, r = _project_budget(graph, pi, r, budget, variant, utilities)
+        pi, r, variants = constraints.enforce_moe_consistency(graph, pi, r, variant, self.rank_set)
+        pi, r = _project_budget(graph, pi, r, budget, variants, utilities)
 
-        budget_used = int(constraints.get_budget_usage(graph, pi, r, variant))
+        budget_used = int(constraints.get_budget_usage(graph, pi, r, variants))
         budget_remaining = max(0, budget - budget_used)
-        target_modules = [
-            graph.get_module_names()[i] for i in range(n) if pi[i] > 0.5
-        ]
+        target_modules = [graph.get_module_names()[i] for i in range(n) if pi[i] > 0.5]
         utility = sum(
             utilities[i].item() * _utility_per_rank(r[i].item(), self.rank_max)
             for i in range(n)
@@ -857,6 +891,7 @@ class MIPRelaxationSolver(ConstraintSolver):
             target_modules=target_modules,
             reason=reason,
             utility=utility,
+            variants=variants,
         )
 
     # ------------------------------------------------------------------
@@ -881,9 +916,7 @@ class MIPRelaxationSolver(ConstraintSolver):
 
         solver = pywraplp.Solver.CreateSolver("SCIP")
         if not solver:
-            return self._iterative_rounding_fallback(
-                graph, budget, variant, constraints
-            )
+            return self._iterative_rounding_fallback(graph, budget, variant, constraints)
 
         n = graph.n_nodes
         utilities = graph.get_node_importances().tolist()
@@ -918,9 +951,7 @@ class MIPRelaxationSolver(ConstraintSolver):
 
         # Objective
         obj_expr = sum(
-            utilities[i]
-            * (math.log2(r_val) / math.log2(self.rank_max))
-            * w_vars[(i, k)]
+            utilities[i] * (math.log2(r_val) / math.log2(self.rank_max)) * w_vars[(i, k)]
             for i in range(n)
             for k, r_val in enumerate(self.rank_set)
         )
@@ -930,9 +961,7 @@ class MIPRelaxationSolver(ConstraintSolver):
         status = solver.Solve()
 
         if status not in (pywraplp.Solver.OPTIMAL, pywraplp.Solver.FEASIBLE):
-            return self._iterative_rounding_fallback(
-                graph, budget, variant, constraints
-            )
+            return self._iterative_rounding_fallback(graph, budget, variant, constraints)
 
         pi_vals = torch.tensor([pi_vars[i].solution_value() for i in range(n)])
         ranks = torch.zeros(n, dtype=torch.long)
@@ -942,19 +971,13 @@ class MIPRelaxationSolver(ConstraintSolver):
                     if y_vars[i][k].solution_value() > 0.5:
                         ranks[i] = r_val
                         break
-        pi_vals, ranks = _project_discrete_solution(
-            graph, pi_vals, ranks, variant, constraints, self.rank_set
-        )
-        pi_vals, ranks = constraints.enforce_moe_consistency(
-            graph, pi_vals, ranks, variant, self.rank_set
-        )
-        pi_vals, ranks = _project_budget(graph, pi_vals, ranks, budget, variant, torch.tensor(utilities))
+        pi_vals, ranks = _project_discrete_solution(graph, pi_vals, ranks, variant, constraints, self.rank_set)
+        pi_vals, ranks, variants = constraints.enforce_moe_consistency(graph, pi_vals, ranks, variant, self.rank_set)
+        pi_vals, ranks = _project_budget(graph, pi_vals, ranks, budget, variants, torch.tensor(utilities))
 
-        budget_used = int(constraints.get_budget_usage(graph, pi_vals, ranks, variant))
+        budget_used = int(constraints.get_budget_usage(graph, pi_vals, ranks, variants))
         budget_remaining = max(0, budget - budget_used)
-        target_modules = [
-            graph.get_module_names()[i] for i in range(n) if pi_vals[i] > 0.5
-        ]
+        target_modules = [graph.get_module_names()[i] for i in range(n) if pi_vals[i] > 0.5]
         utility = sum(
             utilities[i] * _utility_per_rank(ranks[i].item(), self.rank_max)
             for i in range(n)
@@ -981,4 +1004,5 @@ class MIPRelaxationSolver(ConstraintSolver):
             target_modules=target_modules,
             reason=reason,
             utility=utility,
+            variants=variants,
         )

@@ -1,9 +1,8 @@
 # 🐧Please note that this file has been modified by Tencent on 2026/02/13. All Tencent Modifications are Copyright (C) 2026 Tencent.
 import re
-from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Set, Tuple, Union
+from dataclasses import dataclass
+from typing import Dict, List, Optional, Set, Union
 
-import torch
 import torch.nn as nn
 
 from ultralytics.utils import LOGGER
@@ -16,11 +15,8 @@ from .api import (
     LoHaConfig,
     LoKrConfig,
     OFTConfig,
-    PEFT_AVAILABLE,
-    _effective_peft_variant,
     _fast_parse_int_list,
     _fast_parse_str_list,
-    _is_rtdetr_like_model,
     _normalize_lora_init,
     _supports_peft_kwarg,
     resolve_adalora_total_step,
@@ -53,6 +49,7 @@ class LoRAConfig:
     only_backbone: bool = False
     exclude_modules: Optional[List[str]] = None
     target_modules: Optional[List[str]] = None
+    rank_pattern: Optional[Dict[str, int]] = None
 
     # Layer Filtering
     last_n: Optional[int] = None
@@ -140,6 +137,8 @@ class LoRAConfig:
     # None preserves legacy unlimited-target behavior when the planner is off.
     adapter_budget: Optional[int] = None
     planner_solver: str = "ao"  # ao, dco, mip; AO is deterministic/default
+    planner_backend: str = "legacy"  # legacy or vpeft; V-PEFT remains opt-in
+    vpeft_strict: bool = False  # Re-raise unexpected internal V-PEFT failures
     sensitivity_select: bool = False
     sensitivity_num_batches: int = 4
     sensitivity_top_ratio: float = 0.5
@@ -150,13 +149,25 @@ class LoRAConfig:
     def __post_init__(self):
         """Performs parameter validation and type standardization."""
         # Standardize list inputs
-        if isinstance(self.kernels, str): self.kernels = _fast_parse_int_list(self.kernels)
-        if isinstance(self.exclude_modules, str): self.exclude_modules = _fast_parse_str_list(self.exclude_modules)
-        if isinstance(self.target_modules, str): self.target_modules = _fast_parse_str_list(self.target_modules)
+        if isinstance(self.kernels, str):
+            self.kernels = _fast_parse_int_list(self.kernels)
+        if isinstance(self.exclude_modules, str):
+            self.exclude_modules = _fast_parse_str_list(self.exclude_modules)
+        if isinstance(self.target_modules, str):
+            self.target_modules = _fast_parse_str_list(self.target_modules)
+        if self.rank_pattern is not None:
+            if not isinstance(self.rank_pattern, dict):
+                raise TypeError("rank_pattern must be a mapping of target module names to positive ranks")
+            normalized_rank_pattern = {str(name): int(rank) for name, rank in self.rank_pattern.items()}
+            invalid_ranks = {name: rank for name, rank in normalized_rank_pattern.items() if not name or rank <= 0}
+            if invalid_ranks:
+                raise ValueError(f"rank_pattern entries must have non-empty names and positive ranks: {invalid_ranks}")
+            self.rank_pattern = normalized_rank_pattern
 
         # Logical validation
         if self.auto_r_ratio > 0:
-            if self.r < 0: self.r = 0 # Will be handled by auto logic
+            if self.r < 0:
+                self.r = 0  # Will be handled by auto logic
         elif self.r < 0:
             raise ValueError("lora_r must be >= 0")
 
@@ -228,7 +239,8 @@ class LoRAConfig:
             "kernels": "lora_kernels",
             "skip_stem": "lora_skip_stem",
             "min_channels": "lora_min_channels",
-            "target_modules": "lora_target_modules", 
+            "target_modules": "lora_target_modules",
+            "rank_pattern": "lora_rank_pattern",
             "gradient_checkpointing": "lora_gradient_checkpointing",
             "auto_r_ratio": "lora_auto_r_ratio",
             "use_dora": "lora_use_dora",
@@ -292,6 +304,8 @@ class LoRAConfig:
             "planner_enabled": "lora_planner_enabled",
             "adapter_budget": "lora_adapter_budget",
             "planner_solver": "lora_planner_solver",
+            "planner_backend": "lora_planner_backend",
+            "vpeft_strict": "lora_vpeft_strict",
             "sensitivity_select": "lora_sensitivity_select",
             "sensitivity_num_batches": "lora_sensitivity_num_batches",
             "sensitivity_top_ratio": "lora_sensitivity_top_ratio",
@@ -303,19 +317,19 @@ class LoRAConfig:
         dataclass_fields = set(cls.__dataclass_fields__)
         final_args = {key: value for key, value in kwargs.items() if key in dataclass_fields}
 
-        for field, arg_name in mapping.items():
-            if field not in final_args and arg_name in kwargs:
+        for config_field, arg_name in mapping.items():
+            if config_field not in final_args and arg_name in kwargs:
                 val = kwargs.get(arg_name)
                 if val is not None:
-                    final_args[field] = val
+                    final_args[config_field] = val
         
         # Extract arguments from the args object
         if args is not None:
-            for field, arg_name in mapping.items():
-                if field not in final_args and hasattr(args, arg_name):
+            for config_field, arg_name in mapping.items():
+                if config_field not in final_args and hasattr(args, arg_name):
                     val = getattr(args, arg_name, None)
                     if val is not None:
-                        final_args[field] = val
+                        final_args[config_field] = val
         
         return cls(**final_args)
 
@@ -435,6 +449,7 @@ class LoRAConfigBuilder:
         targets: Set[str] = set()
         exclude_set = set(exclude_modules) if exclude_modules else set()
         allowed_kernels = set(kernels) if kernels else None
+        rank_pattern = {str(name): int(rank) for name, rank in (kwargs.get("rank_pattern") or {}).items()}
 
         # Determine layer range
         total_layers = len(model) if hasattr(model, '__len__') else 1000
@@ -494,7 +509,8 @@ class LoRAConfigBuilder:
         except (AttributeError, KeyError, TypeError):
             structural_annotations = {}
         for name, module in model.named_modules():
-            if not name: continue 
+            if not name:
+                continue
             
             # 0. Explicit Exclusion
             if name in exclude_set:
@@ -549,6 +565,7 @@ class LoRAConfigBuilder:
 
             # 4. Convolution Specific Checks
             if is_conv:
+                effective_rank = rank_pattern.get(name, r)
                 # Grouped Conv / Depthwise Checks
                 if module.groups > 1:
                     # FIX: Properly handle grouped convolutions.
@@ -562,9 +579,12 @@ class LoRAConfigBuilder:
                     is_depthwise = (module.in_channels == module.out_channels == module.groups)
                     
                     # Check rank divisibility first
-                    if r > 0 and (r % module.groups != 0):
+                    if effective_rank > 0 and (effective_rank % module.groups != 0):
                         # Skip to avoid PEFT ValueError
-                        LOGGER.debug(f"[LoRA] Skipping {name}: groups={module.groups}, rank={r} (rank % groups != 0)")
+                        LOGGER.debug(
+                            f"[LoRA] Skipping {name}: groups={module.groups}, rank={effective_rank} "
+                            "(rank % groups != 0)"
+                        )
                         continue
                     
                     # Handle depthwise specifically
@@ -706,7 +726,7 @@ class LoRAConfigBuilder:
         auto_r_ratio: float = 0.0,
         peft_type: str = "lora",
         **kwargs
-    ) -> Union['LoraConfig', 'LoHaConfig', 'LoKrConfig',
+    ) -> Union['PeftLoraConfig', 'LoHaConfig', 'LoKrConfig',
                'IA3Config', 'OFTConfig', 'BOFTConfig', 'HRAConfig', None]:
         """Factory method: Generates a PEFT Config object."""
         
@@ -1023,6 +1043,18 @@ class LoRAConfigBuilder:
                 "use_dora": kwargs.get('use_dora', False),
                 **common_kwargs,
             }
+            rank_pattern = kwargs.get("rank_pattern") or {}
+            if rank_pattern:
+                filtered_rank_pattern = {
+                    str(name): int(rank) for name, rank in rank_pattern.items() if str(name) in set(targets)
+                }
+                if filtered_rank_pattern:
+                    if _supports_peft_kwarg(PeftLoraConfig, "rank_pattern"):
+                        lora_kwargs["rank_pattern"] = filtered_rank_pattern
+                    else:
+                        raise RuntimeError(
+                            "The installed PEFT version does not support rank_pattern required by the V-PEFT plan."
+                        )
             if _supports_peft_kwarg(PeftLoraConfig, "use_rslora"):
                 lora_kwargs["use_rslora"] = kwargs.get('use_rslora', True)
             elif kwargs.get('use_rslora', True):

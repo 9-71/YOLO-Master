@@ -27,6 +27,8 @@ def update_args_with_lora_runtime_metadata(args, model) -> None:
         "peft_type": "effective_lora_type",
         "requested_init_lora_weights": "requested_lora_init_lora_weights",
         "effective_init_lora_weights": "effective_lora_init_lora_weights",
+        "requested_use_rslora": "requested_lora_use_rslora",
+        "effective_use_rslora": "effective_lora_use_rslora",
         "safety_profile": "lora_safety_profile",
         "safety_overrides": "lora_safety_overrides",
         "target_audit": "lora_target_audit",
@@ -164,8 +166,10 @@ class AdapterRuntimeController:
             return
         from ultralytics.utils.lora import resolve_adalora_total_step
 
-        requested = None if getattr(self, "_adalora_total_step_pending", False) else getattr(
-            self.trainer.args, "lora_total_step", None
+        requested = (
+            None
+            if getattr(self, "_adalora_total_step_pending", False)
+            else getattr(self.trainer.args, "lora_total_step", None)
         )
         total_step = resolve_adalora_total_step("adalora", requested, iterations)
         if total_step is None:
@@ -219,16 +223,82 @@ class AdapterRuntimeController:
         self.trainer.lora_ortho_frequency = self.ortho_frequency
         self.trainer.lora_ortho_batch_counter = 0
 
+    def sync_ema_treatment(self) -> int:
+        """Copy scheduled LoRA scaling from online adapters to matching EMA adapters."""
+        metadata = getattr(self.model, "lora_runtime_metadata", {}) or {}
+        effective_backend = metadata.get("effective_backend", getattr(self.model, "lora_backend", None))
+        if effective_backend not in {"fallback", "peft"}:
+            return 0
+        ema = getattr(getattr(self.trainer, "ema", None), "ema", None)
+        if ema is None:
+            return 0
+
+        online_modules = dict(self.model.named_modules())
+        ema_modules = dict(unwrap_model(ema).named_modules())
+        if effective_backend == "peft":
+            return self._sync_peft_ema_scaling(online_modules, ema_modules)
+
+        from ultralytics.utils.lora.fallback import FewShotLoRAConv, ManualLoRAConv
+
+        synced = 0
+        for name, online in online_modules.items():
+            if not isinstance(online, (ManualLoRAConv, FewShotLoRAConv)):
+                continue
+            averaged = ema_modules.get(name)
+            if not isinstance(averaged, type(online)):
+                raise ValueError(f"EMA fallback adapter layout differs at '{name}'.")
+            online_identity = (online.use_rslora, online.r, online.alpha)
+            ema_identity = (averaged.use_rslora, averaged.r, averaged.alpha)
+            if ema_identity != online_identity:
+                raise ValueError(f"EMA fallback adapter identity differs at '{name}'.")
+            averaged.scaling = online.scaling
+            synced += 1
+        return synced
+
+    @staticmethod
+    def _sync_peft_ema_scaling(online_modules: dict, ema_modules: dict) -> int:
+        """Copy PEFT scaling dictionaries, which are intentionally absent from state_dict."""
+        synced = 0
+        for name, online in online_modules.items():
+            if getattr(online, "lora_A", None) is None:
+                continue
+            averaged = ema_modules.get(name)
+            if averaged is None or getattr(averaged, "lora_A", None) is None:
+                raise ValueError(f"EMA PEFT adapter layout differs at '{name}'.")
+            online_scaling = getattr(online, "scaling", None)
+            ema_scaling = getattr(averaged, "scaling", None)
+            if not isinstance(online_scaling, dict):
+                continue
+            if not isinstance(ema_scaling, dict) or set(ema_scaling) != set(online_scaling):
+                raise ValueError(f"EMA PEFT scaling layout differs at '{name}'.")
+            ema_scaling.update(online_scaling)
+            synced += 1
+        return synced
+
+    def _set_alpha_for_epoch(self, epoch: int) -> None:
+        """Set the effective alpha schedule, including resume after the warmup endpoint."""
+        if self.strategy is None:
+            return
+        alpha_warmup = int(getattr(self.trainer.args, "lora_alpha_warmup", 0) or 0)
+        if alpha_warmup <= 0:
+            return
+        if epoch < alpha_warmup:
+            self.strategy.step_alpha_warmup(epoch, warmup_epochs=alpha_warmup)
+        elif getattr(self.strategy, "_strategy_active", False):
+            self.strategy.finalize_alpha_warmup()
+
+    def restore_after_resume(self, start_epoch: int) -> None:
+        """Restore the scheduled treatment after checkpoint reconstruction."""
+        self._set_alpha_for_epoch(start_epoch)
+        self.sync_ema_treatment()
+
     def begin_epoch(self, epoch: int) -> None:
         """Advance alpha warmup and adapter dropout schedules."""
         if self.strategy is None:
             return
         args = self.trainer.args
-        alpha_warmup = int(getattr(args, "lora_alpha_warmup", 0) or 0)
-        if 0 <= epoch < alpha_warmup:
-            self.strategy.step_alpha_warmup(epoch, warmup_epochs=alpha_warmup)
-        elif alpha_warmup > 0 and epoch == alpha_warmup:
-            self.strategy.finalize_alpha_warmup()
+        self._set_alpha_for_epoch(epoch)
+        self.sync_ema_treatment()
         self.strategy.update_dropout_schedule(
             self.trainer.model,
             epoch=epoch,
@@ -248,9 +318,7 @@ class AdapterRuntimeController:
             return loss
         from ultralytics.utils.lora import LoraTrainingStrategy
 
-        regularizer = LoraTrainingStrategy.compute_orthogonal_loss(
-            self.trainer.model, weight=self.ortho_weight
-        )
+        regularizer = LoraTrainingStrategy.compute_orthogonal_loss(self.trainer.model, weight=self.ortho_weight)
         regularizer = regularizer.to(device=loss.device, dtype=loss.dtype)
         if loss.ndim == 0:
             return loss + regularizer
@@ -269,7 +337,6 @@ class AdapterRuntimeController:
             update = getattr(module, "update_and_allocate", None)
             if callable(update):
                 update(self.optimizer_steps)
-                return
 
     def compute_prediction_entropy(self, predictions):
         """Compute normalized channel entropy for adaptive distillation temperature."""
@@ -297,11 +364,14 @@ class AdapterRuntimeController:
                     teacher, size=student.shape[2:], mode="bilinear", align_corners=False
                 )
             if student.shape[1] == teacher.shape[1]:
-                return torch.nn.functional.kl_div(
-                    torch.nn.functional.log_softmax(student / temperature, dim=1),
-                    torch.nn.functional.softmax(teacher / temperature, dim=1),
-                    reduction="batchmean",
-                ) * temperature**2
+                return (
+                    torch.nn.functional.kl_div(
+                        torch.nn.functional.log_softmax(student / temperature, dim=1),
+                        torch.nn.functional.softmax(teacher / temperature, dim=1),
+                        reduction="batchmean",
+                    )
+                    * temperature**2
+                )
         if student.ndim == teacher.ndim == 3 and student.shape[-1] == teacher.shape[-1]:
             length = min(student.shape[1], teacher.shape[1])
             return torch.nn.functional.mse_loss(student[:, :length], teacher[:, :length])
@@ -344,11 +414,15 @@ class AdapterRuntimeController:
         for index in layers:
             if hasattr(student, "model") and index < len(student.model):
                 cache["student_hooks"].append(
-                    student.model[index].register_forward_hook(partial(_hierarchical_hook, cache["student_features"], index))
+                    student.model[index].register_forward_hook(
+                        partial(_hierarchical_hook, cache["student_features"], index)
+                    )
                 )
             if teacher is not None and hasattr(teacher, "model") and index < len(teacher.model):
                 cache["teacher_hooks"].append(
-                    teacher.model[index].register_forward_hook(partial(_hierarchical_hook, cache["teacher_features"], index))
+                    teacher.model[index].register_forward_hook(
+                        partial(_hierarchical_hook, cache["teacher_features"], index)
+                    )
                 )
         self.trainer._hierarchical_cache = cache
         return cache
