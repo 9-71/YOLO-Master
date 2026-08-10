@@ -8,7 +8,9 @@ import pytest
 import torch
 import torch.nn as nn
 
+from ultralytics.nn.mixture_loss import CompositeCriterion
 from ultralytics.nn.modules.multitask.head import MultiTaskHead
+from ultralytics.nn.modules.multitask.router import TaskRouter
 from ultralytics.utils.loss import MultiTaskLoss
 from ultralytics.models.yolo.multitask.train import (
     MultiTaskTrainer,
@@ -518,11 +520,19 @@ class TestMultiTaskHeadInit:
         assert head.cv4_depth is None
         assert head.cv4_obb is None
 
-    def test_all_tasks_default(self):
+    def test_all_trainable_tasks_default_without_obb(self):
         head = MultiTaskHead(nc=80, ch=(64, 128, 256))
-        assert head.active_tasks == ["classify", "depth", "detect", "normal", "obb", "pose", "segment", "semantic"]
-        for attr in ["cv4_seg", "cv4_pose", "cv4_cls", "cv4_depth", "cv4_normal", "cv4_semantic", "cv4_obb"]:
+        assert head.active_tasks == ["classify", "depth", "detect", "normal", "pose", "segment", "semantic"]
+        for attr in ["cv4_seg", "cv4_pose", "cv4_cls", "cv4_depth", "cv4_normal", "cv4_semantic"]:
             assert getattr(head, attr) is not None, f"{attr} should not be None"
+        assert head.cv4_obb is None
+        assert set(TaskRouter.available_tasks().values()) == set(head.active_tasks)
+
+    def test_legacy_obb_head_cannot_be_activated_for_training(self):
+        head = MultiTaskHead(nc=80, ch=(64, 128, 256), tasks=["detect", "obb"])
+        assert head.cv4_obb is not None
+        with pytest.raises(ValueError, match="dedicated OBB model"):
+            head.set_active_tasks(["detect", "obb"])
 
     def test_subset_tasks(self):
         head = MultiTaskHead(nc=20, ch=(64, 128), tasks=["detect", "segment", "pose"], kpt_shape=(5, 3))
@@ -547,10 +557,15 @@ class TestMultiTaskHeadInit:
         assert hasattr(head, "one2one")
         assert isinstance(head.one2one, dict)
 
-    def test_end2end_is_true(self):
-        """end2end property is True when one2one property exists (base Detect logic)."""
+    def test_end2end_defaults_true_with_complete_one2one_heads(self):
         head = MultiTaskHead(nc=80, ch=(64, 128), tasks=["detect"])
         assert head.end2end is True
+        assert set(head.one2one) >= {"box_head", "cls_head"}
+
+    def test_end2end_false_disables_one2one_forward(self):
+        head = MultiTaskHead(nc=80, ch=(64, 128), tasks=["detect"], end2end=False).train()
+        assert head.end2end is False
+        assert "one2many" not in head(_make_fpn_features(ch=(64, 128)))
 
     def test_task_importance_shape(self):
         head = MultiTaskHead(nc=80, ch=(64, 128), tasks=["detect", "segment", "pose"])
@@ -639,7 +654,6 @@ class TestMultiTaskHeadForwardHead:
             "depth",
             "normal",
             "semantic",
-            "angle",
             "cls_logits",
         ]:
             assert key in out, f"Missing key: {key}"
@@ -654,10 +668,21 @@ class TestMultiTaskHeadForward:
     """Top-level forward() mode switching."""
 
     def test_train_returns_one2many_one2one(self):
-        head = MultiTaskHead(nc=10, ch=(64, 128, 256), tasks=["detect", "segment"], nm=16, npr=128).train()
+        head = MultiTaskHead(
+            nc=10,
+            ch=(64, 128, 256),
+            tasks=["detect", "segment", "pose"],
+            nm=16,
+            npr=128,
+            kpt_shape=(5, 3),
+        ).train()
         out = head(_make_fpn_features())
         assert isinstance(out, dict) and "one2many" in out and "one2one" in out
         assert "boxes" in out["one2many"] and "mask_coefficient" in out["one2many"]
+        assert out["one2one"]["mask_coefficient"] is out["one2many"]["mask_coefficient"]
+        assert out["one2one"]["proto"] is out["one2many"]["proto"]
+        assert out["one2one"]["kpts"] is out["one2many"]["kpts"]
+        assert not hasattr(head, "one2one_cv4_seg") and not hasattr(head, "one2one_cv4_pose")
 
     def test_eval_returns_tuple(self):
         torch.manual_seed(0)
@@ -749,25 +774,23 @@ class TestMultiTaskHeadForward:
 
 
 class TestMultiTaskHeadLifecycle:
-    @pytest.mark.xfail(
-        reason="Known: parent Detect.bias_init accesses one2one['box_head'] but "
-        "MultiTaskHead always has end2end=True (property) while parent "
-        "Detect.__init__ only creates one2one_cv2/cv3 when explicit end2end=True."
-    )
     def test_bias_init_does_not_crash_for_all_tasks(self):
-        """bias_init works when both one2many and one2one have full head dicts.
-        Note: detect-only head may fail bias_init because one2one dict lacks box_head/cls_head
-        (the parent Detect.__init__ only creates one2one_cv* when end2end=True, but
-        MultiTaskHead.end2end is always True via property). This is a known limitation.
-        """
-        head = MultiTaskHead(nc=10, ch=(64, 128, 256), tasks=None)  # all tasks
-        head.bias_init()  # should not raise
+        """Default construction creates the complete one-to-many and one-to-one detection lifecycle."""
+        head = MultiTaskHead(nc=10, ch=(64, 128, 256), tasks=None)
+        head.stride = torch.tensor([8.0, 16.0, 32.0])
+        head.bias_init()
 
-    def test_fuse_clears_all_heads(self):
-        head = MultiTaskHead(nc=10, ch=(64, 128, 256), tasks=["detect", "segment"])
+    def test_fuse_keeps_supervised_auxiliary_heads(self):
+        head = MultiTaskHead(
+            nc=10, ch=(64, 128, 256), tasks=["detect", "segment", "pose"], nm=16, kpt_shape=(5, 3)
+        ).eval()
+        head.stride = torch.tensor([8.0, 16.0, 32.0])
         head.fuse()
-        for attr in ["cv2", "cv3", "cv4_seg", "cv4_pose", "cv4_depth", "cv4_normal", "cv4_semantic", "cv4_obb"]:
-            assert getattr(head, attr) is None, f"{attr} should be None after fuse"
+
+        assert head.cv2 is None and head.cv3 is None
+        assert head.cv4_seg is not None and head.cv4_pose is not None
+        _, raw = head(_make_fpn_features())
+        assert "mask_coefficient" in raw["one2one"] and "kpts" in raw["one2one"]
 
     def test_gradient_flow_detect(self):
         torch.manual_seed(0)
@@ -797,7 +820,7 @@ class TestMultiTaskHeadLifecycle:
         ).train()
         out = head.forward_head(_make_fpn_features())
         total = out["boxes"].mean()
-        for k in ["mask_coefficient", "kpts", "depth", "normal", "semantic", "angle", "cls_logits"]:
+        for k in ["mask_coefficient", "kpts", "depth", "normal", "semantic", "cls_logits"]:
             total = total + out[k].mean()
         total.backward()
         assert _has_grad(head)
@@ -809,6 +832,20 @@ class TestMultiTaskHeadLifecycle:
 
 
 class TestMultiTaskHeadTaskRouter:
+    def test_balance_loss_is_nonnegative_and_updates_router(self):
+        router = TaskRouter(dim=16, num_tasks=3, top_k=1).train()
+        router(torch.randn(2, 16, 8, 8))
+
+        loss = router.compute_balance_loss()
+        assert loss.requires_grad
+        assert torch.isfinite(loss) and loss >= 0
+        loss.backward()
+        assert _has_grad(router.affinity_router)
+
+    def test_balance_loss_is_zero_before_first_forward(self):
+        router = TaskRouter(dim=16, num_tasks=3, top_k=1)
+        assert router.compute_balance_loss().item() == 0.0
+
     def test_without_taskrouter_no_routing_stats(self):
         head = MultiTaskHead(nc=10, ch=(64, 128, 256), tasks=["detect", "segment"], use_task_router=False).train()
         out = head.forward_head(_make_fpn_features())
@@ -907,6 +944,21 @@ class TestMultiTaskLoss:
         assert model.state_dict()
         ema.update(model)
 
+    def test_end2end_schedule_updates_and_resumes_through_composite(self):
+        model = self._make_model(["detect", "segment", "pose"])
+        model.args.epochs = 100
+        criterion = MultiTaskLoss(model)
+        composite = CompositeCriterion(model, criterion)
+        initial_o2m = criterion.det_loss.o2m
+
+        composite.updates = 9
+        assert criterion.updates == 9
+        composite.update()
+
+        assert composite.updates == criterion.updates == 10
+        assert criterion.det_loss.o2m < initial_o2m
+        assert criterion.det_loss.o2o == pytest.approx(1.0 - criterion.det_loss.o2m)
+
     def test_forward_empty_preds_returns_zeros(self):
         loss = MultiTaskLoss(self._make_model(["detect"]))
         total, items = loss.forward({}, {})
@@ -965,6 +1017,36 @@ class TestMultiTaskLoss:
         total, items = loss.forward(preds, batch)
         assert items.shape == (9,) and torch.isfinite(total), f"total={total.item()}"
         # seg_loss is computed but may be 0 for random data through E2ELoss path
+
+    def test_end2end_auxiliary_losses_use_one2one_assignments(self, monkeypatch):
+        torch.manual_seed(0)
+        model = self._make_model(["detect", "segment", "pose"])
+        criterion = MultiTaskLoss(model)
+        calls = {"segment": 0, "pose": 0}
+        original_segment = criterion.seg_loss_one2one.loss
+        original_pose = criterion.pose_loss_one2one.loss
+
+        def segment_loss(preds, batch):
+            calls["segment"] += 1
+            return original_segment(preds, batch)
+
+        def pose_loss(preds, batch):
+            calls["pose"] += 1
+            return original_pose(preds, batch)
+
+        monkeypatch.setattr(criterion.seg_loss_one2one, "loss", segment_loss)
+        monkeypatch.setattr(criterion.pose_loss_one2one, "loss", pose_loss)
+        preds = model.model[-1](_make_fpn_features())
+        batch = {
+            "batch_idx": torch.tensor([0, 1], dtype=torch.long),
+            "cls": torch.tensor([[0.0], [1.0]], dtype=torch.float32),
+            "bboxes": torch.tensor([[0.5, 0.5, 0.4, 0.4], [0.5, 0.5, 0.3, 0.3]], dtype=torch.float32),
+            "masks": torch.randint(0, 2, (2, 160, 160), dtype=torch.uint8),
+            "keypoints": torch.tensor([[[0.5, 0.5, 1.0]] * 5, [[0.4, 0.4, 1.0]] * 5]),
+        }
+
+        total, _ = criterion(preds, batch)
+        assert torch.isfinite(total) and calls == {"segment": 1, "pose": 1}
 
     def test_pose_loss_zero_without_keypoints(self):
         torch.manual_seed(0)
@@ -1042,6 +1124,26 @@ class TestMultiTaskLoss:
         assert torch.isfinite(total) and (items[5:] > 0).all()
         for branch in ("cv4_cls", "cv4_depth", "cv4_normal", "cv4_semantic"):
             assert _has_grad(getattr(model.model[-1], branch))
+
+    def test_semantic_loss_normalizes_over_valid_pixels_only(self):
+        criterion = MultiTaskLoss.__new__(MultiTaskLoss)
+        nn.Module.__init__(criterion)
+        criterion.model = SimpleNamespace(end2end=False, model=[SimpleNamespace(task_router=None)])
+        criterion.task_weights = {"detect": 0.0, "semantic": 1.0}
+        criterion.det_loss = lambda preds, batch: (torch.zeros(1), torch.zeros(3))
+        criterion.seg_loss = criterion.pose_loss = criterion.cls_loss = None
+        criterion.semantic_loss = nn.CrossEntropyLoss(ignore_index=255, reduction="none")
+        logits = torch.tensor([[[[2.0, 10.0], [10.0, 10.0]], [[-1.0, -10.0], [-10.0, -10.0]]]], requires_grad=True)
+        preds = {"boxes": torch.zeros(1, 4, 1), "scores": torch.zeros(1, 2, 1), "semantic": logits}
+        target = torch.tensor([[[0, 255], [255, 255]]])
+
+        total, items = criterion(preds, {"semantic_mask": target})
+        expected = torch.nn.functional.cross_entropy(logits[:, :, :1, :1], target[:, :1, :1])
+        assert total.item() == pytest.approx(expected.item())
+        assert items[8].item() == pytest.approx(expected.item())
+        total.backward()
+        assert logits.grad is not None and logits.grad[:, :, 0, 0].abs().sum() > 0
+        assert logits.grad[:, :, 0, 1:].eq(0).all() and logits.grad[:, :, 1:].eq(0).all()
 
     def test_missing_dense_targets_do_not_create_supervision(self):
         """Absent auxiliary files and ignored semantic pixels must not produce false targets."""

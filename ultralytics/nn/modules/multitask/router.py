@@ -46,7 +46,8 @@ TASK_SEGMENT = 1
 TASK_POSE = 2
 TASK_CLASSIFY = 3
 TASK_DEPTH = 4
-TASK_OBB = 5
+TASK_NORMAL = 5
+TASK_SEMANTIC = 6
 
 TASK_NAMES = {
     TASK_DETECT: "detect",
@@ -54,7 +55,8 @@ TASK_NAMES = {
     TASK_POSE: "pose",
     TASK_CLASSIFY: "classify",
     TASK_DEPTH: "depth",
-    TASK_OBB: "obb",
+    TASK_NORMAL: "normal",
+    TASK_SEMANTIC: "semantic",
 }
 
 
@@ -70,7 +72,7 @@ class TaskRouter(FP32RouterMixin, nn.Module):
 
     Args:
         dim: Input channel dimension.
-        num_tasks: Number of task experts (default 6: det/seg/pose/cls/depth/obb).
+        num_tasks: Number of task slots (default 7: detect/segment/pose/classify/depth/normal/semantic).
         top_k: Active task experts per token (default 2: primary + secondary).
         temperature: Router softmax temperature.
         balance_loss_coeff: Load-balancing loss weight.
@@ -81,7 +83,7 @@ class TaskRouter(FP32RouterMixin, nn.Module):
     def __init__(
         self,
         dim: int,
-        num_tasks: int = 6,
+        num_tasks: int = 7,
         top_k: int = 2,
         temperature: float = 1.0,
         balance_loss_coeff: float = 0.01,
@@ -132,15 +134,14 @@ class TaskRouter(FP32RouterMixin, nn.Module):
         )
 
         self.last_affinity: Optional[torch.Tensor] = None
+        self.last_assignment: Optional[torch.Tensor] = None
         self.last_routing_stats: dict = {}
 
     @property
     def top_k(self) -> int:
         return self._top_k
 
-    def forward(
-        self, x: torch.Tensor
-    ) -> Tuple[torch.Tensor, torch.Tensor, dict]:
+    def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor, dict]:
         """Route spatial tokens to task experts.
 
         Args:
@@ -155,22 +156,27 @@ class TaskRouter(FP32RouterMixin, nn.Module):
 
         # Stage 1: Compute task affinity (MoT-style token routing)
         affinity_logits = self.affinity_router(x.float())  # [B, T, H, W]
-        affinity = F.softmax(affinity_logits / self.temperature.float(), dim=1)  # [B, T, H, W]
+        router_probs = F.softmax(affinity_logits / self.temperature.float(), dim=1)  # [B, T, H, W]
 
         # Top-K hard selection + soft blending
         if self._top_k < self.num_tasks:
-            topk_vals, topk_idx = affinity.topk(self._top_k, dim=1)
-            topk_weights = topk_vals / (topk_vals.sum(dim=1, keepdim=True) + 1e-8)
-            sparse_affinity = torch.zeros_like(affinity)
+            topk_vals, topk_idx = router_probs.topk(self._top_k, dim=1)
+            topk_weights = topk_vals / topk_vals.sum(dim=1, keepdim=True).clamp_min(1e-8)
+            sparse_affinity = torch.zeros_like(router_probs)
             sparse_affinity.scatter_(1, topk_idx, topk_weights)
+            assignment = torch.zeros_like(router_probs).scatter_(1, topk_idx, 1.0 / self._top_k)
             if self.training:
-                affinity = sparse_affinity * 0.98 + affinity * 0.02  # exploration
+                affinity = sparse_affinity * 0.98 + router_probs * 0.02  # exploration
             else:
                 affinity = sparse_affinity
         else:
             topk_idx = torch.arange(self.num_tasks, device=x.device).view(1, -1, 1, 1).expand(B, -1, H, W)
+            assignment = torch.full_like(router_probs, 1.0 / self.num_tasks)
+            affinity = router_probs
 
-        self.last_affinity = affinity.detach()
+        # Keep soft probabilities graph-connected until the criterion consumes the auxiliary loss.
+        self.last_affinity = router_probs
+        self.last_assignment = assignment.detach()
 
         # Stage 2: Generate task-specific features via weighted fusion
         # Each token is softly routed to its top-K task experts
@@ -180,7 +186,7 @@ class TaskRouter(FP32RouterMixin, nn.Module):
         # Compute task-feature similarity and share complementary information
         shared_features = self.cross_task_proj(x)  # [B, C, H, W]
         if self.shared_channels > 0:
-            shared_features = shared_features[:, :self.shared_channels]  # [B, shared_C, H, W]
+            shared_features = shared_features[:, : self.shared_channels]  # [B, shared_C, H, W]
 
         # Routing diagnostics
         with torch.no_grad():
@@ -195,14 +201,12 @@ class TaskRouter(FP32RouterMixin, nn.Module):
         return task_features, shared_features, self.last_routing_stats
 
     def compute_balance_loss(self) -> torch.Tensor:
-        """Load-balancing loss: encourage uniform task expert usage (GShard style)."""
-        if self.last_affinity is None:
+        """Return the Switch/GShard auxiliary loss for balanced task-slot usage."""
+        if self.last_affinity is None or self.last_assignment is None:
             return torch.zeros((), device=self.temperature.device)
-        probs = self.last_affinity.float()
-        probs = probs.reshape(probs.shape[0], self.num_tasks, -1).mean(-1).mean(0)
-        probs = probs / probs.sum().clamp_min(1e-8)
-        uniform = torch.ones_like(probs) / self.num_tasks
-        return self.num_tasks * (probs * uniform.log() / probs.clamp_min(1e-8)).sum()
+        importance = self.last_affinity.float().mean(dim=(0, 2, 3))
+        usage = self.last_assignment.float().mean(dim=(0, 2, 3))
+        return self.num_tasks * torch.sum(importance * usage)
 
     @staticmethod
     def available_tasks() -> dict[int, str]:
