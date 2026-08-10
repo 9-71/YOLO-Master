@@ -12,7 +12,6 @@ MOT-inspired design:
 
 from __future__ import annotations
 
-import copy
 from typing import Optional
 
 import torch
@@ -24,6 +23,10 @@ from ultralytics.nn.modules.block import Proto26
 from ultralytics.nn.modules.conv import Conv
 
 
+DEFAULT_MULTITASK_TASKS = ("detect", "segment", "pose", "classify", "depth", "normal", "semantic")
+COMPATIBILITY_ONLY_TASKS = frozenset({"obb"})
+
+
 class MultiTaskHead(Detect):
     """Unified multi-task head with sparse and dense prediction branches.
 
@@ -32,10 +35,11 @@ class MultiTaskHead(Detect):
     for all configured tasks.
 
     Args:
-        nc: Number of classes (shared across detection/seg/pose/obb).
+        nc: Number of classes shared by detection and related branches.
         ch: Tuple of input channel sizes from FPN (e.g. (256, 512, 1024)).
-        tasks: List of active task names. Supported: "detect", "segment", "pose",
-               "classify", "depth", "normal", "semantic", "obb".
+        tasks: List of built task names. Trainable branches are "detect", "segment", "pose", "classify", "depth",
+            "normal", and "semantic". "obb" remains construction-compatible for legacy checkpoints but is not a
+            supported unified multi-task training branch.
         nm: Number of mask coefficients (segment).
         npr: Number of mask prototypes (segment).
         kpt_shape: (num_keypoints, dims) for pose estimation.
@@ -57,27 +61,28 @@ class MultiTaskHead(Detect):
         depth_bins: int = 80,
         semantic_nc: int = 0,
         reg_max: int = 16,
-        end2end: bool = False,
+        end2end: bool = True,
         use_task_router: bool = False,
         task_router_dim: Optional[int] = None,
     ):
-        # Default: all tasks
+        # Default to branches with a complete unified training contract.
         if tasks is None:
-            tasks = ["detect", "segment", "pose", "classify", "depth", "normal", "semantic", "obb"]
+            tasks = list(DEFAULT_MULTITASK_TASKS)
         self._built_tasks = set(tasks)
         self._built_tasks.add("detect")
         self._active_tasks = set(self._built_tasks)
         self._use_task_router = use_task_router
 
-        # Initialize Detect base (detection always present)
+        # Initialize Detect base (detection always present) and keep its branch lifecycle explicit.
         super().__init__(nc, reg_max, end2end, ch)
+        self.end2end = end2end
 
         # ── Task-specific heads ──────────────────────────────────────────
-        self._build_segment_head(ch, nm, npr, end2end)
-        self._build_pose_head(ch, kpt_shape, end2end)
-        self._build_classify_head(ch, end2end)
+        self._build_segment_head(ch, nm, npr)
+        self._build_pose_head(ch, kpt_shape)
+        self._build_classify_head(ch)
         self._build_dense_heads(ch, depth_bins, semantic_nc)
-        self._build_obb_head(ch, end2end)
+        self._build_obb_head(ch)
 
         # ── TaskRouter (optional) ────────────────────────────────────────
         if use_task_router:
@@ -111,7 +116,7 @@ class MultiTaskHead(Detect):
         self.task_importance = nn.Parameter(torch.zeros(num_active))
 
     # ── Task builders ────────────────────────────────────────────────────
-    def _build_segment_head(self, ch, nm, npr, end2end):
+    def _build_segment_head(self, ch, nm, npr):
         if "segment" not in self._active_tasks:
             self.nm = 0
             self.proto = None
@@ -122,10 +127,8 @@ class MultiTaskHead(Detect):
         self.proto = Proto26(ch, npr, nm, self.nc)
         c4 = max(ch[0] // 4, nm)
         self.cv4_seg = nn.ModuleList(nn.Sequential(Conv(x, c4, 3), Conv(c4, c4, 3), nn.Conv2d(c4, nm, 1)) for x in ch)
-        if end2end:
-            self.one2one_cv4_seg = copy.deepcopy(self.cv4_seg)
 
-    def _build_pose_head(self, ch, kpt_shape, end2end):
+    def _build_pose_head(self, ch, kpt_shape):
         if "pose" not in self._active_tasks:
             self.kpt_shape = (0, 0)
             self.nk = 0
@@ -137,10 +140,8 @@ class MultiTaskHead(Detect):
         self.cv4_pose = nn.ModuleList(
             nn.Sequential(Conv(x, c4, 3), Conv(c4, c4, 3), nn.Conv2d(c4, self.nk, 1)) for x in ch
         )
-        if end2end:
-            self.one2one_cv4_pose = copy.deepcopy(self.cv4_pose)
 
-    def _build_classify_head(self, ch, end2end):
+    def _build_classify_head(self, ch):
         if "classify" not in self._active_tasks:
             self.cv4_cls = None
             self.global_pool = None
@@ -184,7 +185,7 @@ class MultiTaskHead(Detect):
             else None
         )
 
-    def _build_obb_head(self, ch, end2end):
+    def _build_obb_head(self, ch):
         if "obb" not in self._active_tasks:
             self.ne = 0
             self.cv4_obb = None
@@ -194,8 +195,6 @@ class MultiTaskHead(Detect):
         self.cv4_obb = nn.ModuleList(
             nn.Sequential(Conv(x, c4, 3), Conv(c4, c4, 3), nn.Conv2d(c4, self.ne, 1)) for x in ch
         )
-        if end2end:
-            self.one2one_cv4_obb = copy.deepcopy(self.cv4_obb)
 
     # ── Property helpers ─────────────────────────────────────────────────
     @property
@@ -288,7 +287,13 @@ class MultiTaskHead(Detect):
         tasks = set(tasks)
         if "detect" not in tasks:
             tasks.add("detect")
-        unknown = tasks.difference({"detect", "segment", "pose", "classify", "depth", "normal", "semantic", "obb"})
+        compatibility_only = tasks.intersection(COMPATIBILITY_ONLY_TASKS)
+        if compatibility_only:
+            raise ValueError(
+                "Multi-task 'obb' is not trainable: use a dedicated OBB model or remove 'obb' from data.tasks. "
+                "The compatibility-only angle head is retained solely for loading legacy checkpoints."
+            )
+        unknown = tasks.difference(DEFAULT_MULTITASK_TASKS)
         if unknown:
             raise ValueError(f"Unsupported multi-task branches: {sorted(unknown)}")
         unavailable = tasks.difference(self._built_tasks)
@@ -319,17 +324,10 @@ class MultiTaskHead(Detect):
 
     @property
     def one2one(self):
-        d = dict()
-        if self.has_task("segment") and hasattr(self, "one2one_cv4_seg"):
-            d["mask_head"] = self.one2one_cv4_seg
-        if self.has_task("pose") and hasattr(self, "one2one_cv4_pose"):
-            d["pose_head"] = self.one2one_cv4_pose
-        if self.has_task("obb") and hasattr(self, "one2one_cv4_obb"):
-            d["obb_head"] = self.one2one_cv4_obb
-        if hasattr(self, "one2one_cv2"):
-            d["box_head"] = self.one2one_cv2
-            d["cls_head"] = self.one2one_cv3
-        return d
+        """Return the independently trained one-to-one detection heads."""
+        if not hasattr(self, "one2one_cv2"):
+            return {}
+        return {"box_head": self.one2one_cv2, "cls_head": self.one2one_cv3}
 
     # ── Core forward ─────────────────────────────────────────────────────
     def forward_head(self, x: list[torch.Tensor], **kwargs) -> dict[str, torch.Tensor]:
@@ -346,6 +344,7 @@ class MultiTaskHead(Detect):
         box_head = kwargs.get("box_head", self.cv2)
         cls_head = kwargs.get("cls_head", self.cv3)
         skip_task_router = bool(kwargs.pop("skip_task_router", False))
+        skip_auxiliary_tasks = bool(kwargs.pop("skip_auxiliary_tasks", False))
 
         routed_features, routing_stats = (
             ({task: x for task in self._active_tasks}, None) if skip_task_router else self._route_task_features(x)
@@ -359,7 +358,7 @@ class MultiTaskHead(Detect):
             preds["routing_stats"] = routing_stats
 
         # ── Segmentation ─────────────────────────────────────────────────
-        if self.has_task("segment"):
+        if self.has_task("segment") and not skip_auxiliary_tasks:
             x_mod = routed_features.get("segment", x)
             mask_head = kwargs.get("mask_head", self.cv4_seg)
             if mask_head is not None:
@@ -369,40 +368,40 @@ class MultiTaskHead(Detect):
                 preds["proto"] = self.proto(x_mod) if self.proto is not None else None
 
         # ── Pose ─────────────────────────────────────────────────────────
-        if self.has_task("pose"):
+        if self.has_task("pose") and not skip_auxiliary_tasks:
             x_mod = routed_features.get("pose", x)
             pose_head = kwargs.get("pose_head", self.cv4_pose)
             if pose_head is not None:
                 preds["kpts"] = torch.cat([pose_head[i](x_mod[i]).view(bs, self.nk, -1) for i in range(self.nl)], 2)
 
         # ── Depth ────────────────────────────────────────────────────────
-        if self.has_task("depth"):
+        if self.has_task("depth") and not skip_auxiliary_tasks:
             x_mod = routed_features.get("depth", x)
             depth_head = kwargs.get("depth_head", self.cv4_depth)
             if depth_head is not None:
                 preds["depth"] = F.softplus(depth_head(x_mod[0]))
 
-        if self.has_task("normal"):
+        if self.has_task("normal") and not skip_auxiliary_tasks:
             x_mod = routed_features.get("normal", x)
             normal_head = kwargs.get("normal_head", self.cv4_normal)
             if normal_head is not None:
                 preds["normal"] = F.normalize(normal_head(x_mod[0]), dim=1, eps=1e-6)
 
-        if self.has_task("semantic"):
+        if self.has_task("semantic") and not skip_auxiliary_tasks:
             x_mod = routed_features.get("semantic", x)
             semantic_head = kwargs.get("semantic_head", self.cv4_semantic)
             if semantic_head is not None:
                 preds["semantic"] = semantic_head(x_mod[0])
 
-        # ── OBB ──────────────────────────────────────────────────────────
-        if self.has_task("obb"):
+        # ── OBB compatibility output ────────────────────────────────────
+        if self.has_task("obb") and not skip_auxiliary_tasks:
             x_mod = routed_features.get("obb", x)
             obb_head = kwargs.get("obb_head", self.cv4_obb)
             if obb_head is not None:
                 preds["angle"] = torch.cat([obb_head[i](x_mod[i]).view(bs, self.ne, -1) for i in range(self.nl)], 2)
 
         # ── Classification ───────────────────────────────────────────────
-        if self.has_task("classify") and self.cv4_cls is not None:
+        if self.has_task("classify") and self.cv4_cls is not None and not skip_auxiliary_tasks:
             x_mod = routed_features.get("classify", x)
             preds["cls_logits"] = self.cv4_cls(x_mod[-1])  # global image-level classification
 
@@ -424,7 +423,13 @@ class MultiTaskHead(Detect):
             # routing it again would nevertheless update TaskRouter weights
             # and replace the primary branch diagnostics.
             one2one_kwargs["skip_task_router"] = True
+            one2one_kwargs["skip_auxiliary_tasks"] = True
             one2one = self.forward_head(x_detach, **one2one_kwargs)
+            # Auxiliary heads are supervised on the routed one-to-many features. Reuse those trained dense predictions
+            # for candidate-aligned validation/export instead of maintaining unsupervised one-to-one copies.
+            for key in ("mask_coefficient", "proto", "kpts", "angle"):
+                if key in preds:
+                    one2one[key] = preds[key]
             preds = {"one2many": preds, "one2one": one2one}
 
         if self.training:
@@ -532,8 +537,5 @@ class MultiTaskHead(Detect):
         # Additional init for task branches can be added here
 
     def fuse(self) -> None:
-        """Fuse detection heads while retaining dense branches required by the export schema."""
+        """Remove one-to-many detection heads while retaining every supervised auxiliary branch."""
         self.cv2 = self.cv3 = None
-        self.cv4_seg = None
-        self.cv4_pose = None
-        self.cv4_obb = None

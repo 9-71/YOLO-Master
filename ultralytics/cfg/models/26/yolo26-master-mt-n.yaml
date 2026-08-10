@@ -1,7 +1,7 @@
 # Ultralytics YOLO26-Master-MT Multi-Task Vision Model
 #
 # Default supervised path: detection, instance segmentation, and pose.
-# Classification/depth/OBB require dedicated data, criteria, and validation.
+# Classification/depth require aligned labels; unified MultiTask OBB is unsupported (use a dedicated OBB model).
 #
 # MOT-inspired architecture:
 #   - MoT blocks in neck: token-level routing to Transformer experts

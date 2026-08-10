@@ -28,7 +28,6 @@ _TASK_LOSS_NAMES = {
     "depth": ("depth_loss",),
     "normal": ("normal_loss",),
     "semantic": ("semantic_loss",),
-    "obb": ("box_loss", "cls_loss", "dfl_loss", "angle_loss"),
 }
 _UNIFIED_LOSS_NAMES = (
     "box_loss",
@@ -153,14 +152,14 @@ def validate_multitask_contract(data: dict[str, Any], head) -> tuple[str, ...]:
 
     tasks = set(declared_tasks)
     tasks.add("detect")  # MultiTaskHead and its assignment/loss path always include detection.
+    if "obb" in tasks:
+        raise ValueError(
+            "Multi-task 'obb' is not supported: its target, loss, and validator path are incomplete. "
+            "Use a dedicated OBB model or remove 'obb' from data.tasks."
+        )
     unknown = tasks.difference(_SUPPORTED_TASKS)
     if unknown:
         raise ValueError(f"Unsupported multi-task branches: {sorted(unknown)}")
-    if "obb" in tasks:
-        raise ValueError(
-            "Multi-task 'obb' is not trainable yet: its COCO-aligned target, loss, and validator path are incomplete. "
-            "Use a dedicated OBB model or remove 'obb' from data.tasks."
-        )
     without_loss = tasks.difference(_LOSS_BACKED_TASKS)
     without_validation = tasks.difference(_VALIDATION_EVIDENCE)
     if without_loss or without_validation:

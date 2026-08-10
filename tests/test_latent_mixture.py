@@ -192,6 +192,21 @@ def test_yolo26_latent_yaml_builds_and_runs():
     assert output is not None
 
 
+def test_latent_detection_model_load_skips_non_tensor_extra_state():
+    config = ROOT / "ultralytics/cfg/models/26/yolo26-master-latent-n-resinit010.yaml"
+    source = DetectionModel(config, ch=3, nc=80, verbose=False)
+    target = DetectionModel(config, ch=3, nc=80, verbose=False)
+    source_latent = next(module for module in source.modules() if isinstance(module, LatentMixture))
+    target_latent = next(module for module in target.modules() if isinstance(module, LatentMixture))
+    source_latent.residual_gain.data.fill_(0.37)
+
+    assert any(key.endswith("._extra_state") for key in source.state_dict())
+    target.load(source, verbose=False)
+
+    assert target_latent.residual_gain.item() == pytest.approx(0.37)
+    assert target_latent.value_fusion_mode == "router_only"
+
+
 def test_yolo26_latent_initperturb_yaml_builds_and_runs():
     model = DetectionModel(
         ROOT / "ultralytics/cfg/models/26/yolo26-master-latent-n-initperturb020.yaml",

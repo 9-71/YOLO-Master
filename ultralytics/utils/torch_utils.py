@@ -601,7 +601,10 @@ def copy_attr(a, b, include=(), exclude=()):
 
 
 def intersect_dicts(da, db, exclude=()):
-    """Return a dictionary of intersecting keys with matching shapes, excluding 'exclude' keys, using da values.
+    """Return intersecting tensor entries with matching shapes, excluding keys containing any excluded string.
+
+    Non-tensor extra state is intentionally skipped because this helper is used for transferable model weights, not
+    strict restoration of module configuration or runtime metadata.
 
     Args:
         da (dict): First dictionary.
@@ -609,9 +612,17 @@ def intersect_dicts(da, db, exclude=()):
         exclude (tuple, optional): Keys to exclude.
 
     Returns:
-        (dict): Dictionary of intersecting keys with matching shapes.
+        (dict): Dictionary of intersecting tensor entries with matching shapes.
     """
-    return {k: v for k, v in da.items() if k in db and all(x not in k for x in exclude) and v.shape == db[k].shape}
+    return {
+        k: v
+        for k, v in da.items()
+        if k in db
+        and all(x not in k for x in exclude)
+        and isinstance(v, torch.Tensor)
+        and isinstance(db[k], torch.Tensor)
+        and v.shape == db[k].shape
+    }
 
 
 def is_parallel(model):
