@@ -367,26 +367,8 @@ class MoTBlock(nn.Module):
                         f"→ output {tuple(expert_out.shape)}. All experts must preserve "
                         f"the input tensor shape."
                     )
-                out[batch_idx] = out[batch_idx] + expert_out * w
-            selected_experts = int((indices if indices is not None else weights).unique().numel())
-            self._last_dispatch_stats = {
-                "mode": "sample_sparse",
-                "expert_calls": expert_calls,
-                "actual_expert_calls": expert_calls,
-                **routing_metrics,
-                "selected_samples": B,
-                "selected_experts": selected_experts,
-                "sparsity_ratio": 1.0 - expert_calls / max(len(self.experts), 1),
-                "policy": dispatch_policy,
-                "warmup_step": warmup_step,
-                "warmup_steps": self.sparse_train_warmup_steps,
-                "sparse_train_ready": sparse_train_ready,
-                "ddp_active": ddp_active,
-                "ddp_find_unused_parameters": self._ddp_find_unused_parameters,
-                "ddp_sparse_train_safe": ddp_sparse_safe,
-                "ddp_contract_source": self._ddp_contract_source,
-                "ddp_fallback_reason": ddp_fallback_reason,
-            }
+                out[batch_idx] = out[batch_idx] + (expert_out * w).to(out.dtype)
+            self._last_dispatch_stats = {"mode": "sample_sparse", "expert_calls": expert_calls, "selected_samples": B}
         else:
             for e_idx, expert in enumerate(self.experts):
                 w = weights[:, e_idx : e_idx + 1]
@@ -397,27 +379,8 @@ class MoTBlock(nn.Module):
                         f"→ output {tuple(expert_out.shape)}. All experts must preserve "
                         f"the input tensor shape."
                     )
-                out = out + expert_out * w
-            self._last_dispatch_stats = {
-                "mode": "dense",
-                "expert_calls": len(self.experts),
-                "actual_expert_calls": len(self.experts),
-                **routing_metrics,
-                "selected_samples": B,
-                "selected_experts": len(self.experts),
-                "sparsity_ratio": 0.0,
-                "policy": "dense_export" if exporting else dispatch_policy,
-                "warmup_step": warmup_step,
-                "warmup_steps": self.sparse_train_warmup_steps,
-                "sparse_train_ready": sparse_train_ready,
-                "ddp_active": ddp_active,
-                "ddp_find_unused_parameters": self._ddp_find_unused_parameters,
-                "ddp_sparse_train_safe": ddp_sparse_safe,
-                "ddp_contract_source": self._ddp_contract_source,
-                "ddp_fallback_reason": ddp_fallback_reason,
-            }
-        if self.training and self.sparse_train and not exporting:
-            self._sparse_train_step.add_(1)
+                out = out + (expert_out * w).to(out.dtype)
+            self._last_dispatch_stats = {"mode": "dense", "expert_calls": len(self.experts), "selected_samples": B}
         return out
 
     def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
