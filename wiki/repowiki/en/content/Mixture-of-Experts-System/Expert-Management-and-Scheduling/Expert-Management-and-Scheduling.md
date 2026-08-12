@@ -12,7 +12,7 @@
 - [bench_moe_mps.py](file://scripts/bench_moe_mps.py)
 - [audit_moe_usage.py](file://scripts/audit_moe_usage.py)
 - [moe_tools.py](file://agent/runtime/cli/moe_tools.py)
-- [moe_aware_peft_plan.md](file://.plan_archive/moe_aware_peft_plan.md)
+- [moe_aware_peft_plan.md](file://docs/plans/moe_aware_peft_plan.md)
 - [moe-class-lifecycle.md](file://docs/governance/moe-class-lifecycle.md)
 - [routing-interpretability.md](file://docs/governance/routing-interpretability.md)
 - [performance-gates.md](file://docs/governance/performance-gates.md)
@@ -72,7 +72,7 @@ Figure Source
 - [bench_moe_mps.py](file://scripts/bench_moe_mps.py)
 - [audit_moe_usage.py](file://scripts/audit_moe_usage.py)
 - [moe_tools.py](file://agent/runtime/cli/moe_tools.py)
-- [moe_aware_peft_plan.md](file://.plan_archive/moe_aware_peft_plan.md)
+- [moe_aware_peft_plan.md](file://docs/plans/moe_aware_peft_plan.md)
 
 Section Source
 - [moe_pruning_dynamic_schedule.md](file://docs/moe_pruning_dynamic_schedule.md)
@@ -85,7 +85,7 @@ Section Source
 - [bench_moe_mps.py](file://scripts/bench_moe_mps.py)
 - [audit_moe_usage.py](file://scripts/audit_moe_usage.py)
 - [moe_tools.py](file://agent/runtime/cli/moe_tools.py)
-- [moe_aware_peft_plan.md](file://.plan_archive/moe_aware_peft_plan.md)
+- [moe_aware_peft_plan.md](file://docs/plans/moe_aware_peft_plan.md)
 
 ## Core Components
 - 专家调度器
@@ -332,7 +332,7 @@ Section Source
 
 Section Source
 - [moe_tools.py](file://agent/runtime/cli/moe_tools.py)
-- [moe_aware_peft_plan.md](file://.plan_archive/moe_aware_peft_plan.md)
+- [moe_aware_peft_plan.md](file://docs/plans/moe_aware_peft_plan.md)
 
 ### 监控and诊断工具
 - 路由解释性分析
@@ -449,7 +449,7 @@ YOLO-Master的MoEExpert Management and Scheduling系统Via静态and动态调度�
   - MoE-aware PEFT 规划and治理规范provides了更深入的策略and约束说明。
 
 Section Source
-- [moe_aware_peft_plan.md](file://.plan_archive/moe_aware_peft_plan.md)
+- [moe_aware_peft_plan.md](file://docs/plans/moe_aware_peft_plan.md)
 - [moe-class-lifecycle.md](file://docs/governance/moe-class-lifecycle.md)
 - [routing-interpretability.md](file://docs/governance/routing-interpretability.md)
 - [performance-gates.md](file://docs/governance/performance-gates.md)

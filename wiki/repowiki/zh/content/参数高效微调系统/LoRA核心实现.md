@@ -26,8 +26,8 @@
 - [fewshot_lora_quick.py](file://scripts/fewshot_lora_quick.py)
 - [fewshot_lora_verify.py](file://scripts/fewshot_lora_verify.py)
 - [verify_lora_package_split.py](file://scripts/verify_lora_package_split.py)
-- [domain-specific-lora-tuning.md](file://.plan_archive/domain-specific-lora-tuning.md)
-- [moe_aware_peft_plan.md](file://.plan_archive/moe_aware_peft_plan.md)
+- [domain-specific-lora-tuning.md](file://docs/plans/domain-specific-lora-tuning.md)
+- [moe_aware_peft_plan.md](file://docs/plans/moe_aware_peft_plan.md)
 - [2026-07-17-molora-routing-aware-merge.md](file://docs/plans/2026-07-17-molora-routing-aware-merge.md)
 </cite>
 
@@ -59,8 +59,8 @@ graph TB
 subgraph "文档与计划"
 D1["docs/molora_guide.md"]
 D2["docs/LoRA_Quickstart.md"]
-P1[".plan_archive/domain-specific-lora-tuning.md"]
-P2[".plan_archive/moe_aware_peft_plan.md"]
+P1["docs/plans/domain-specific-lora-tuning.md"]
+P2["docs/plans/moe_aware_peft_plan.md"]
 P3["docs/plans/2026-07-17-molora-routing-aware-merge.md"]
 end
 subgraph "运行时工具"
@@ -531,6 +531,6 @@ molora为YOLO-Master提供了高效的LoRA适配能力，结合路由与稀疏�
   - 路由感知合并方案
 
 章节来源
-- [domain-specific-lora-tuning.md](file://.plan_archive/domain-specific-lora-tuning.md)
-- [moe_aware_peft_plan.md](file://.plan_archive/moe_aware_peft_plan.md)
+- [domain-specific-lora-tuning.md](file://docs/plans/domain-specific-lora-tuning.md)
+- [moe_aware_peft_plan.md](file://docs/plans/moe_aware_peft_plan.md)
 - [2026-07-17-molora-routing-aware-merge.md](file://docs/plans/2026-07-17-molora-routing-aware-merge.md)

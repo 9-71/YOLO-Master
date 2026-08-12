@@ -5,7 +5,7 @@
 - [README.md](file://README.md)
 - [LoRA_Quickstart.md](file://docs/LoRA_Quickstart.md)
 - [molora_guide.md](file://docs/molora_guide.md)
-- [domain-specific-lora-tuning.md](file://.plan_archive/domain-specific-lora-tuning.md)
+- [domain-specific-lora-tuning.md](file://docs/plans/domain-specific-lora-tuning.md)
 - [fewshot_lora_quick.py](file://scripts/fewshot_lora_quick.py)
 - [fewshot_lora_verify.py](file://scripts/fewshot_lora_verify.py)
 - [run_fewshot_bg.sh](file://scripts/run_fewshot_bg.sh)
@@ -94,7 +94,7 @@ end
 subgraph "Documentationand计划"
 P["docs/LoRA_Quickstart.md"]
 Q["docs/molora_guide.md"]
-R[".plan_archive/domain-specific-lora-tuning.md"]
+R["docs/plans/domain-specific-lora-tuning.md"]
 end
 A --> F
 B --> H
@@ -135,13 +135,13 @@ Figure Source
 - [augment.py](file://ultralytics/data/augment.py)
 - [LoRA_Quickstart.md](file://docs/LoRA_Quickstart.md)
 - [molora_guide.md](file://docs/molora_guide.md)
-- [domain-specific-lora-tuning.md](file://.plan_archive/domain-specific-lora-tuning.md)
+- [domain-specific-lora-tuning.md](file://docs/plans/domain-specific-lora-tuning.md)
 
 Section Source
 - [README.md](file://README.md)
 - [LoRA_Quickstart.md](file://docs/LoRA_Quickstart.md)
 - [molora_guide.md](file://docs/molora_guide.md)
-- [domain-specific-lora-tuning.md](file://.plan_archive/domain-specific-lora-tuning.md)
+- [domain-specific-lora-tuning.md](file://docs/plans/domain-specific-lora-tuning.md)
 
 ## Core Components
 - 小样本Training入口andValidation
@@ -451,7 +451,7 @@ whileYOLO-Master中implementing小样本学习的关键while于：
 - MoLoRA指南
   - 路径：[docs/molora_guide.md](file://docs/molora_guide.md)
 - 领域特定LoRA调优计划
-  - 路径：[.plan_archive/domain-specific-lora-tuning.md](file://.plan_archive/domain-specific-lora-tuning.md)
+  - 路径：[docs/plans/domain-specific-lora-tuning.md](file://docs/plans/domain-specific-lora-tuning.md)
 - LoRAExamplesand配置
   - 路径：[examples/lora_examples/yolo_master_lora_README.md](file://examples/lora_examples/yolo_master_lora_README.md)
   - 配置文件Examples：
