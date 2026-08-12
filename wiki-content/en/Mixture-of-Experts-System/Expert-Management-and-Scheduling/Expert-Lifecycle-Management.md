@@ -2,7 +2,7 @@
 
 <cite>
 **Files Referenced in This Document**
-- [moe_aware_peft_plan.md](file://.plan_archive/moe_aware_peft_plan.md)
+- [moe_aware_peft_plan.md](file://docs/plans/moe_aware_peft_plan.md)
 - [mixture_loss.py](file://ultralytics/nn/mixture_loss.py)
 - [mixture_registry.py](file://ultralytics/nn/mixture_registry.py)
 - [autobackend.py](file://ultralytics/nn/autobackend.py)
@@ -52,7 +52,7 @@ and专家生命周期相关的代码主要分布whileCentered on下位置：
 - Training/Inference入口：ultralytics/engine/trainer.py、ultralytics/engine/predictor.py、ultralytics/engine/exporter.py
 - 自动后端适配：ultralytics/nn/autobackend.py
 - 测试and基准：tests/*、scripts/bench_moe_micro.py
-- 治理and设计Documentation：docs/governance/moe-class-lifecycle.md、.plan_archive/moe_aware_peft_plan.md
+- 治理and设计Documentation：docs/governance/moe-class-lifecycle.md、docs/plans/moe_aware_peft_plan.md
 
 ```mermaid
 graph TB
@@ -73,7 +73,7 @@ BM["scripts/bench_moe_micro.py"]
 end
 subgraph "治理and计划"
 GL["docs/governance/moe-class-lifecycle.md"]
-MP[".plan_archive/moe_aware_peft_plan.md"]
+MP["docs/plans/moe_aware_peft_plan.md"]
 end
 TR --> MR
 PR --> MR
@@ -99,11 +99,11 @@ Figure Source
 - [test_moe_dynamic_schedule.py](file://tests/test_moe_dynamic_schedule.py)
 - [bench_moe_micro.py](file://scripts/bench_moe_micro.py)
 - [moe-class-lifecycle.md](file://docs/governance/moe-class-lifecycle.md)
-- [moe_aware_peft_plan.md](file://.plan_archive/moe_aware_peft_plan.md)
+- [moe_aware_peft_plan.md](file://docs/plans/moe_aware_peft_plan.md)
 
 Section Source
 - [moe-class-lifecycle.md](file://docs/governance/moe-class-lifecycle.md)
-- [moe_aware_peft_plan.md](file://.plan_archive/moe_aware_peft_plan.md)
+- [moe_aware_peft_plan.md](file://docs/plans/moe_aware_peft_plan.md)
 
 ## Core Components
 - 专家Registryand发现：负责专家类/版本的注册、查找and选择，支撑动态扩缩容and版本兼容。
@@ -413,10 +413,10 @@ ViaRegistrydrivers are installed的生命周期管理、热/冷态切换、分�
 ## Appendix
 - 相关设计and治理Documentation
   - [moe-class-lifecycle.md](file://docs/governance/moe-class-lifecycle.md)
-  - [moe_aware_peft_plan.md](file://.plan_archive/moe_aware_peft_plan.md)
+  - [moe_aware_peft_plan.md](file://docs/plans/moe_aware_peft_plan.md)
   - [moe_pruning_dynamic_schedule.md](file://docs/moe_pruning_dynamic_schedule.md)
 
 Section Source
 - [moe-class-lifecycle.md](file://docs/governance/moe-class-lifecycle.md)
-- [moe_aware_peft_plan.md](file://.plan_archive/moe_aware_peft_plan.md)
+- [moe_aware_peft_plan.md](file://docs/plans/moe_aware_peft_plan.md)
 - [moe_pruning_dynamic_schedule.md](file://docs/moe_pruning_dynamic_schedule.md)

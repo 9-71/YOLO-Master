@@ -2,7 +2,7 @@
 
 <cite>
 **Files Referenced in This Document**
-- [moe_aware_peft_plan.md](file://.plan_archive/moe_aware_peft_plan.md)
+- [moe_aware_peft_plan.md](file://docs/plans/moe_aware_peft_plan.md)
 - [mixture_loss.py](file://ultralytics/nn/mixture_loss.py)
 - [mixture_registry.py](file://ultralytics/nn/mixture_registry.py)
 - [test_moe.py](file://tests/test_moe.py)
@@ -424,7 +424,7 @@ YOLO-Master的Expert ModulesViaUnified Interface、Registryand生命周期管理
   - 路由边界、动态调度、Uses审计、变体契约、稀疏分发、MOLoRA专项测试and微基准。
 
 Section Source
-- [moe_aware_peft_plan.md](file://.plan_archive/moe_aware_peft_plan.md)
+- [moe_aware_peft_plan.md](file://docs/plans/moe_aware_peft_plan.md)
 - [routing-interpreter-toolkit.md](file://docs/plans/2026-07-17-routing-interpreter-toolkit.md)
 - [moe-class-lifecycle.md](file://docs/governance/moe-class-lifecycle.md)
 - [moe_pruning_dynamic_schedule.md](file://docs/moe_pruning_dynamic_schedule.md)
