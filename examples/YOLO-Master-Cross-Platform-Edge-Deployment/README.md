@@ -4,6 +4,24 @@
 
 This project provides a universal inference runtime for [YOLO-Master](https://github.com/Tencent/YOLO-Master) object-detection models, leveraging, [ONNX Runtime](https://onnxruntime.ai/), [NCNN](https://github.com/Tencent/ncnn), [MNN](https://github.com/alibaba/mnn), [TensorRT](https://github.com/nvidia/tensorrt), and [CoreML (NEW!)](https://github.com/apple/coremltools) backends. It runs on almost every platform: Linux, Windows (10/11), Jetson, and MacOS; supports CPU, [NVIDIA CUDA](https://developer.nvidia.com/cuda-toolkit), and [Apple Metal Performance Shaders](https://developer.apple.com/documentation/metalperformanceshaders). It's capable of auto-detecting the model format, class names, and input size -- designed for real-time, end-to-end edge deployment in some of the most challenging tasks (VisDrone, SKU-110K, AI-TOD-v2, etc.).
 
+<img width="900" alt="edge_deployment_architecture_light" src="https://github.com/user-attachments/assets/9c5e6739-b4a2-4747-991f-f7e1d9552bfa" />
+
+---
+
+## 🚀 Update (12-08-2026): YOLO-Master Edge v1.1.0 is up!
+
+**One release, every platform: [macOS](https://github.com/skywalker-lt/yolo-master-edge/releases/download/v1.1.0/yolomaster-edge-mac-1.1.0.zip) / Windows [CPU](https://github.com/skywalker-lt/yolo-master-edge/releases/download/v1.1.0/yolomaster-edge-win-x64-1.1.0.zip) + [CUDA](https://github.com/skywalker-lt/yolo-master-edge/releases/download/v1.1.0/yolomaster-edge-win-x64-gpu_cuda12-1.1.0.zip) / Linux [CPU](https://github.com/skywalker-lt/yolo-master-edge/releases/download/v1.1.0/yolomaster-edge-linux-x64-1.1.0.tar.gz) + [CUDA](https://github.com/skywalker-lt/yolo-master-edge/releases/download/v1.1.0/yolomaster-edge-linux-x64-gpu_cuda12-1.1.0.tar.gz) / [Jetson Orin](https://github.com/skywalker-lt/yolo-master-edge/releases/download/v1.1.0/yolomaster-edge-jetson-orin-1.1.0.tar.gz).**
+
+v1.1.0 brings the same feature set to all runners (macOS / Windows GUIs, Linux and Jetson TensorRT CLIs):
+
+- **Slicing (Sparse SAHI):** sliced inference for small objects on large images, a faithful port of upstream [YOLO-Master](https://github.com/Tencent/YOLO-Master)'s Sparse SAHI Mode plus a traditional dense-tiling variant, with adjustable tile size and per-run statistics.
+- **Cluster-Weighted NMS:** a new NMS mode that refines each box as the weighted average of its detection cluster; tunable sigma, live everywhere including the webcam.
+- **Annotation export:** turn detections into training data as **YOLO TXT / COCO JSON / Pascal VOC XML** from images, folders, or videos (with frame sampling); segmentation models export real mask polygons. Rendered images and annotated videos export too.
+- **Zoom & pan:** cursor-anchored zoom up to 8x on images and paused video in both GUIs.
+- **New: prebuilt Linux x86_64 bundles** (self-contained, glibc 2.35+, all three backends + ffmpeg video) and a **Jetson Orin bundle** with the TensorRT backend now supporting the full feature set.
+
+Full notes: [Release Page](https://github.com/skywalker-lt/yolo-master-edge/releases/tag/v1.1.0).
+
 ---
 
 ## ✨ Update (27-07-2026): YOLO-Master Windows 10/11 Runner (**GUI**) on ONNX/ncnn/MNN backends with **GPU Acceleration**
@@ -41,10 +59,11 @@ For more details, please check the [Release](https://github.com/skywalker-lt/yol
 
 ## ✨ Benefits
 
-- **Universal Binary for Linux and Windows:** A single executable integrates **ONNX Runtime**, **NCNN** and **MNN** backends; the backend, class names, and input size are auto-detected from the model — no recompilation or any dataset YAML needed at runtime.
+- **Universal CLI Binary for Linux and Windows:** A single executable integrates **ONNX Runtime**, **NCNN** and **MNN** backends; the backend, class names, and input size are auto-detected from the model — no recompilation or any dataset YAML needed at runtime.
 - **Verified Accuracy:** Reproduces the PyTorch original to **< 0.5%** mAP50-95 across ONNX / NCNN / MNN, and **< 1.0%** under INT8 quantization, on 548 VisDrone validation images.
 - **Deployment-Friendly:** Cross-platform [CMake](https://cmake.org/) build producing **self-contained and relocatable bundles** for Linux x86_64 and Windows 10/11 — installable by unzip, no dependencies on the target.
-- **GPU Acceleration:** Supports FP32 CPU inference and [NVIDIA CUDA](https://developer.nvidia.com/cuda-toolkit) GPU acceleration through the ONNX Runtime CUDA Execution Provider on Linux, on [NVIDIA Jetson](https://developer.nvidia.com/embedded-computing) Orin via a native TensorRT backend (JetPack 7), and accelerated on MacOS via [MPS](https://developer.apple.com/documentation/metalperformanceshaders) beind Core ML.
+- **GUI:** On Windows 10/11 and MacOS, there are user-friendly GUI runners which integarates all functions of the CLI bundles and supports GPU acceleration.
+- **GPU Acceleration:** Supports FP32 CPU inference & [NVIDIA CUDA](https://developer.nvidia.com/cuda-toolkit) GPU acceleration through the ONNX Runtime CUDA Execution Provider on both Linux and Windows, on Windows via NCNN's [Vulkan](https://vulkan.org) & MNN's [OpenCL](https://opencl.org), on [NVIDIA Jetson](https://developer.nvidia.com/embedded-computing) Orin via a native TensorRT backend (JetPack 7), and accelerated on MacOS via [MPS](https://developer.apple.com/documentation/metalperformanceshaders) beind Core ML.
 
 ## ☕ Note
 
@@ -191,7 +210,7 @@ Ensure you have the following dependencies installed （not required if you only
    ```
    Edit `sdk-paths.cmd` with your locations. It is gitignored. Leave a backend blank to skip it.
    
-3. **Build**
+4. **Build**
    ```bat
    build.cmd            :: configure + build Release
    build.cmd run        :: build, then launch
@@ -270,7 +289,7 @@ Inference performed on full 548 VisDrone validation images against the PyTorch o
 
 CPU latencies are x86 @ 4 threads on one host; mAP is identical across FP32 formats because they are of the same graph. The Jetson row is a native TensorRT FP16 engine, measured on-device.
 
-> ¹ INT8 is *slower* than FP32 on CPU — its throughput payoff needs INT8 tensor cores, not x86 CPUs. The CPU INT8 result is an **accuracy** proof (−0.84%, within budget); on the actual accelerator, note that even on the Orin's tensor cores FP16 wins here (the attention doesn't quantize — see the TensorRT row and [`TECHNICAL_REPORT.md`](TECHNICAL_REPORT.md) Section 8).
+> ¹ INT8 is *slower* than FP32 on CPU — its throughput payoff needs INT8 tensor cores, not x86 CPUs. The CPU INT8 result is an **accuracy** proof (−0.84%, within budget); on the actual accelerator, note that even on the Orin's tensor cores FP16 wins here (the attention doesn't quantize — see the TensorRT row and [`TECHNICAL_REPORT.md`](TECHNICAL_REPORT.md) Section 9).
 
 See [`TECHNICAL_REPORT.md`](TECHNICAL_REPORT.md) for the full methodology, INT8 quantization deep-dive, and numerical parity analysis.
 
