@@ -822,8 +822,10 @@ class MoLoRALayer(nn.Module):
             weights = torch.full((self.num_experts,), 1.0 / self.num_experts)
         with torch.no_grad():
             if self.experts[0].is_conv:
+                base_groups = getattr(self.base_layer, "groups", 1)
                 for weight, e in zip(weights.tolist(), self.experts):
-                    _merge_conv_delta(self.base_layer.weight, e.lora_A, e.lora_B, e.scaling * weight)
+                    _merge_conv_delta(self.base_layer.weight, e.lora_A, e.lora_B, e.scaling * weight,
+                                      groups=base_groups)
             else:
                 for weight, e in zip(weights.tolist(), self.experts):
                     _merge_linear_delta(self.base_layer.weight, e.lora_A, e.lora_B, e.scaling * weight)
@@ -847,8 +849,10 @@ class MoLoRALayer(nn.Module):
         with torch.no_grad():
             weights = self._merge_metadata.get("expert_weights") or [1.0 / self.num_experts] * self.num_experts
             if self.experts[0].is_conv:
+                base_groups = getattr(self.base_layer, "groups", 1)
                 for weight, e in zip(weights, self.experts):
-                    _unmerge_conv_delta(self.base_layer.weight, e.lora_A, e.lora_B, e.scaling * weight)
+                    _unmerge_conv_delta(self.base_layer.weight, e.lora_A, e.lora_B, e.scaling * weight,
+                                        groups=base_groups)
             else:
                 for weight, e in zip(weights, self.experts):
                     _unmerge_linear_delta(self.base_layer.weight, e.lora_A, e.lora_B, e.scaling * weight)
