@@ -181,6 +181,33 @@ def count_parameters(model: nn.Module) -> Dict[str, int]:
 # Merge / Unmerge helpers
 # ---------------------------------------------------------------------------
 
+def _conv_expert_delta(lora_a: nn.Conv2d, lora_b: nn.Conv2d, scale: float) -> torch.Tensor:
+    """Full-rank delta [out_c, in_c, kH, kW] equivalent to lora_B(lora_A(x)) * scale.
+
+    lora_A is a dense 1x1 conv [r, in_c, 1, 1]. lora_B is a KxK conv that carries the
+    base layer's groups, so its weight is [out_c, r // groups, kH, kW] and each output
+    group composes only with its own slice of the r rank channels.
+    """
+    a = lora_a.weight.squeeze(-1).squeeze(-1)  # [r, in_c]
+    b = lora_b.weight
+    b_groups = getattr(lora_b, "groups", 1)
+    if b_groups == 1:
+        return torch.einsum("orkw,ri->oikw", b, a) * scale  # [out_c, in_c, kH, kW]
+    out_c, r_per_g = b.shape[0], b.shape[1]
+    bg = b.view(b_groups, out_c // b_groups, r_per_g, *b.shape[2:])
+    ag = a.view(b_groups, r_per_g, a.shape[1])
+    delta = torch.einsum("gorkw,gri->goikw", bg, ag)
+    return delta.reshape(out_c, a.shape[1], *b.shape[2:]) * scale
+
+
+def _fold_delta_for_groups(delta: torch.Tensor, groups: int) -> torch.Tensor:
+    """Fold a full [out_c, in_c, kH, kW] delta to the grouped base shape [out_c, in_c//g, kH, kW]."""
+    if groups <= 1:
+        return delta
+    in_c = delta.shape[1]
+    return delta.view(delta.shape[0], groups, in_c // groups, *delta.shape[2:]).sum(dim=1)
+
+
 def _merge_conv_delta(
     base_weight: nn.Parameter,
     lora_a: nn.Conv2d,
@@ -190,23 +217,16 @@ def _merge_conv_delta(
 ) -> None:
     """Merge a single LoRA expert delta into a Conv2d base weight.
 
-    Conv2d weight shape: [out_c, in_c//groups, kH, kW] (grouped)
+    Conv2d base weight shape: [out_c, in_c//groups, kH, kW] (grouped)
     lora_A: [r, in_c, 1, 1]  (1x1 conv, groups=1)
-    lora_B: [out_c, r, kH, kW]  (KxK conv, groups=1)
+    lora_B: [out_c, r//groups, kH, kW]  (KxK conv, groups follows the base layer)
 
-    Equivalent delta = lora_B @ lora_A via matmul + expand.
-    For grouped base conv, fold [out_c, in_c, kH, kW] -> [out_c, in_c//g, kH, kW].
+    The equivalent full delta is composed per group, then folded to the grouped
+    base shape when groups > 1.
     """
     with torch.no_grad():
-        a = lora_a.weight.squeeze(-1).squeeze(-1)  # [r, in_c]
-        b = lora_b.weight  # [out_c, r, kH, kW]
-        delta = torch.einsum("orkw,ri->oikw", b, a) * scale  # [out_c, in_c, kH, kW]
-        if groups > 1:
-            in_c = delta.shape[1]
-            delta = delta.view(
-                delta.shape[0], groups, in_c // groups, *delta.shape[2:]
-            ).sum(dim=1)
-        base_weight.data.add_(delta)
+        delta = _conv_expert_delta(lora_a, lora_b, scale)
+        base_weight.data.add_(_fold_delta_for_groups(delta, groups))
 
 
 def _merge_linear_delta(
@@ -231,15 +251,8 @@ def _unmerge_conv_delta(
 ) -> None:
     """Unmerge a single LoRA expert delta from a Conv2d base weight."""
     with torch.no_grad():
-        a = lora_a.weight.squeeze(-1).squeeze(-1)
-        b = lora_b.weight
-        delta = torch.einsum("orkw,ri->oikw", b, a) * scale
-        if groups > 1:
-            in_c = delta.shape[1]
-            delta = delta.view(
-                delta.shape[0], groups, in_c // groups, *delta.shape[2:]
-            ).sum(dim=1)
-        base_weight.data.sub_(delta)
+        delta = _conv_expert_delta(lora_a, lora_b, scale)
+        base_weight.data.sub_(_fold_delta_for_groups(delta, groups))
 
 
 def _unmerge_linear_delta(

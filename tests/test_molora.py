@@ -32,6 +32,7 @@ from ultralytics.nn.peft.molora.utils import (
     _molora_scales,
     init_lora_expert_a,
     init_lora_expert_b,
+    _conv_expert_delta,
 )
 from ultralytics.nn.modules.moe.modules import MOE_LOSS_REGISTRY
 
@@ -312,6 +313,36 @@ class TestMoLoRALayer:
         layer.merge_weights()
         layer.unmerge_weights()
         assert layer.merged is False
+
+    @pytest.mark.parametrize("groups", [1, 2, 4, 8])
+    def test_conv_expert_delta_matches_forward_grouped(self, groups):
+        conv = nn.Conv2d(32, 64, 3, padding=1, groups=groups)
+        exp = MoLoRAExpert(conv, r=8, alpha=16)
+        with torch.no_grad():
+            exp.lora_A.weight.normal_(0, 0.1)
+            exp.lora_B.weight.normal_(0, 0.1)
+        x = torch.randn(2, 32, 8, 8)
+        delta = _conv_expert_delta(exp.lora_A, exp.lora_B, exp.scaling)
+        composed = F.conv2d(x, delta, stride=conv.stride, padding=conv.padding, dilation=conv.dilation)
+        assert torch.allclose(exp(x), composed, atol=1e-5)
+
+    @pytest.mark.parametrize("groups", [2, 4, 8])
+    def test_merge_unmerge_grouped_conv(self, groups):
+        conv = nn.Conv2d(32, 64, 3, padding=1, groups=groups)
+        layer = MoLoRALayer(conv, r=8, alpha=16, num_experts=4, top_k=2)
+        with torch.no_grad():  # default init zeroes lora_B, which would make merge a no-op
+            for exp in layer.experts:
+                exp.lora_A.weight.normal_(0, 0.1)
+                exp.lora_B.weight.normal_(0, 0.1)
+        original = conv.weight.detach().clone()
+        layer.merge_weights()
+        assert layer.merged is True
+        assert not torch.allclose(conv.weight, original)
+        out = layer(torch.randn(2, 32, 8, 8))
+        assert out.shape == (2, 64, 8, 8)
+        layer.unmerge_weights()
+        assert layer.merged is False
+        assert torch.allclose(conv.weight, original, atol=1e-6)
 
     def test_routing_stats(self):
         conv = nn.Conv2d(16, 32, 3, padding=1)
