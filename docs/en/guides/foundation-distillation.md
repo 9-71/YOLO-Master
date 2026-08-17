@@ -14,7 +14,7 @@ YOLO-Master model. Foundation teachers are never required for prediction or expo
 
     This alpha release does not make an accuracy-improvement claim. The real COCO experiments currently validate the
     training path and checkpoint/export boundaries, but do not establish an AP gain. The exact budgets and limitations
-    are recorded in `reports/foundation/v0.1/f15-foundation-multitask.md`.
+    should be recorded with the local validation artifacts produced by the F15 benchmark scripts.
 
 ## Installation
 
@@ -116,7 +116,6 @@ Foundation dependency is absent.
 
 ## Verification artifacts
 
-- `reports/foundation/v0.1/f07-real-dinov3-validation.md` — real DINOv3 validation
-- `reports/foundation/v0.1/f14-foundation-multirouter.md` — multi-foundation router validation
-- `reports/foundation/v0.1/f15-foundation-multitask.md` — multi-task report
-- `reports/foundation/v0.1/foundation-alpha-completion.json` — Alpha completion audit
+Validation reports are intentionally local experiment artifacts and are not distributed with the source tree. Recreate
+them with `scripts/check_coco2017_multitask.py`, `scripts/foundation_f15_effect_matrix.py`,
+`scripts/foundation_f15_real_effect_gate.py`, and `scripts/foundation_f15_release_audit.py` as needed.
