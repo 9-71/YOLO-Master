@@ -1,0 +1,521 @@
+{
+  "schema_version": 1,
+  "benchmark": "f15_effect_matrix",
+  "teacher_model": "/Users/gatilin/.cache/huggingface/hub/models--Tooony133--dinov3-vits16-pretrain-lvd1689m/snapshots/fc6921f7a0b44d5b33ab4482cfed5443db6ccd81",
+  "student_model": "ultralytics/cfg/models/26/yolo26-master-mt-n.yaml",
+  "tasks": [
+    "detect",
+    "segment",
+    "pose"
+  ],
+  "steps": 2,
+  "align_dim": 8,
+  "seeds": [
+    20260813,
+    20260814
+  ],
+  "foundation_loss_weights": [
+    0.01,
+    0.05
+  ],
+  "synthetic_batch": true,
+  "real_accuracy_claim": false,
+  "records": [
+    {
+      "schema_version": 1,
+      "benchmark": "f15_paired_training_signal",
+      "teacher_model": "/Users/gatilin/.cache/huggingface/hub/models--Tooony133--dinov3-vits16-pretrain-lvd1689m/snapshots/fc6921f7a0b44d5b33ab4482cfed5443db6ccd81",
+      "student_model": "ultralytics/cfg/models/26/yolo26-master-mt-n.yaml",
+      "tasks": [
+        "detect",
+        "segment",
+        "pose"
+      ],
+      "steps": 2,
+      "seed": 20260813,
+      "foundation_loss_weight": 0.01,
+      "batch_seed": 20260814,
+      "device": "cpu",
+      "synthetic_batch": true,
+      "real_accuracy_claim": false,
+      "baseline": [
+        {
+          "step": 0,
+          "task_loss": 50.118668,
+          "foundation_loss": 0.0,
+          "loss_items": [
+            3.227153,
+            4.226082,
+            0.085116,
+            21.078121,
+            23.145916,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "supervised_tasks": 3.0,
+          "task_router_entropy": 0.0,
+          "p4_grad_norm": 972.170624,
+          "wall_s": 0.1113
+        },
+        {
+          "step": 1,
+          "task_loss": 49.293678,
+          "foundation_loss": 0.0,
+          "loss_items": [
+            2.499309,
+            4.198135,
+            0.065366,
+            22.497002,
+            22.572664,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "supervised_tasks": 3.0,
+          "task_router_entropy": 0.0,
+          "p4_grad_norm": 1117.873757,
+          "wall_s": 0.1016
+        }
+      ],
+      "foundation": [
+        {
+          "step": 0,
+          "task_loss": 50.118668,
+          "foundation_loss": 0.037358,
+          "loss_items": [
+            3.227153,
+            4.226082,
+            0.085116,
+            21.078121,
+            23.145916,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "supervised_tasks": 3.0,
+          "task_router_entropy": 0.728575,
+          "p4_grad_norm": 972.131984,
+          "wall_s": 0.1204
+        },
+        {
+          "step": 1,
+          "task_loss": 49.289303,
+          "foundation_loss": 0.036692,
+          "loss_items": [
+            2.50771,
+            4.195543,
+            0.065605,
+            22.523556,
+            22.558975,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "supervised_tasks": 3.0,
+          "task_router_entropy": 0.728567,
+          "p4_grad_norm": 1108.009523,
+          "wall_s": 0.1153
+        }
+      ],
+      "summary": {
+        "baseline_task_delta_first_last": -0.82499,
+        "foundation_task_delta_first_last": -0.829365,
+        "foundation_kd_delta_first_last": -0.000666,
+        "baseline_mean_step_s": 0.10645,
+        "foundation_mean_step_s": 0.11785,
+        "foundation_step_overhead_ratio": 0.107093,
+        "foundation_supervised_task_gate": true,
+        "foundation_nonzero_kd_gate": true,
+        "foundation_max_task_router_entropy": 0.728575,
+        "foundation_p4_grad_min": 972.131984,
+        "foundation_router_entropy_first_last": [
+          0.728575,
+          0.728567
+        ]
+      }
+    },
+    {
+      "schema_version": 1,
+      "benchmark": "f15_paired_training_signal",
+      "teacher_model": "/Users/gatilin/.cache/huggingface/hub/models--Tooony133--dinov3-vits16-pretrain-lvd1689m/snapshots/fc6921f7a0b44d5b33ab4482cfed5443db6ccd81",
+      "student_model": "ultralytics/cfg/models/26/yolo26-master-mt-n.yaml",
+      "tasks": [
+        "detect",
+        "segment",
+        "pose"
+      ],
+      "steps": 2,
+      "seed": 20260814,
+      "foundation_loss_weight": 0.01,
+      "batch_seed": 20260815,
+      "device": "cpu",
+      "synthetic_batch": true,
+      "real_accuracy_claim": false,
+      "baseline": [
+        {
+          "step": 0,
+          "task_loss": 48.634682,
+          "foundation_loss": 0.0,
+          "loss_items": [
+            2.408776,
+            4.211817,
+            0.071515,
+            21.169947,
+            23.439617,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "supervised_tasks": 3.0,
+          "task_router_entropy": 0.0,
+          "p4_grad_norm": 1568.409988,
+          "wall_s": 0.1001
+        },
+        {
+          "step": 1,
+          "task_loss": 49.51939,
+          "foundation_loss": 0.0,
+          "loss_items": [
+            2.916551,
+            3.740881,
+            0.087778,
+            22.839092,
+            22.818754,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "supervised_tasks": 3.0,
+          "task_router_entropy": 0.0,
+          "p4_grad_norm": 1189.562475,
+          "wall_s": 0.0934
+        }
+      ],
+      "foundation": [
+        {
+          "step": 0,
+          "task_loss": 48.634682,
+          "foundation_loss": 0.037868,
+          "loss_items": [
+            2.408776,
+            4.211817,
+            0.071515,
+            21.169947,
+            23.439617,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "supervised_tasks": 3.0,
+          "task_router_entropy": 0.728575,
+          "p4_grad_norm": 1568.392534,
+          "wall_s": 0.103
+        },
+        {
+          "step": 1,
+          "task_loss": 49.540115,
+          "foundation_loss": 0.038218,
+          "loss_items": [
+            2.917124,
+            3.735662,
+            0.087948,
+            22.846046,
+            22.819054,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "supervised_tasks": 3.0,
+          "task_router_entropy": 0.72857,
+          "p4_grad_norm": 1204.778347,
+          "wall_s": 0.0998
+        }
+      ],
+      "summary": {
+        "baseline_task_delta_first_last": 0.884708,
+        "foundation_task_delta_first_last": 0.905433,
+        "foundation_kd_delta_first_last": 0.00035,
+        "baseline_mean_step_s": 0.09675,
+        "foundation_mean_step_s": 0.1014,
+        "foundation_step_overhead_ratio": 0.048062,
+        "foundation_supervised_task_gate": true,
+        "foundation_nonzero_kd_gate": true,
+        "foundation_max_task_router_entropy": 0.728575,
+        "foundation_p4_grad_min": 1204.778347,
+        "foundation_router_entropy_first_last": [
+          0.728575,
+          0.72857
+        ]
+      }
+    },
+    {
+      "schema_version": 1,
+      "benchmark": "f15_paired_training_signal",
+      "teacher_model": "/Users/gatilin/.cache/huggingface/hub/models--Tooony133--dinov3-vits16-pretrain-lvd1689m/snapshots/fc6921f7a0b44d5b33ab4482cfed5443db6ccd81",
+      "student_model": "ultralytics/cfg/models/26/yolo26-master-mt-n.yaml",
+      "tasks": [
+        "detect",
+        "segment",
+        "pose"
+      ],
+      "steps": 2,
+      "seed": 20260813,
+      "foundation_loss_weight": 0.05,
+      "batch_seed": 20260814,
+      "device": "cpu",
+      "synthetic_batch": true,
+      "real_accuracy_claim": false,
+      "baseline": [
+        {
+          "step": 0,
+          "task_loss": 50.118668,
+          "foundation_loss": 0.0,
+          "loss_items": [
+            3.227153,
+            4.226082,
+            0.085116,
+            21.078121,
+            23.145916,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "supervised_tasks": 3.0,
+          "task_router_entropy": 0.0,
+          "p4_grad_norm": 972.170624,
+          "wall_s": 0.0929
+        },
+        {
+          "step": 1,
+          "task_loss": 49.293678,
+          "foundation_loss": 0.0,
+          "loss_items": [
+            2.499309,
+            4.198135,
+            0.065366,
+            22.497002,
+            22.572664,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "supervised_tasks": 3.0,
+          "task_router_entropy": 0.0,
+          "p4_grad_norm": 1117.873757,
+          "wall_s": 0.0965
+        }
+      ],
+      "foundation": [
+        {
+          "step": 0,
+          "task_loss": 50.118668,
+          "foundation_loss": 0.186792,
+          "loss_items": [
+            3.227153,
+            4.226082,
+            0.085116,
+            21.078121,
+            23.145916,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "supervised_tasks": 3.0,
+          "task_router_entropy": 0.728575,
+          "p4_grad_norm": 972.007477,
+          "wall_s": 0.1105
+        },
+        {
+          "step": 1,
+          "task_loss": 49.243744,
+          "foundation_loss": 0.183118,
+          "loss_items": [
+            2.538422,
+            4.179999,
+            0.066447,
+            22.645599,
+            22.49403,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "supervised_tasks": 3.0,
+          "task_router_entropy": 0.728567,
+          "p4_grad_norm": 1006.679708,
+          "wall_s": 0.1041
+        }
+      ],
+      "summary": {
+        "baseline_task_delta_first_last": -0.82499,
+        "foundation_task_delta_first_last": -0.874924,
+        "foundation_kd_delta_first_last": -0.003674,
+        "baseline_mean_step_s": 0.0947,
+        "foundation_mean_step_s": 0.1073,
+        "foundation_step_overhead_ratio": 0.133052,
+        "foundation_supervised_task_gate": true,
+        "foundation_nonzero_kd_gate": true,
+        "foundation_max_task_router_entropy": 0.728575,
+        "foundation_p4_grad_min": 972.007477,
+        "foundation_router_entropy_first_last": [
+          0.728575,
+          0.728567
+        ]
+      }
+    },
+    {
+      "schema_version": 1,
+      "benchmark": "f15_paired_training_signal",
+      "teacher_model": "/Users/gatilin/.cache/huggingface/hub/models--Tooony133--dinov3-vits16-pretrain-lvd1689m/snapshots/fc6921f7a0b44d5b33ab4482cfed5443db6ccd81",
+      "student_model": "ultralytics/cfg/models/26/yolo26-master-mt-n.yaml",
+      "tasks": [
+        "detect",
+        "segment",
+        "pose"
+      ],
+      "steps": 2,
+      "seed": 20260814,
+      "foundation_loss_weight": 0.05,
+      "batch_seed": 20260815,
+      "device": "cpu",
+      "synthetic_batch": true,
+      "real_accuracy_claim": false,
+      "baseline": [
+        {
+          "step": 0,
+          "task_loss": 48.634682,
+          "foundation_loss": 0.0,
+          "loss_items": [
+            2.408776,
+            4.211817,
+            0.071515,
+            21.169947,
+            23.439617,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "supervised_tasks": 3.0,
+          "task_router_entropy": 0.0,
+          "p4_grad_norm": 1568.409988,
+          "wall_s": 0.0905
+        },
+        {
+          "step": 1,
+          "task_loss": 49.51939,
+          "foundation_loss": 0.0,
+          "loss_items": [
+            2.916551,
+            3.740881,
+            0.087778,
+            22.839092,
+            22.818754,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "supervised_tasks": 3.0,
+          "task_router_entropy": 0.0,
+          "p4_grad_norm": 1189.562475,
+          "wall_s": 0.1001
+        }
+      ],
+      "foundation": [
+        {
+          "step": 0,
+          "task_loss": 48.634682,
+          "foundation_loss": 0.18934,
+          "loss_items": [
+            2.408776,
+            4.211817,
+            0.071515,
+            21.169947,
+            23.439617,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "supervised_tasks": 3.0,
+          "task_router_entropy": 0.728575,
+          "p4_grad_norm": 1568.334666,
+          "wall_s": 0.1048
+        },
+        {
+          "step": 1,
+          "task_loss": 49.668621,
+          "foundation_loss": 0.190563,
+          "loss_items": [
+            2.912335,
+            3.710694,
+            0.08839,
+            22.882225,
+            22.92157,
+            0.0,
+            0.0,
+            0.0,
+            0.0
+          ],
+          "supervised_tasks": 3.0,
+          "task_router_entropy": 0.72857,
+          "p4_grad_norm": 1233.44047,
+          "wall_s": 0.1353
+        }
+      ],
+      "summary": {
+        "baseline_task_delta_first_last": 0.884708,
+        "foundation_task_delta_first_last": 1.033939,
+        "foundation_kd_delta_first_last": 0.001223,
+        "baseline_mean_step_s": 0.0953,
+        "foundation_mean_step_s": 0.12005,
+        "foundation_step_overhead_ratio": 0.259706,
+        "foundation_supervised_task_gate": true,
+        "foundation_nonzero_kd_gate": true,
+        "foundation_max_task_router_entropy": 0.728575,
+        "foundation_p4_grad_min": 1233.44047,
+        "foundation_router_entropy_first_last": [
+          0.728575,
+          0.72857
+        ]
+      }
+    }
+  ],
+  "summary": {
+    "weights": [
+      {
+        "foundation_loss_weight": 0.01,
+        "runs": 2,
+        "foundation_task_delta_mean": 0.038034,
+        "foundation_task_delta_std": 1.226687,
+        "baseline_task_delta_mean": 0.029859,
+        "baseline_task_delta_std": 1.208939,
+        "foundation_overhead_mean": 0.077577,
+        "all_mechanism_gates": true
+      },
+      {
+        "foundation_loss_weight": 0.05,
+        "runs": 2,
+        "foundation_task_delta_mean": 0.079507,
+        "foundation_task_delta_std": 1.34977,
+        "baseline_task_delta_mean": 0.029859,
+        "baseline_task_delta_std": 1.208939,
+        "foundation_overhead_mean": 0.196379,
+        "all_mechanism_gates": true
+      }
+    ]
+  }
+}

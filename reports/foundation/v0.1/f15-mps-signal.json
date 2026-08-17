@@ -1,0 +1,265 @@
+{
+  "schema_version": 1,
+  "benchmark": "f15_real_coco_effect_gate",
+  "real_data": true,
+  "accuracy_claim": false,
+  "tasks": [
+    "detect",
+    "segment",
+    "pose"
+  ],
+  "plan": [
+    {
+      "dataset": "/Users/gatilin/MyWork/datasets/coco2017/unified_multitask_f15/coco2017_mot_multitask.yaml",
+      "model": "/Users/gatilin/PycharmProjects/YOLO-Master-v260810-latest/ultralytics/cfg/models/26/yolo26-master-mt-n.yaml",
+      "teacher_model": "/Users/gatilin/.cache/huggingface/hub/models--Tooony133--dinov3-vits16-pretrain-lvd1689m/snapshots/fc6921f7a0b44d5b33ab4482cfed5443db6ccd81",
+      "project": "/Users/gatilin/PycharmProjects/YOLO-Master-v260810-latest/runs/multitask/f15-mps-signal",
+      "seed": 20260817,
+      "foundation_loss_weight": 0.01,
+      "epochs": 1,
+      "fraction": 0.0005,
+      "imgsz": 128,
+      "batch": 2,
+      "device": "mps",
+      "workers": 0,
+      "val": false,
+      "tasks": [
+        "detect",
+        "segment",
+        "pose"
+      ],
+      "initialization_contract": {
+        "pretrained": false,
+        "same_model_config": true,
+        "same_seed": true,
+        "same_dataset_split": true
+      },
+      "foundation": false,
+      "name": "baseline-s20260817-w0.01",
+      "overrides": {
+        "model": "/Users/gatilin/PycharmProjects/YOLO-Master-v260810-latest/ultralytics/cfg/models/26/yolo26-master-mt-n.yaml",
+        "data": "/Users/gatilin/MyWork/datasets/coco2017/unified_multitask_f15/coco2017_mot_multitask.yaml",
+        "task": "multitask",
+        "mode": "train",
+        "epochs": 1,
+        "fraction": 0.0005,
+        "imgsz": 128,
+        "batch": 2,
+        "device": "mps",
+        "workers": 0,
+        "val": false,
+        "seed": 20260817,
+        "deterministic": true,
+        "pretrained": false,
+        "project": "/Users/gatilin/PycharmProjects/YOLO-Master-v260810-latest/runs/multitask/f15-mps-signal",
+        "name": "baseline-s20260817-w0.01",
+        "exist_ok": true,
+        "save": true,
+        "plots": false,
+        "foundation_enabled": false,
+        "foundation_multitask": false,
+        "foundation_multitask_tasks": [
+          "detect",
+          "segment",
+          "pose"
+        ],
+        "foundation_teacher": "none",
+        "foundation_model": null,
+        "foundation_backend": "transformers",
+        "foundation_teacher_dtype": "fp32",
+        "foundation_teacher_device": "mps",
+        "foundation_target_levels": [
+          "p4"
+        ],
+        "foundation_loss": "hybrid",
+        "foundation_cosine_weight": 1.0,
+        "foundation_relation_weight": 1.0,
+        "foundation_relation_mode": "sampled",
+        "foundation_relation_samples": 16,
+        "foundation_loss_weight": 0.0
+      }
+    },
+    {
+      "dataset": "/Users/gatilin/MyWork/datasets/coco2017/unified_multitask_f15/coco2017_mot_multitask.yaml",
+      "model": "/Users/gatilin/PycharmProjects/YOLO-Master-v260810-latest/ultralytics/cfg/models/26/yolo26-master-mt-n.yaml",
+      "teacher_model": "/Users/gatilin/.cache/huggingface/hub/models--Tooony133--dinov3-vits16-pretrain-lvd1689m/snapshots/fc6921f7a0b44d5b33ab4482cfed5443db6ccd81",
+      "project": "/Users/gatilin/PycharmProjects/YOLO-Master-v260810-latest/runs/multitask/f15-mps-signal",
+      "seed": 20260817,
+      "foundation_loss_weight": 0.01,
+      "epochs": 1,
+      "fraction": 0.0005,
+      "imgsz": 128,
+      "batch": 2,
+      "device": "mps",
+      "workers": 0,
+      "val": false,
+      "tasks": [
+        "detect",
+        "segment",
+        "pose"
+      ],
+      "initialization_contract": {
+        "pretrained": false,
+        "same_model_config": true,
+        "same_seed": true,
+        "same_dataset_split": true
+      },
+      "foundation": true,
+      "name": "foundation-s20260817-w0.01",
+      "overrides": {
+        "model": "/Users/gatilin/PycharmProjects/YOLO-Master-v260810-latest/ultralytics/cfg/models/26/yolo26-master-mt-n.yaml",
+        "data": "/Users/gatilin/MyWork/datasets/coco2017/unified_multitask_f15/coco2017_mot_multitask.yaml",
+        "task": "multitask",
+        "mode": "train",
+        "epochs": 1,
+        "fraction": 0.0005,
+        "imgsz": 128,
+        "batch": 2,
+        "device": "mps",
+        "workers": 0,
+        "val": false,
+        "seed": 20260817,
+        "deterministic": true,
+        "pretrained": false,
+        "project": "/Users/gatilin/PycharmProjects/YOLO-Master-v260810-latest/runs/multitask/f15-mps-signal",
+        "name": "foundation-s20260817-w0.01",
+        "exist_ok": true,
+        "save": true,
+        "plots": false,
+        "foundation_enabled": true,
+        "foundation_multitask": true,
+        "foundation_multitask_tasks": [
+          "detect",
+          "segment",
+          "pose"
+        ],
+        "foundation_teacher": "dinov3",
+        "foundation_model": "/Users/gatilin/.cache/huggingface/hub/models--Tooony133--dinov3-vits16-pretrain-lvd1689m/snapshots/fc6921f7a0b44d5b33ab4482cfed5443db6ccd81",
+        "foundation_backend": "transformers",
+        "foundation_teacher_dtype": "fp32",
+        "foundation_teacher_device": "mps",
+        "foundation_target_levels": [
+          "p4"
+        ],
+        "foundation_loss": "hybrid",
+        "foundation_cosine_weight": 1.0,
+        "foundation_relation_weight": 1.0,
+        "foundation_relation_mode": "sampled",
+        "foundation_relation_samples": 16,
+        "foundation_loss_weight": 0.01
+      }
+    }
+  ],
+  "records": [
+    {
+      "run_dir": "/Users/gatilin/PycharmProjects/YOLO-Master-v260810-latest/runs/multitask/f15-mps-signal/baseline-s20260817-w0.01",
+      "results_csv": "/Users/gatilin/PycharmProjects/YOLO-Master-v260810-latest/runs/multitask/f15-mps-signal/baseline-s20260817-w0.01/results.csv",
+      "checkpoint": "/Users/gatilin/PycharmProjects/YOLO-Master-v260810-latest/runs/multitask/f15-mps-signal/baseline-s20260817-w0.01/weights/best.pt",
+      "last_epoch": "1",
+      "train_metrics": {
+        "train/box_loss": 3.68312,
+        "train/cls_loss": 5.69056,
+        "train/dfl_loss": 0.07259,
+        "train/seg_loss": 26.7758,
+        "train/pose_loss": 20.4674,
+        "train/cls_global_loss": 0.0,
+        "train/depth_loss": 0.0,
+        "train/normal_loss": 0.0,
+        "train/semantic_loss": 0.0,
+        "train/mixture_aux_loss": 1.09391
+      },
+      "validation_metrics": {
+        "metrics/precision(B)": 0.0,
+        "metrics/recall(B)": 0.0,
+        "metrics/mAP50(B)": 0.0,
+        "metrics/mAP50-95(B)": 0.0
+      },
+      "results_available": true,
+      "elapsed_s": 221.7902,
+      "foundation": false,
+      "foundation_loss_weight": 0.01,
+      "seed": 20260817,
+      "name": "baseline-s20260817-w0.01"
+    },
+    {
+      "run_dir": "/Users/gatilin/PycharmProjects/YOLO-Master-v260810-latest/runs/multitask/f15-mps-signal/foundation-s20260817-w0.01",
+      "results_csv": "/Users/gatilin/PycharmProjects/YOLO-Master-v260810-latest/runs/multitask/f15-mps-signal/foundation-s20260817-w0.01/results.csv",
+      "checkpoint": "/Users/gatilin/PycharmProjects/YOLO-Master-v260810-latest/runs/multitask/f15-mps-signal/foundation-s20260817-w0.01/weights/best.pt",
+      "last_epoch": "1",
+      "train_metrics": {
+        "train/box_loss": 3.66393,
+        "train/cls_loss": 5.66429,
+        "train/dfl_loss": 0.07523,
+        "train/seg_loss": 26.3168,
+        "train/pose_loss": 19.6444,
+        "train/cls_global_loss": 0.0,
+        "train/depth_loss": 0.0,
+        "train/normal_loss": 0.0,
+        "train/semantic_loss": 0.0,
+        "train/mixture_aux_loss": 1.09297,
+        "train/foundation": 0.03175,
+        "train/foundation_loss": 0.0317479,
+        "train/foundation_cosine_loss": 0.0196864,
+        "train/foundation_relational_loss": 0.0120616,
+        "train/foundation_task_ratio": 0.000632537,
+        "train/foundation_loss_weight": 0.01,
+        "train/foundation_foreground_enabled": 0.0,
+        "train/foundation_foreground_mean_weight": 1.0,
+        "train/foundation_multitask_enabled": 1.0,
+        "train/foundation_multitask_active_tasks": 3.0,
+        "train/foundation_multitask_supervised_tasks": 2.83333,
+        "train/foundation_multitask_task_loss": 52.6073,
+        "train/foundation_multitask_task_loss_imbalance": 2.82341,
+        "train/foundation_multitask_loss_imbalance": 2.82341,
+        "train/foundation_multitask_negative_transfer_threshold": 4.0,
+        "train/foundation_multitask_negative_transfer_risk": 0.0,
+        "train/foundation_multitask_negative_transfer": 0.0,
+        "train/foundation_multitask_representation_transfer_ready": 1.0,
+        "train/foundation_multitask_representation_prior_loss": 0.0317479,
+        "train/foundation_multitask_shared_kd_loss": 0.0317479,
+        "train/foundation_multitask_foundation_task_ratio": 0.000632537,
+        "train/foundation_multitask_task_loss_detect": 9.40345,
+        "train/foundation_multitask_task_loss_pose": 19.6444,
+        "train/foundation_multitask_task_loss_segment": 26.3168,
+        "train/foundation_multitask_task_router_entropy": 0.728574,
+        "train/foundation_multitask_task_router_usage_detect": 0.211088,
+        "train/foundation_multitask_task_router_usage_pose": 0.33815,
+        "train/foundation_multitask_task_router_usage_segment": 0.450762,
+        "train/foundation_multitask_task_foundation_router_conflict": 0.0,
+        "train/foundation_multitask_router_conflict": 0.0
+      },
+      "validation_metrics": {
+        "metrics/precision(B)": 0.0,
+        "metrics/recall(B)": 0.0,
+        "metrics/mAP50(B)": 0.0,
+        "metrics/mAP50-95(B)": 0.0
+      },
+      "results_available": true,
+      "elapsed_s": 114.5831,
+      "foundation": true,
+      "foundation_loss_weight": 0.01,
+      "seed": 20260817,
+      "name": "foundation-s20260817-w0.01"
+    }
+  ],
+  "completed_runs": 2,
+  "total_runs": 2,
+  "summary": {
+    "paired_runs": 1,
+    "validation_pairs_with_metrics": 1,
+    "pairs": [
+      {
+        "seed": 20260817,
+        "foundation_loss_weight": 0.01,
+        "baseline_complete": true,
+        "foundation_complete": true,
+        "validation_metric_deltas": {
+          "metrics/mAP50(B)": 0.0,
+          "metrics/mAP50-95(B)": 0.0,
+          "metrics/precision(B)": 0.0,
+          "metrics/recall(B)": 0.0
+        }
+      }
+    ]
+  }
+}

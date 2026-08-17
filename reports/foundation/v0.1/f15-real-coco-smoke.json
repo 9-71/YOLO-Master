@@ -1,0 +1,72 @@
+{
+  "schema_version": 1,
+  "benchmark": "f15_real_coco_multitask_smoke",
+  "dataset_root": "/Users/gatilin/MyWork/datasets/coco2017",
+  "prepared_manifest": "/Users/gatilin/MyWork/datasets/coco2017/unified_multitask_f15/manifest.json",
+  "training_config": "/Users/gatilin/MyWork/datasets/coco2017/unified_multitask_f15/coco2017_mot_multitask.yaml",
+  "tasks": ["detect", "segment", "pose"],
+  "train_fraction": 0.0001,
+  "train_images": 12,
+  "train_batches": 6,
+  "val_images": 32,
+  "imgsz": 64,
+  "epochs": 1,
+  "batch": 2,
+  "seed": 20260813,
+  "device": "cpu",
+  "real_data": true,
+  "accuracy_claim": false,
+  "baseline": {
+    "checkpoint": "/Users/gatilin/PycharmProjects/YOLO-Master-v260720/runs/multitask/outputs/foundation/f15-real-coco-smoke/baseline-v2/weights/best.pt",
+    "train_time_s": 2.49995,
+    "train_losses": {
+      "box": 3.71018,
+      "cls": 5.75347,
+      "dfl": 0.11606,
+      "segment": 27.3403,
+      "pose": 8.17838,
+      "mixture_aux": 1.21634
+    },
+    "val32": {
+      "box_map50_95": 0.0,
+      "mask_map50_95": 0.0,
+      "pose_map50_95": 0.0
+    }
+  },
+  "foundation": {
+    "checkpoint": "/Users/gatilin/PycharmProjects/YOLO-Master-v260720/runs/multitask/outputs/foundation/f15-real-coco-smoke/foundation-dinov3-v2/weights/best.pt",
+    "teacher": "dinov3",
+    "teacher_model": "/Users/gatilin/.cache/huggingface/hub/models--Tooony133--dinov3-vits16-pretrain-lvd1689m/snapshots/fc6921f7a0b44d5b33ab4482cfed5443db6ccd81",
+    "foundation_loss_weight": 0.01,
+    "train_time_s": 2.70962,
+    "train_losses": {
+      "box": 3.71018,
+      "cls": 5.75347,
+      "dfl": 0.11606,
+      "segment": 27.3403,
+      "pose": 8.17838,
+      "mixture_aux": 1.21634,
+      "foundation": 0.0353075,
+      "foundation_cosine": 0.0200482,
+      "foundation_relational": 0.0152593
+    },
+    "multitask_gate": {
+      "active_tasks": 3,
+      "mean_supervised_tasks": 2.333333,
+      "representation_transfer_ready": true,
+      "task_router_entropy": 0.728575,
+      "negative_transfer_risk": 0.0
+    },
+    "checkpoint_metadata": {
+      "training_only": true,
+      "teacher_in_state_dict": false,
+      "export_strip_verified": true
+    },
+    "val32": {
+      "box_map50_95": 0.0,
+      "mask_map50_95": 0.0,
+      "pose_map50_95": 0.0
+    }
+  },
+  "conclusion": "真实 COCO 多任务训练与验证链路已通过，但该极小、未充分训练的 smoke 不支持任何精度提升结论。正式 effect gate 仍需相同 COCO split、多个 KD weight、至少 3 个 seed 和多 epoch 训练。"
+}

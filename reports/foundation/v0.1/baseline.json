@@ -1,0 +1,62 @@
+{
+  "schema_version": 1,
+  "phase": "F00",
+  "recorded_at": "2026-08-12T19:33:34+08:00",
+  "base_tag": "YOLO-Master-v26.08",
+  "base_commit": "43d40117c30811204fb9347efeabddce15f11a62",
+  "head_commit": "f0dc3e92243e060c27b894e402f2bc25dc0ff9b6",
+  "head_is_descendant_of_base_tag": false,
+  "ultralytics_version": "8.4.101",
+  "python": {
+    "version": "3.11.8",
+    "executable": "/Users/gatilin/miniconda3/bin/python"
+  },
+  "torch": {
+    "version": "2.9.1",
+    "cuda_available": false,
+    "cuda_version": null,
+    "mps_available": true
+  },
+  "package_resolution": {
+    "python_import": "/Users/gatilin/PycharmProjects/YOLO-Master-v260810-latest/ultralytics/__init__.py",
+    "yolo_cli": "/Library/Frameworks/Python.framework/Versions/3.11/bin/yolo",
+    "yolo_checks_install_path": "/Users/gatilin/PycharmProjects/YOLO-Master-v260720/ultralytics",
+    "cli_matches_workspace_import": false
+  },
+  "focused_tests": {
+    "command": "pytest tests/test_moe.py tests/test_moa.py tests/test_mot.py tests/test_mixture_aux_loss.py tests/test_routing_aux_contract.py tests/test_master_model_configs.py tests/test_default_config_integrity.py tests/test_mixture_catalog.py tests/test_upstream_integrity.py tests/test_checkpoint_compat.py tests/test_mixture_model_registry.py -q",
+    "passed": 230,
+    "failed": 0,
+    "xfailed": 0,
+    "warnings": 25,
+    "duration_seconds": 12.92
+  },
+  "model_builds": [
+    {
+      "path": "ultralytics/cfg/models/26/yolo26-master-n.yaml",
+      "task": "detect",
+      "model_type": "DetectionModel"
+    },
+    {
+      "path": "ultralytics/cfg/models/26/yolo26-master-latent-n.yaml",
+      "task": "detect",
+      "model_type": "DetectionModel"
+    },
+    {
+      "path": "ultralytics/cfg/models/26/yoloe-26.yaml",
+      "task": "detect",
+      "model_type": "YOLOEModel"
+    }
+  ],
+  "worktree": {
+    "preexisting_untracked_paths": [
+      ".workbuddy/",
+      "output/",
+      "outputs/"
+    ]
+  },
+  "limitations": [
+    "The current HEAD is not a descendant of YOLO-Master-v26.08, so this record is a compatibility baseline for the current main branch, not a clean-tag baseline.",
+    "The yolo CLI resolves to a separate installation while Python imports Ultralytics from this workspace. Use python -m ultralytics or repair the editable install before relying on CLI-only validation."
+  ]
+}
