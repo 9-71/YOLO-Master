@@ -85,11 +85,20 @@ def graph_metadata(model: nn.Module | None) -> dict[str, Any]:
 
 def checkpoint_runtime_metadata(model: nn.Module | None) -> dict[str, Any]:
     """Build additive metadata for newly saved checkpoints."""
-    metadata = {"schema_version": 1, "graph": graph_metadata(model)}
+    foundation_metadata = None
+    if isinstance(model, nn.Module):
+        model = unwrap_model(model)
+        foundation_metadata_fn = getattr(model, "checkpoint_metadata", None)
+        if callable(foundation_metadata_fn):
+            foundation_metadata = foundation_metadata_fn()
+    graph_model = getattr(model, "student_model", model) if isinstance(model, nn.Module) else model
+    metadata = {"schema_version": 1, "graph": graph_metadata(graph_model)}
+    if foundation_metadata is not None:
+        metadata["foundation"] = foundation_metadata
     if isinstance(model, nn.Module):
         from ultralytics.utils.lora import adapter_metadata
 
-        adapter = adapter_metadata(unwrap_model(model))
+        adapter = adapter_metadata(unwrap_model(graph_model))
         if adapter:
             metadata["adapter"] = adapter
     return metadata
@@ -254,21 +263,27 @@ def load_compatible_checkpoint(
     from ultralytics.nn.tasks import torch_safe_load
 
     checkpoint, _ = torch_safe_load(path)
-    source_model = checkpoint.get("ema") if use_ema and isinstance(checkpoint.get("ema"), nn.Module) else checkpoint.get("model")
+    source_model = (
+        checkpoint.get("ema") if use_ema and isinstance(checkpoint.get("ema"), nn.Module) else checkpoint.get("model")
+    )
     if not isinstance(source_model, nn.Module):
         raise TypeError(f"Full checkpoint {path} has no loadable model or EMA module")
     report.source_model_class = _qualified_name(source_model)
     report.source_graph = graph_metadata(source_model)
     report.semantic_risks.extend(_head_risks(report.source_graph, report.target_graph))
     if report.semantic_risks and not allow_head_mismatch:
-        raise ValueError("Checkpoint graph mismatch requires allow_head_mismatch=True: " + "; ".join(report.semantic_risks))
+        raise ValueError(
+            "Checkpoint graph mismatch requires allow_head_mismatch=True: " + "; ".join(report.semantic_risks)
+        )
 
     source_state, target_state = source_model.float().state_dict(), target.state_dict()
     mapped, remap, missing, unexpected, mismatches = remap_checkpoint_state(source_state, target_state)
     source_has_adapters = any(token in key for key in source_state for token in ADAPTER_TOKENS)
     target_has_adapters = any(token in key for key in target_state for token in ADAPTER_TOKENS)
     if source_has_adapters != target_has_adapters:
-        raise ValueError("Adapter topology differs between source checkpoint and target graph; merge or attach adapters first")
+        raise ValueError(
+            "Adapter topology differs between source checkpoint and target graph; merge or attach adapters first"
+        )
     target.load_state_dict(mapped, strict=False)
     report.key_remap = remap
     report.missing_keys = missing

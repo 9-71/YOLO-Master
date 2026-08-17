@@ -108,6 +108,9 @@ def reset_routing_runtime_state(model: nn.Module | None = None, *, step: int | N
             module.last_routing_diagnostics = {}
         if hasattr(module, "_last_routing_stats"):
             module._last_routing_stats = None
+        for name in ("_last_routing_logits", "_last_routing_probs", "_last_routing_summary"):
+            if hasattr(module, name):
+                setattr(module, name, None)
     return next_step
 
 

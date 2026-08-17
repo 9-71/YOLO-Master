@@ -1,0 +1,30 @@
+# F15 — MultiTask Foundation representation transfer (COCO detect + segment + pose).
+#
+# This is an experiment recipe, not an accuracy claim.  The F15 gate is met
+# only when at least two supervised task losses are non-zero in the same run;
+# the wrapper records that evidence and reports possible negative transfer.
+model: yolo26-master-mt-n.yaml
+data: coco-multitask-unified.yaml
+task: multitask
+mode: train
+epochs: 1
+imgsz: 256
+batch: 2
+device: cpu
+workers: 0
+foundation_enabled: true
+foundation_multitask: true
+foundation_multitask_tasks: [detect, segment, pose]
+foundation_teacher: dinov3
+foundation_backend: transformers
+foundation_model: Tooony133/dinov3-vits16-pretrain-lvd1689m
+foundation_teacher_dtype: fp32
+foundation_teacher_device: cpu
+foundation_target_levels: [p4]
+foundation_loss: hybrid
+foundation_cosine_weight: 1.0
+foundation_relation_weight: 1.0
+foundation_loss_weight: 0.1
+foundation_multitask_negative_transfer_threshold: 4.0
+# Paired effect benchmark (synthetic fully-supervised batch; no accuracy claim):
+# python scripts/foundation_f15_paired_benchmark.py --steps 6

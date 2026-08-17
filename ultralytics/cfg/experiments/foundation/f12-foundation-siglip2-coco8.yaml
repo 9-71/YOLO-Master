@@ -1,0 +1,35 @@
+# F12 alpha recipe: SigLIP2 image/text Foundation Teacher smoke.
+# The local cache or hf-mirror can provide the model files.
+model: yolo26n.yaml
+data: coco8.yaml
+epochs: 1
+imgsz: 64
+batch: 2
+workers: 0
+device: cpu
+project: runs/foundation
+name: f12-foundation-siglip2-coco8
+exist_ok: true
+save: true
+plots: false
+val: false
+
+foundation_enabled: true
+foundation_teacher: siglip2
+foundation_backend: transformers
+foundation_model: google/siglip2-base-patch16-512
+foundation_weights:
+foundation_target_levels: [p4]
+foundation_multiscale: false
+foundation_align_dim: 32
+foundation_loss: hybrid
+foundation_loss_weight: 0.05
+foundation_cosine_weight: 1.0
+foundation_relation_weight: 1.0
+foundation_relation_mode: sampled
+foundation_relation_samples: 16
+foundation_foreground_weighting: false
+foundation_teacher_dtype: fp32
+foundation_teacher_device: cpu
+foundation_router_distill: false
+foundation_router_loss_weight: 0.0

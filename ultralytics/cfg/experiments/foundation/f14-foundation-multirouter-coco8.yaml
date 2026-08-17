@@ -1,0 +1,30 @@
+# F14: Multi-Foundation Router (DINOv3 spatial complexity + SigLIP2 semantic uncertainty)
+model: yolo26-master-latent-n.yaml
+data: coco8.yaml
+mode: train
+epochs: 1
+imgsz: 64
+batch: 2
+device: cpu
+workers: 0
+project: runs/foundation
+name: f14-multirouter-coco8
+
+foundation_enabled: true
+foundation_teacher: multi
+foundation_backend: transformers
+foundation_model: Tooony133/dinov3-vits16-pretrain-lvd1689m
+foundation_dinov3_model: Tooony133/dinov3-vits16-pretrain-lvd1689m
+foundation_siglip2_model: google/siglip2-base-patch16-512
+foundation_teacher_dtype: fp32
+foundation_teacher_device: cpu
+foundation_target_levels: [p4]
+foundation_loss: hybrid
+foundation_cosine_weight: 1.0
+foundation_relation_weight: 1.0
+foundation_loss_weight: 0.05
+foundation_router_distill: true
+foundation_router_loss_weight: 0.02
+foundation_router_temperature: 2.0
+foundation_router_teachers: [dinov3, siglip2]
+foundation_router_native_state: true

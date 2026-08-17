@@ -106,6 +106,49 @@ warmup_momentum: 0.8 # (float) initial momentum during warmup
 warmup_bias_lr: 0.1 # (float) bias learning rate during warmup
 distill_model: # (str, optional) path to teacher model for knowledge distillation
 dis: 6.0 # (float) distillation loss weight
+
+# Foundation teacher distillation (training-only, opt-in; does not affect deployment) -------------------------------
+foundation_enabled: False # (bool) enable Foundation Teacher distillation during training
+foundation_teacher: none # (str) teacher family: none, dinov3, siglip2, or multi
+foundation_backend: transformers # (str) teacher backend: transformers or local
+foundation_model: # (str, optional) Foundation model id or local model path
+foundation_weights: # (str, optional) optional local Foundation teacher weights path
+foundation_dinov3_model: # (str, optional) F14 DINOv3 model id; falls back to foundation_model
+foundation_siglip2_model: google/siglip2-base-patch16-512 # (str) F14 SigLIP2 model id
+foundation_dinov3_weights: # (str, optional) F14 DINOv3 weights override
+foundation_siglip2_weights: # (str, optional) F14 SigLIP2 weights override
+foundation_target_levels: [p4] # (list[str]) student feature levels to distill
+foundation_multiscale: False # (bool) enable F10 P3/P4/P5 multi-scale adapters
+foundation_align_dim: 256 # (int) shared channel dimension for student/teacher feature alignment
+foundation_loss: relational # (str) distillation loss: cosine, l2, relational, or hybrid
+foundation_relation_mode: sampled # (str) relational KD mode: sampled or full
+foundation_relation_samples: 256 # (int) maximum spatial tokens for sampled relational KD
+foundation_loss_weight: 0.0 # (float) total Foundation distillation loss weight; 0 disables teacher work
+foundation_relation_weight: 1.0 # (float) relational component weight
+foundation_cosine_weight: 1.0 # (float) cosine component weight
+foundation_foreground_weighting: False # (bool) apply GT foreground-aware weighting to Foundation KD
+foundation_foreground_weight: 1.5 # (float) weight for P4 tokens inside GT boxes
+foundation_boundary_weight: 1.0 # (float) weight for one-cell GT box boundary tokens
+foundation_background_weight: 0.25 # (float) weight for P4 background tokens
+foundation_cache_teacher_features: False # (bool) cache teacher features (future phase)
+foundation_teacher_dtype: auto # (str) teacher dtype: auto, fp32, fp16, or bf16
+foundation_teacher_device: auto # (str|int) teacher device selector, independent of student device
+foundation_router_distill: False # (bool) enable F11 LatentMixture teacher-to-student routing distillation
+foundation_router_loss_weight: 0.0 # (float) F11 routing distillation loss weight
+foundation_router_temperature: 1.0 # (float) F11 routing KD temperature
+foundation_router_teachers: [dinov3, siglip2] # (list[str]) F14 ordered teacher inputs
+foundation_router_native_state: True # (bool) include the detached YOLO native routing state in teacher context
+foundation_semantic_distill: False # (bool) enable F13 positive-region semantic distillation
+foundation_semantic_loss_weight: 0.0 # (float) semantic distillation loss weight
+foundation_semantic_text_weight: 1.0 # (float) region-to-text prototype loss weight
+foundation_semantic_image_weight: 1.0 # (float) region-to-image embedding loss weight
+foundation_semantic_temperature: 0.07 # (float) region-text contrastive temperature
+foundation_semantic_prompts: # (list[str], optional) explicit class prompts; defaults to model.names
+foundation_semantic_prompt_template: "a photo of a {class_name}" # (str) template for automatic class prompts
+foundation_multitask: False # (bool) F15 explicit MultiTask Foundation representation-transfer diagnostics
+foundation_multitask_enabled: False # (bool, optional alias) backwards-compatible spelling for foundation_multitask
+foundation_multitask_tasks: # (list[str], optional) expected active tasks; empty means infer from the model head
+foundation_multitask_negative_transfer_threshold: 4.0 # (float) task-loss max/min ratio reported as negative-transfer risk
 moe_dynamic_schedule: none # (str) epoch-level MoE balance-loss scheduling: none or gini
 box: 7.5 # (float) box loss gain
 cls: 0.5 # (float) classification loss gain

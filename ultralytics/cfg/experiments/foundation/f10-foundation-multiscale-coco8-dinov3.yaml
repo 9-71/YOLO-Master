@@ -1,0 +1,33 @@
+# F10 alpha recipe: same DINOv3 spatial map with independent P3/P4/P5 adapters.
+# Use HF_ENDPOINT=https://hf-mirror.com when the model is not already cached.
+model: yolo26n.yaml
+data: coco8.yaml
+epochs: 1
+imgsz: 64
+batch: 2
+workers: 0
+device: cpu
+project: runs/foundation
+name: f10-multiscale-coco8-dinov3
+exist_ok: true
+save: true
+plots: false
+val: false
+
+foundation_enabled: true
+foundation_teacher: dinov3
+foundation_backend: transformers
+foundation_model: Tooony133/dinov3-vits16-pretrain-lvd1689m
+foundation_weights:
+foundation_target_levels: [p3, p4, p5]
+foundation_multiscale: true
+foundation_align_dim: 32
+foundation_loss: hybrid
+foundation_loss_weight: 0.05
+foundation_cosine_weight: 1.0
+foundation_relation_weight: 1.0
+foundation_relation_mode: sampled
+foundation_relation_samples: 16
+foundation_foreground_weighting: false
+foundation_teacher_dtype: fp32
+foundation_teacher_device: cpu
