@@ -74,6 +74,25 @@ _MIXTURE_LOSS_EMA_DEFAULTS = {"moe": 1.0, "mot": 0.1, "moa": 0.1, "latent": 0.1}
 _MIXTURE_LOSS_EMA_KEYS = ("moe", "mot", "moa", "latent")
 
 
+def _mixture_loss_ema_owner(model: nn.Module | None) -> nn.Module | None:
+    """Return the module that owns the persistent mixture-loss EMA buffer.
+
+    Foundation checkpoints wrap the student model, so the buffer lives under
+    ``student_model`` while the wrapper proxies attribute reads. Resolve the
+    registered owner explicitly to keep resume and EMA restoration strict.
+    """
+    if model is None:
+        return None
+    if "_mixture_loss_ema_buf" in getattr(model, "_buffers", {}):
+        return model
+    student = getattr(model, "_modules", {}).get("student_model")
+    if isinstance(student, nn.Module) and "_mixture_loss_ema_buf" in student._buffers:
+        return student
+    if "_mixture_loss_ema_buf" in getattr(model, "__dict__", {}):
+        raise RuntimeError("_mixture_loss_ema_buf exists but is not registered as a model buffer")
+    return model
+
+
 def _get_mixture_loss_ema(model: nn.Module | None) -> dict[str, float] | None:
     """Return (and lazily init) EMA scales for MoE/MoT/MoA aux-loss magnitudes.
 
@@ -82,14 +101,13 @@ def _get_mixture_loss_ema(model: nn.Module | None) -> dict[str, float] | None:
     and is correctly restored on resume.  Previously a plain dict attribute was
     used, which silently reset to defaults after checkpoint resume.
     """
-    if model is None:
+    owner = _mixture_loss_ema_owner(model)
+    if owner is None:
         return None
-    buf = getattr(model, "_mixture_loss_ema_buf", None)
-    if buf is not None and "_mixture_loss_ema_buf" not in model._buffers:
-        raise RuntimeError("_mixture_loss_ema_buf exists but is not registered as a model buffer")
+    buf = owner._buffers.get("_mixture_loss_ema_buf")
     # Determine target device from model parameters so the buffer stays aligned
     # with the model even after ``.to(device)`` calls.
-    parameter = next(model.parameters(), None)
+    parameter = next(owner.parameters(), None)
     if parameter is not None:
         target_device = parameter.device
     elif torch.cuda.is_available():
@@ -101,12 +119,12 @@ def _get_mixture_loss_ema(model: nn.Module | None) -> dict[str, float] | None:
         target_device = torch.device("cpu")
     if buf is None:
         defaults = [_MIXTURE_LOSS_EMA_DEFAULTS[k] for k in _MIXTURE_LOSS_EMA_KEYS]
-        model.register_buffer(
+        owner.register_buffer(
             "_mixture_loss_ema_buf",
             torch.tensor(defaults, dtype=torch.float32, device=target_device),
             persistent=True,
         )
-        buf = model._mixture_loss_ema_buf
+        buf = owner._mixture_loss_ema_buf
     elif not isinstance(buf, torch.Tensor):
         raise RuntimeError("_mixture_loss_ema_buf must be a torch.Tensor")
     elif buf.numel() == 3:
@@ -118,7 +136,7 @@ def _get_mixture_loss_ema(model: nn.Module | None) -> dict[str, float] | None:
             dtype=torch.float32,
             device=target_device,
         )
-        model._buffers["_mixture_loss_ema_buf"] = migrated
+        owner._buffers["_mixture_loss_ema_buf"] = migrated
         buf = migrated
     elif buf.numel() != len(_MIXTURE_LOSS_EMA_KEYS):
         raise ValueError(f"invalid mixture EMA buffer shape {tuple(buf.shape)}")
@@ -142,7 +160,8 @@ def initialize_mixture_loss_ema_buffer(model: nn.Module | None) -> torch.Tensor 
     if model is None:
         return None
     _get_mixture_loss_ema(model)
-    return model._mixture_loss_ema_buf
+    owner = _mixture_loss_ema_owner(model)
+    return owner._buffers["_mixture_loss_ema_buf"]
 
 
 def _mixture_aux_isolation_enabled(model: nn.Module | None) -> bool:
@@ -173,10 +192,12 @@ def _update_mixture_loss_ema(model: nn.Module | None, key: str, loss_t: torch.Te
     """Update one EMA entry from a detached scalar loss magnitude."""
     if model is None or not getattr(model, "training", False):
         return
-    buf = getattr(model, "_mixture_loss_ema_buf", None)
+    owner = _mixture_loss_ema_owner(model)
+    buf = owner._buffers.get("_mixture_loss_ema_buf") if owner is not None else None
     if buf is None:
         _get_mixture_loss_ema(model)  # lazy-init buffer
-        buf = model._mixture_loss_ema_buf
+        owner = _mixture_loss_ema_owner(model)
+        buf = owner._buffers["_mixture_loss_ema_buf"]
     idx = _MIXTURE_LOSS_EMA_KEYS.index(key)
     with torch.no_grad():
         val = float(loss_t.detach().abs().reshape(-1)[0]) if loss_t.numel() else 0.0
@@ -200,10 +221,12 @@ def _update_mixture_loss_ema_batch(model: nn.Module | None, losses: tuple[torch.
     """
     if model is None or not getattr(model, "training", False):
         return tuple()
-    buf = getattr(model, "_mixture_loss_ema_buf", None)
+    owner = _mixture_loss_ema_owner(model)
+    buf = owner._buffers.get("_mixture_loss_ema_buf") if owner is not None else None
     if buf is None:
         _get_mixture_loss_ema(model)
-        buf = model._mixture_loss_ema_buf
+        owner = _mixture_loss_ema_owner(model)
+        buf = owner._buffers["_mixture_loss_ema_buf"]
     values = torch.stack(
         [
             loss.detach().abs().reshape(()) if isinstance(loss, torch.Tensor) and loss.numel() else buf.new_zeros(())

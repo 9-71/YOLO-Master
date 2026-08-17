@@ -229,7 +229,10 @@ def write_training_yaml(root: Path, output_dir: Path, names: dict[int, str]) -> 
             "panoptic_val2017",
         )
     )
-    tasks = ["detect", "segment", "pose", "classify", "depth", "normal"]
+    # F15's released model YAML builds only these three COCO-aligned heads.
+    # Other indexed sources remain provenance metadata until matching model
+    # branches and losses are explicitly enabled.
+    tasks = ["detect", "segment", "pose"]
     config = {
         "path": str(root),
         "train": "images/train2017",
@@ -239,11 +242,6 @@ def write_training_yaml(root: Path, output_dir: Path, names: dict[int, str]) -> 
         "val_instances": "annotations/instances_val2017.json",
         "train_keypoints": "annotations/person_keypoints_train2017.json",
         "val_keypoints": "annotations/person_keypoints_val2017.json",
-        "depth_dir": "depth",
-        "normal_dir": "normal",
-        "depth_scale": 1.0 / 255.0,
-        "depth_valid_min": 0,
-        "normal_valid_min": 0.1,
         "tasks": tasks,
         "kpt_shape": [17, 3],
         "flip_idx": [0, 2, 1, 4, 3, 6, 5, 8, 7, 10, 9, 12, 11, 14, 13, 16, 15],
@@ -260,7 +258,7 @@ def write_training_yaml(root: Path, output_dir: Path, names: dict[int, str]) -> 
         "auxiliary_dense_labels": {
             "depth": "depth/<image_id>_depth.png",
             "surface_normal": "normal/<image_id>_normal.png",
-            "status": "enabled_when_local_png_is_present; missing samples are ignored",
+            "status": "indexed_as_provenance_only; not enabled by the F15 model/loss contract",
         },
         "names": names,
     }
@@ -314,16 +312,14 @@ def main() -> None:
                 "captions_train2017.json",
                 "captions_val2017.json",
             ],
-            "current_trainer_enabled_tasks": [
-                "detect",
-                "instance_segment",
-                "person_pose",
+            "current_trainer_enabled_tasks": ["detect", "instance_segment", "person_pose"],
+            "indexed_but_not_enabled_tasks": [
                 "image_multilabel_classification",
                 "depth_auxiliary",
                 "surface_normal_auxiliary",
                 "panoptic_semantic_when_installed",
+                "caption",
             ],
-            "prepared_but_not_enabled_tasks": ["caption"],
             "unsupported_without_new_labels_and_losses": ["oriented_box"],
             "local_auxiliary_labels": "Depth and normal PNGs are optional local auxiliary supervision, not official COCO labels.",
         },

@@ -248,6 +248,12 @@ class _LatentAuxMixin:
     def _init_runtime_state(self) -> None:
         self._last_aux_loss = torch.zeros((), dtype=torch.float32)
         self._last_ddp_balance_synced = False
+        # Live, graph-connected routing values are intentionally separate from
+        # ``last_routing_snapshot`` (which is detached for diagnostics).  F11
+        # consumes these tensors after the student forward to compute routing KD.
+        self._last_routing_logits: torch.Tensor | None = None
+        self._last_routing_probs: torch.Tensor | None = None
+        self._last_routing_summary: torch.Tensor | None = None
         self.last_routing_snapshot: dict[str, Any] = {}
         self.last_routing_diagnostics: dict[str, Any] = {}
 
@@ -285,6 +291,24 @@ class _LatentAuxMixin:
 
     def set_noise_std(self, value: float | torch.Tensor) -> None:
         self.router.set_noise_std(value)
+
+    @property
+    def routing_logits(self) -> torch.Tensor | None:
+        """Return the latest graph-connected image/scale-level router logits."""
+
+        return self._last_routing_logits
+
+    @property
+    def routing_probs(self) -> torch.Tensor | None:
+        """Return the latest graph-connected router probabilities."""
+
+        return self._last_routing_probs
+
+    @property
+    def routing_summary(self) -> torch.Tensor | None:
+        """Return the latest graph-connected latent summary used by the router."""
+
+        return self._last_routing_summary
 
     def _compute_aux(
         self, logits: torch.Tensor, probs: torch.Tensor
@@ -370,6 +394,7 @@ class _LatentAuxMixin:
                     routing_finite_diagnostics(logits=logits, probabilities=probs, aux_loss=aux).get("all_finite", True)
                 ),
             }
+            snapshot["mean_router_logits"] = logits.detach().float().reshape(-1, logits.shape[-1]).mean(dim=0).cpu()
             if probs.ndim == 3:
                 snapshot["routing_axis"] = "scale_expert"
                 snapshot["num_scales"] = int(probs.shape[1])
@@ -710,6 +735,9 @@ class LatentMixture(_LatentAuxMixin, nn.Module):
 
     def forward(self, xs: Sequence[torch.Tensor]) -> torch.Tensor:
         base, context = self._build_context(xs)
+        self._last_routing_logits = context.logits
+        self._last_routing_probs = context.probs
+        self._last_routing_summary = context.latent
         sparse_eval = (
             not self.training
             and self.inference_top_k < self.num_experts
@@ -831,6 +859,9 @@ class MultiScaleLatentMixture(_LatentAuxMixin, nn.Module):
     def forward(self, xs: Sequence[torch.Tensor]) -> list[torch.Tensor]:
         checked = _validate_inputs(xs, self.channels, require_same_spatial=False)
         context = self._build_context(checked)
+        self._last_routing_logits = context.logits
+        self._last_routing_probs = context.probs
+        self._last_routing_summary = context.latent
         outputs: list[torch.Tensor] = []
         for s, x in enumerate(checked):
             mixed = torch.zeros_like(x)

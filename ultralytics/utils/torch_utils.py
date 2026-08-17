@@ -830,6 +830,11 @@ def strip_optimizer(f: str | Path = "best.pt", s: str = "", updates: dict[str, A
     if x.get("ema"):
         x["model"] = x["ema"]  # replace model with EMA
 
+    # Unwrap training-only distillation wrappers to save only the deployable student model.
+    from ultralytics.nn.foundation_distill_model import strip_foundation_distillation_model
+
+    x["model"] = strip_foundation_distillation_model(x["model"])
+
     # Unwrap DistillationModel to save only the student model
     from ultralytics.nn.distill_model import DistillationModel
 
@@ -838,7 +843,14 @@ def strip_optimizer(f: str | Path = "best.pt", s: str = "", updates: dict[str, A
         x["model"] = x["model"].student_model
 
     if hasattr(x["model"], "args"):
-        x["model"].args = dict(x["model"].args)  # convert from IterableSimpleNamespace to dict
+        model_args = x["model"].args
+        x["model"].args = (
+            dict(model_args)
+            if isinstance(model_args, dict)
+            else vars(model_args).copy()
+            if hasattr(model_args, "__dict__")
+            else model_args
+        )  # convert from IterableSimpleNamespace or namespace to dict
     if hasattr(x["model"], "criterion"):
         x["model"].criterion = None  # strip loss criterion
     x["model"].half()  # to FP16

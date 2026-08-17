@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import importlib.util
 import json
 import os
 import shutil
@@ -262,6 +263,7 @@ MIXTURE_FLOAT_KEYS = frozenset(
         "sigma",
     }
 )
+# fmt: off
 CFG_FLOAT_KEYS = frozenset(
     {  # integer or float arguments, i.e. x=2 and x=2.0
         "warmup_epochs",
@@ -269,6 +271,19 @@ CFG_FLOAT_KEYS = frozenset(
         "cls",
         "dfl",
         "dis",
+        "foundation_cosine_weight",
+        "foundation_foreground_weight",
+        "foundation_boundary_weight",
+        "foundation_background_weight",
+        "foundation_loss_weight",
+        "foundation_relation_weight",
+        "foundation_router_loss_weight",
+        "foundation_router_temperature",
+        "foundation_semantic_loss_weight",
+        "foundation_semantic_text_weight",
+        "foundation_semantic_image_weight",
+        "foundation_semantic_temperature",
+        "foundation_multitask_negative_transfer_threshold",
         "degrees",
         "shear",
         "time",
@@ -339,6 +354,8 @@ MIXTURE_INT_KEYS = frozenset(
         "moe_prune_calibration_steps",
         "mot_sparse_train_warmup_steps",
         "mot_local_attn_window",
+        "foundation_align_dim",
+        "foundation_relation_samples",
         "slice_size",
     }
 )
@@ -366,6 +383,8 @@ CFG_INT_MIN = {  # minimum valid values for integer arguments used as divisors, 
     "moe_prune_calibration_steps": 1,
     "mot_sparse_train_warmup_steps": 0,
     "mot_local_attn_window": 0,
+    "foundation_align_dim": 1,
+    "foundation_relation_samples": 1,
     "moa_regional_max_kv_tokens": 0,
 }
 MIXTURE_BOOL_KEYS = frozenset(
@@ -446,6 +465,15 @@ CFG_BOOL_KEYS = frozenset(
         "profile",
         "end2end",
         "cls_remap",
+        "foundation_cache_teacher_features",
+        "foundation_enabled",
+        "foundation_foreground_weighting",
+        "foundation_multiscale",
+        "foundation_router_distill",
+        "foundation_router_native_state",
+        "foundation_semantic_distill",
+        "foundation_multitask",
+        "foundation_multitask_enabled",
     }
 ) | MIXTURE_BOOL_KEYS
 MIXTURE_STR_KEYS = frozenset(
@@ -467,7 +495,31 @@ MIXTURE_STR_KEYS = frozenset(
         "mot_scene_inference_mode",
     }
 )
-CFG_STR_KEYS = frozenset({"optimizer", "split", "copy_paste_mode", "auto_augment"}) | MIXTURE_STR_KEYS
+CFG_STR_KEYS = frozenset(
+    {
+        "optimizer",
+        "split",
+        "copy_paste_mode",
+        "auto_augment",
+        "foundation_teacher",
+        "foundation_backend",
+        "foundation_loss",
+        "foundation_teacher_dtype",
+        "foundation_relation_mode",
+        "foundation_semantic_prompt_template",
+        "foundation_dinov3_model",
+        "foundation_siglip2_model",
+        "foundation_dinov3_weights",
+        "foundation_siglip2_weights",
+    }
+) | MIXTURE_STR_KEYS
+FOUNDATION_TEACHERS = frozenset({"none", "dinov3", "siglip2", "multi"})
+FOUNDATION_BACKENDS = frozenset({"transformers", "local"})
+FOUNDATION_LOSSES = frozenset({"cosine", "l2", "relational", "hybrid"})
+FOUNDATION_RELATION_MODES = frozenset({"sampled", "full"})
+FOUNDATION_DTYPES = frozenset({"auto", "fp32", "fp16", "bf16"})
+FOUNDATION_TARGET_LEVELS = frozenset({"p3", "p4", "p5"})
+# fmt: on
 LORA_RUNTIME_METADATA_KEYS = frozenset(
     {
         "effective_lora_backend",
@@ -579,6 +631,7 @@ def get_cfg(
 
     # Type and Value checks
     check_cfg(cfg)
+    validate_foundation_config(cfg)
 
     # Return instance
     return IterableSimpleNamespace(**cfg)
@@ -661,12 +714,12 @@ def check_cfg(cfg: dict, hard: bool = True) -> None:
                     cfg[k] = v = int(v)
                 if k in CFG_INT_MIN and v < CFG_INT_MIN[k]:
                     raise ValueError(f"'{k}={v}' is an invalid value. '{k}' must be >= {CFG_INT_MIN[k]}.")
+            # fmt: off
             elif k == "lora_init_lora_weights" and not isinstance(v, (bool, str)):
                 if hard:
-                    raise TypeError(
-                        f"'{k}={v}' is of invalid type {type(v).__name__}. '{k}' must be a bool or str."
-                    )
+                    raise TypeError(f"'{k}={v}' is of invalid type {type(v).__name__}. '{k}' must be a bool or str.")
                 cfg[k] = bool(v)
+            # fmt: on
             elif k in CFG_BOOL_KEYS and not isinstance(v, bool):
                 if hard:
                     raise TypeError(
@@ -695,6 +748,214 @@ def check_cfg(cfg: dict, hard: bool = True) -> None:
                         )
                 else:
                     cfg[k] = scheme
+
+
+def _foundation_transformers_available() -> bool:
+    """Return whether the optional Transformers package can be discovered without importing it."""
+    try:
+        return importlib.util.find_spec("transformers") is not None
+    except (ImportError, ModuleNotFoundError, ValueError):
+        return False
+
+
+def validate_foundation_config(cfg: dict) -> None:
+    """Validate the opt-in, training-only Foundation Teacher configuration boundary.
+
+    This function validates configuration combinations only. It never imports a teacher backend or loads model
+    weights, so the default disabled path remains independent of optional Foundation dependencies.
+
+    Args:
+        cfg (dict): Merged YOLO configuration dictionary.
+
+    Raises:
+        TypeError: If a Foundation-specific value has an invalid type.
+        ValueError: If a Foundation-specific value or combination is unsupported.
+        ImportError: If an enabled Transformers-backed teacher needs an unavailable optional dependency.
+    """
+    teacher = cfg.get("foundation_teacher", DEFAULT_CFG_DICT["foundation_teacher"])
+    backend = cfg.get("foundation_backend", DEFAULT_CFG_DICT["foundation_backend"])
+    loss = cfg.get("foundation_loss", DEFAULT_CFG_DICT["foundation_loss"])
+    dtype = cfg.get("foundation_teacher_dtype", DEFAULT_CFG_DICT["foundation_teacher_dtype"])
+    target_levels = cfg.get("foundation_target_levels", DEFAULT_CFG_DICT["foundation_target_levels"])
+    align_dim = cfg.get("foundation_align_dim", DEFAULT_CFG_DICT["foundation_align_dim"])
+    relation_mode = cfg.get("foundation_relation_mode", DEFAULT_CFG_DICT["foundation_relation_mode"])
+    relation_samples = cfg.get("foundation_relation_samples", DEFAULT_CFG_DICT["foundation_relation_samples"])
+    router_temperature = cfg.get("foundation_router_temperature", DEFAULT_CFG_DICT["foundation_router_temperature"])
+    router_teachers = cfg.get("foundation_router_teachers", DEFAULT_CFG_DICT.get("foundation_router_teachers"))
+    router_native_state = cfg.get(
+        "foundation_router_native_state", DEFAULT_CFG_DICT.get("foundation_router_native_state", True)
+    )
+    semantic_distill = bool(cfg.get("foundation_semantic_distill", DEFAULT_CFG_DICT["foundation_semantic_distill"]))
+    semantic_loss_weight = cfg.get(
+        "foundation_semantic_loss_weight", DEFAULT_CFG_DICT["foundation_semantic_loss_weight"]
+    )
+    semantic_temperature = cfg.get(
+        "foundation_semantic_temperature", DEFAULT_CFG_DICT.get("foundation_semantic_temperature", 0.07)
+    )
+    multitask_flag = cfg.get("foundation_multitask", DEFAULT_CFG_DICT.get("foundation_multitask", False))
+    multitask_alias = cfg.get(
+        "foundation_multitask_enabled", DEFAULT_CFG_DICT.get("foundation_multitask_enabled", False)
+    )
+    if not isinstance(multitask_flag, bool) or not isinstance(multitask_alias, bool):
+        raise TypeError("'foundation_multitask' and 'foundation_multitask_enabled' must be bool values.")
+    multitask_enabled = multitask_flag or multitask_alias
+    multitask_tasks = cfg.get("foundation_multitask_tasks", DEFAULT_CFG_DICT.get("foundation_multitask_tasks"))
+    negative_transfer_threshold = cfg.get(
+        "foundation_multitask_negative_transfer_threshold",
+        DEFAULT_CFG_DICT.get("foundation_multitask_negative_transfer_threshold", 4.0),
+    )
+
+    if teacher not in FOUNDATION_TEACHERS:
+        raise ValueError(f"'foundation_teacher={teacher}' is invalid. Valid values are {sorted(FOUNDATION_TEACHERS)}.")
+    if backend not in FOUNDATION_BACKENDS:
+        raise ValueError(f"'foundation_backend={backend}' is invalid. Valid values are {sorted(FOUNDATION_BACKENDS)}.")
+    if loss not in FOUNDATION_LOSSES:
+        raise ValueError(f"'foundation_loss={loss}' is invalid. Valid values are {sorted(FOUNDATION_LOSSES)}.")
+    if dtype not in FOUNDATION_DTYPES:
+        raise ValueError(
+            f"'foundation_teacher_dtype={dtype}' is invalid. Valid values are {sorted(FOUNDATION_DTYPES)}."
+        )
+
+    if not isinstance(target_levels, (list, tuple)) or not target_levels:
+        raise TypeError("'foundation_target_levels' must be a non-empty list of feature level names.")
+    if any(not isinstance(level, str) for level in target_levels):
+        raise TypeError("'foundation_target_levels' must contain only strings.")
+    unknown_levels = sorted(set(target_levels) - FOUNDATION_TARGET_LEVELS)
+    if unknown_levels:
+        raise ValueError(
+            f"'foundation_target_levels' contains unsupported levels {unknown_levels}. "
+            f"Valid levels are {sorted(FOUNDATION_TARGET_LEVELS)}."
+        )
+    if len(set(target_levels)) != len(target_levels):
+        raise ValueError("'foundation_target_levels' must not contain duplicate levels.")
+    multiscale = cfg.get("foundation_multiscale", DEFAULT_CFG_DICT.get("foundation_multiscale", False))
+    if multiscale and len(target_levels) < 2:
+        raise ValueError("'foundation_multiscale=True' requires at least two target levels.")
+    if isinstance(align_dim, bool) or not isinstance(align_dim, int) or align_dim <= 0:
+        raise ValueError(f"'foundation_align_dim={align_dim}' is invalid. It must be a positive integer.")
+    if relation_mode not in FOUNDATION_RELATION_MODES:
+        raise ValueError(
+            f"'foundation_relation_mode={relation_mode}' is invalid. "
+            f"Valid values are {sorted(FOUNDATION_RELATION_MODES)}."
+        )
+    if isinstance(relation_samples, bool) or not isinstance(relation_samples, int) or relation_samples <= 0:
+        raise ValueError(f"'foundation_relation_samples={relation_samples}' is invalid. It must be a positive integer.")
+    if isinstance(router_temperature, bool) or float(router_temperature) <= 0:
+        raise ValueError(f"'foundation_router_temperature={router_temperature}' is invalid. It must be positive.")
+    if not isinstance(router_teachers, (list, tuple)) or not router_teachers:
+        raise TypeError("'foundation_router_teachers' must be a non-empty list of teacher names.")
+    if any(not isinstance(name, str) for name in router_teachers):
+        raise TypeError("'foundation_router_teachers' must contain only strings.")
+    router_teachers = tuple(name.lower() for name in router_teachers)
+    if any(name not in {"dinov3", "siglip2"} for name in router_teachers):
+        raise ValueError("'foundation_router_teachers' supports only 'dinov3' and 'siglip2'.")
+    if not isinstance(router_native_state, bool):
+        raise TypeError("'foundation_router_native_state' must be a bool.")
+    if multitask_tasks is not None:
+        if not isinstance(multitask_tasks, (list, tuple, set)):
+            raise TypeError("'foundation_multitask_tasks' must be a list of task names when provided.")
+        if any(not isinstance(name, str) for name in multitask_tasks):
+            raise TypeError("'foundation_multitask_tasks' must contain only strings.")
+        if len(set(multitask_tasks)) != len(multitask_tasks):
+            raise ValueError("'foundation_multitask_tasks' must not contain duplicate task names.")
+        if len(set(multitask_tasks)) < 2:
+            raise ValueError("'foundation_multitask_tasks' must contain at least two active tasks for F15.")
+        invalid_tasks = sorted(
+            set(multitask_tasks).difference({"detect", "segment", "pose", "classify", "depth", "normal", "semantic"})
+        )
+        if invalid_tasks:
+            raise ValueError(f"'foundation_multitask_tasks' contains unsupported tasks: {invalid_tasks}.")
+    if isinstance(negative_transfer_threshold, bool) or float(negative_transfer_threshold) <= 0:
+        raise ValueError("'foundation_multitask_negative_transfer_threshold' must be a positive number.")
+    if isinstance(semantic_temperature, bool) or float(semantic_temperature) <= 0:
+        raise ValueError(f"'foundation_semantic_temperature={semantic_temperature}' is invalid. It must be positive.")
+
+    nonnegative_weights = (
+        "foundation_loss_weight",
+        "foundation_relation_weight",
+        "foundation_cosine_weight",
+        "foundation_foreground_weight",
+        "foundation_boundary_weight",
+        "foundation_background_weight",
+        "foundation_router_loss_weight",
+        "foundation_semantic_loss_weight",
+    )
+    for key in nonnegative_weights:
+        value = cfg.get(key, DEFAULT_CFG_DICT[key])
+        if value < 0:
+            raise ValueError(f"'{key}={value}' is invalid. Foundation loss weights must be >= 0.")
+
+    model = cfg.get("foundation_model")
+    weights = cfg.get("foundation_weights")
+    for key, value in (
+        ("foundation_model", model),
+        ("foundation_weights", weights),
+        ("foundation_dinov3_model", cfg.get("foundation_dinov3_model")),
+        ("foundation_siglip2_model", cfg.get("foundation_siglip2_model")),
+        ("foundation_dinov3_weights", cfg.get("foundation_dinov3_weights")),
+        ("foundation_siglip2_weights", cfg.get("foundation_siglip2_weights")),
+    ):
+        if value is not None and not isinstance(value, STR_OR_PATH):
+            raise TypeError(f"'{key}={value}' must be a string or path when provided.")
+
+    device = cfg.get("foundation_teacher_device", DEFAULT_CFG_DICT["foundation_teacher_device"])
+    if not isinstance(device, (str, int)) or isinstance(device, bool):
+        raise TypeError("'foundation_teacher_device' must be 'auto', a device string, or a non-negative integer.")
+    if isinstance(device, int) and device < 0:
+        raise ValueError("'foundation_teacher_device' integer selectors must be >= 0.")
+
+    enabled = cfg.get("foundation_enabled", DEFAULT_CFG_DICT["foundation_enabled"])
+    if not enabled:
+        return
+
+    mode = cfg.get("mode", DEFAULT_CFG_DICT["mode"])
+    if mode != "train":
+        raise ValueError("Foundation Teacher distillation is training-only; set 'mode=train' or disable it.")
+    if teacher == "none":
+        raise ValueError("'foundation_enabled=True' requires 'foundation_teacher' to name a teacher family.")
+    if multitask_enabled:
+        if cfg.get("task", DEFAULT_CFG_DICT.get("task")) != "multitask":
+            raise ValueError("F15 foundation_multitask=True requires task='multitask'.")
+        if multitask_tasks is not None and len(set(multitask_tasks)) < 2:
+            raise ValueError("F15 requires at least two active visual tasks.")
+    if semantic_distill and teacher != "siglip2":
+        raise ValueError("F13 semantic distillation currently requires foundation_teacher='siglip2'.")
+    router_enabled = bool(cfg.get("foundation_router_distill", DEFAULT_CFG_DICT["foundation_router_distill"]))
+    if teacher == "multi":
+        if router_teachers != ("dinov3", "siglip2"):
+            raise ValueError(
+                "F14 foundation_teacher='multi' requires foundation_router_teachers=['dinov3', 'siglip2']."
+            )
+        if not router_enabled:
+            raise ValueError("F14 foundation_teacher='multi' requires foundation_router_distill=True.")
+    if cfg.get("distill_model") is not None:
+        raise ValueError("'foundation_enabled=True' cannot be combined with the existing 'distill_model' option.")
+    if cfg.get("compile"):
+        raise ValueError("'compile' is not supported with Foundation distillation in the alpha phase.")
+
+    loss_weight = cfg.get("foundation_loss_weight", DEFAULT_CFG_DICT["foundation_loss_weight"])
+    router_loss_weight = cfg.get("foundation_router_loss_weight", DEFAULT_CFG_DICT["foundation_router_loss_weight"])
+    if teacher == "multi" and router_loss_weight <= 0:
+        raise ValueError("F14 foundation_teacher='multi' requires a positive foundation_router_loss_weight.")
+    if (
+        loss_weight <= 0
+        and (not router_enabled or router_loss_weight <= 0)
+        and (not semantic_distill or semantic_loss_weight <= 0)
+    ):
+        return
+    model_ref = model or weights
+    if teacher == "multi":
+        model_ref = model_ref or cfg.get("foundation_dinov3_model") or cfg.get("foundation_siglip2_model")
+    if model_ref is None:
+        raise ValueError(
+            "Enabled Foundation distillation with a positive loss weight requires 'foundation_model' or "
+            "'foundation_weights' (or F14 per-teacher model references)."
+        )
+    if backend == "transformers" and not _foundation_transformers_available():
+        raise ImportError(
+            "Foundation Transformers backend requires optional dependency 'transformers>=4.56.0,<6'. "
+            "Install with: pip install -e '.[foundation]'"
+        )
 
 
 def get_save_dir(args: SimpleNamespace, name: str | None = None) -> Path:

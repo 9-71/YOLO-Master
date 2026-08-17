@@ -95,6 +95,7 @@ from ultralytics.nn.modules import (
     SemanticSegment,
 )
 from ultralytics.nn.tasks import ClassificationModel, DetectionModel, SegmentationModel, WorldModel
+from ultralytics.nn.foundation_distill_model import strip_foundation_distillation_model
 from ultralytics.utils import (
     ARM64,
     DEFAULT_CFG,
@@ -564,6 +565,7 @@ class Exporter:
                 raise ValueError(f"{msg} Valid formats are {fmts}")
             LOGGER.warning(f"Invalid export format='{fmt}', updating to format='{matches[0]}'")
             fmt = matches[0]
+        model = strip_foundation_distillation_model(model)
         if getattr(model, "task", None) == "multitask" and self.args.nms:
             raise ValueError(
                 "Multi-task export does not support nms=True because embedded NMS drops mask, pose, and dense outputs. "

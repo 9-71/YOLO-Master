@@ -248,6 +248,7 @@ class TrainingRecoveryController:
         runtime_state = runtime_state_fn() if callable(runtime_state_fn) else {}
         if not isinstance(runtime_state, dict):
             raise TypeError("checkpoint_runtime_state() must return a dictionary")
+        checkpoint_metadata = checkpoint_runtime_metadata(metadata_model)
         torch.save(
             {
                 "epoch": getattr(trainer, "epoch", trainer.start_epoch - 1),
@@ -266,7 +267,8 @@ class TrainingRecoveryController:
                 "git": {"root": str(GIT.root), "branch": GIT.branch, "commit": GIT.commit, "origin": GIT.origin},
                 "license": "AGPL-3.0 (https://ultralytics.com/license)",
                 "docs": "https://docs.ultralytics.com",
-                "mixture_checkpoint": checkpoint_runtime_metadata(metadata_model),
+                "mixture_checkpoint": checkpoint_metadata,
+                "foundation": checkpoint_metadata.get("foundation"),
                 "runtime_state": runtime_state,
             },
             buffer,

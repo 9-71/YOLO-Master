@@ -1,0 +1,24 @@
+# F13: positive-region SigLIP2 semantic distillation on COCO8.
+# The teacher is training-only; export/checkpoint strip keeps a pure YOLO/YOLOE student.
+task: detect
+mode: train
+model: yolo11n.yaml
+data: coco8.yaml
+epochs: 1
+batch: 2
+imgsz: 256
+device: cpu
+workers: 0
+plots: false
+save: false
+foundation_enabled: true
+foundation_teacher: siglip2
+foundation_backend: transformers
+foundation_model: google/siglip2-base-patch16-512
+foundation_loss_weight: 0.0
+foundation_semantic_distill: true
+foundation_semantic_loss_weight: 0.1
+foundation_semantic_text_weight: 1.0
+foundation_semantic_image_weight: 1.0
+foundation_semantic_temperature: 0.07
+foundation_semantic_prompt_template: "a photo of a {class_name}"

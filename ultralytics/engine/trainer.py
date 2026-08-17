@@ -36,6 +36,11 @@ from ultralytics.engine.extensions import (
 from ultralytics.engine.telemetry import TrainingTelemetry
 from ultralytics.data.utils import check_cls_dataset, check_det_dataset, convert_ndjson_to_yolo_if_needed
 from ultralytics.nn.distill_model import DistillationModel
+from ultralytics.nn.foundation_distill_model import (
+    FoundationDistillationModel,
+    build_foundation_distillation_wrapper,
+    rebuild_foundation_distillation_wrapper,
+)
 from ultralytics.nn.mixture_loss import has_routed_modules
 from ultralytics.nn.tasks import load_checkpoint
 from ultralytics.optim import MuSGD
@@ -290,6 +295,9 @@ class BaseTrainer:
         self.loss = None
         self.tloss = None
         self.loss_names = ["Loss"]
+        self.foundation_metric_totals = {}
+        self.foundation_metric_steps = 0
+        self.foundation_metric_latest = {}
         self.csv = self.save_dir / "results.csv"
         if self.csv.exists() and not self.args.resume:
             self.csv.unlink()
@@ -437,7 +445,9 @@ class BaseTrainer:
 
         # Compile model (knowledge distillation runs the wrapped model eagerly and relies on
         # find_unused_parameters under DDP for the frozen teacher, so disable compilation when distilling)
-        if self.args.distill_model is not None and self.args.compile:
+        if (
+            self.args.distill_model is not None or getattr(self.args, "foundation_enabled", False)
+        ) and self.args.compile:
             LOGGER.warning("'compile' is not supported with knowledge distillation and will be disabled.")
             self.args.compile = False
         self.model = attempt_compile(self.model, device=self.device, mode=self.args.compile)
@@ -463,7 +473,27 @@ class BaseTrainer:
         gs = max(int(self.model.stride.max() if hasattr(self.model, "stride") else 32), 32)  # grid size (max stride)
         self.args.imgsz = check_imgsz(self.args.imgsz, stride=gs, floor=gs, max_dim=1)
         self.stride = gs  # for multiscale training
+        foundation_router_active = bool(
+            getattr(self.args, "foundation_router_distill", False)
+            and getattr(self.args, "foundation_router_loss_weight", 0.0) > 0
+        )
+        foundation_semantic_active = bool(
+            getattr(self.args, "foundation_semantic_distill", False)
+            and getattr(self.args, "foundation_semantic_loss_weight", 0.0) > 0
+        )
+        foundation_active = bool(
+            getattr(self.args, "foundation_enabled", False)
+            and (
+                getattr(self.args, "foundation_loss_weight", 0.0) > 0
+                or foundation_router_active
+                or foundation_semantic_active
+            )
+        )
 
+        # Build the opt-in Foundation wrapper after the student is on its training device.  The teacher is created once
+        # per process and is intentionally not registered as a child module, so it cannot enter DDP/optimizer/EMA state.
+        if foundation_active and not isinstance(unwrap_model(self.model), FoundationDistillationModel):
+            self.model = build_foundation_distillation_wrapper(self.model, self.args, device=self.device)
         # resume training would directly load DistillationModel so check here
         if self.args.distill_model is not None and not isinstance(unwrap_model(self.model), DistillationModel):
             self.model = DistillationModel(student_model=self.model, teacher_model=self.args.distill_model)
@@ -499,6 +529,9 @@ class BaseTrainer:
             self.loss_names = (*self.loss_names, "mixture_aux_loss")
         if self.args.distill_model is not None and "dis_loss" not in self.loss_names:
             self.loss_names += ("dis_loss",)
+        if foundation_active:
+            if "foundation" not in self.loss_names:
+                self.loss_names += ("foundation",)
         self.ema = ModelEMA(self.model)
         self.set_class_weights()  # compute class weights after dataloader is ready
         if RANK in {-1, 0}:
@@ -527,6 +560,16 @@ class BaseTrainer:
         freeze_layer_names = [f"model.{x}." for x in freeze_list] + always_freeze_names
         if isinstance(unwrap_model(self.model), DistillationModel):
             freeze_layer_names.append("teacher_model.")
+        if isinstance(unwrap_model(self.model), FoundationDistillationModel):
+            # The teacher-side projector is registered only so its shape is checkpointable; it must never be
+            # optimized or re-enabled by the generic frozen-parameter normalization below.
+            foundation_model = unwrap_model(self.model)
+            if foundation_model.multiscale:
+                freeze_layer_names.extend(
+                    f"_projectors.{level}.teacher_proj." for level in foundation_model.target_levels
+                )
+            else:
+                freeze_layer_names.append("_projector.teacher_proj.")
         self.freeze_layer_names = freeze_layer_names
         for name, parameter in self.model.named_parameters():
             if any(layer_name in name for layer_name in freeze_layer_names):
@@ -629,6 +672,7 @@ class BaseTrainer:
                 self.scheduler.step()
 
             self._model_train()
+            self._reset_foundation_metric_state()
             if not getattr(self.train_loader, "set_epoch", lambda _: False)(epoch) and RANK != -1:
                 self.train_loader.sampler.set_epoch(epoch)
             pbar = enumerate(self.train_loader)
@@ -676,6 +720,7 @@ class BaseTrainer:
                                 loss, self.loss_items = unwrap_model(self.model).loss(batch, preds)
                             else:
                                 loss, self.loss_items = self.model(batch)
+                            self._collect_foundation_metrics()
                             self.mixture_controller.collect_routing_usage(batch_weight=batch["img"].shape[0])
                             loss = self.adapter_controller.augment_loss(loss)
                             loss = self.adapter_controller.augment_few_shot_loss(loss, batch["img"], epoch)
@@ -782,6 +827,9 @@ class BaseTrainer:
             rank0_epoch_end_error = None
             if RANK in {-1, 0}:
                 try:
+                    foundation_metrics = self._mean_foundation_metrics(prefix="train/")
+                    if foundation_metrics:
+                        self.metrics = {**(self.metrics or {}), **foundation_metrics}
                     self.save_metrics(metrics={**self.label_loss_items(self.tloss), **self.metrics, **self.lr})
                     self.stop |= self.stopper(epoch + 1, self.fitness) or final_epoch
                     if self.args.time:
@@ -955,6 +1003,20 @@ class BaseTrainer:
             weights, _ = load_checkpoint(self.args.pretrained)
         elif self.args.pretrained is False and not self.resume:
             weights = None
+
+        # Rebuild FoundationDistillationModel from a checkpoint while keeping the teacher outside checkpoint state.
+        if isinstance(weights, FoundationDistillationModel):
+            student_model = self.get_model(cfg=cfg, weights=weights.student_model, verbose=RANK in {-1, 0})
+            student_model.args = self.args
+            self.model = rebuild_foundation_distillation_wrapper(
+                student_model,
+                self.args,
+                checkpoint_model=weights,
+                device=self.device,
+            )
+            if isinstance(self.model, nn.Module):
+                self.model.criterion = None
+            return ckpt
 
         # rebuild DistillationModel from resuming checkpoint
         if isinstance(weights, DistillationModel):
@@ -1196,6 +1258,36 @@ class BaseTrainer:
         """
         return {"loss": loss_items} if loss_items is not None else ["loss"]
 
+    def _reset_foundation_metric_state(self) -> None:
+        """Reset per-epoch Foundation metric aggregation without touching model or optimizer state."""
+        self.foundation_metric_totals = {}
+        self.foundation_metric_steps = 0
+        self.foundation_metric_latest = {}
+
+    def _collect_foundation_metrics(self) -> None:
+        """Collect the latest Foundation wrapper metrics after a train forward pass."""
+        model = unwrap_model(self.model)
+        metrics_fn = getattr(model, "foundation_metrics", None)
+        if not callable(metrics_fn):
+            return
+        metrics = metrics_fn()
+        if not isinstance(metrics, dict) or not metrics:
+            return
+        numeric = {str(key): float(value) for key, value in metrics.items()}
+        self.foundation_metric_latest = numeric
+        self.foundation_metric_steps += 1
+        for key, value in numeric.items():
+            self.foundation_metric_totals[key] = self.foundation_metric_totals.get(key, 0.0) + value
+
+    def _mean_foundation_metrics(self, prefix: str = "") -> dict[str, float]:
+        """Return per-epoch Foundation metric means with an optional output-key prefix."""
+        if self.foundation_metric_steps <= 0:
+            return {}
+        return {
+            f"{prefix}{key}": value / self.foundation_metric_steps
+            for key, value in self.foundation_metric_totals.items()
+        }
+
     def set_model_attributes(self):
         """Set or update model parameters before training."""
         self.model.names = self.data["names"]
@@ -1363,6 +1455,8 @@ class BaseTrainer:
             initialize_mixture_loss_ema_buffer(checkpoint_ema)
             ema_state = checkpoint_ema.state_dict()
             checkpoint_mixture_ema = ema_state.get("_mixture_loss_ema_buf")
+            if checkpoint_mixture_ema is None:
+                checkpoint_mixture_ema = ema_state.get("student_model._mixture_loss_ema_buf")
             if checkpoint_mixture_ema is not None:
                 online_mixture_ema.copy_(
                     checkpoint_mixture_ema.to(device=online_mixture_ema.device, dtype=online_mixture_ema.dtype)
