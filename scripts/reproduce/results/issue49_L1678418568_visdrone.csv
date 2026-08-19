@@ -1,0 +1,3 @@
+dataset,model,evaluation,best_epoch,precision,recall,mAP50,mAP50-95,wandb_url
+VisDrone,v0.1-N,standard,88,0.43052,0.33626,0.31118,0.17468,https://wandb.ai/lwb060819-guangdong-university-of-technology/yolo-master-reproduce-rtx5070
+VisDrone,EsMoE-N,dense,96,0.42954,0.34056,0.31312,0.17660,https://wandb.ai/lwb060819-guangdong-university-of-technology/yolo-master-reproduce-rtx5070
