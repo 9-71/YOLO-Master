@@ -13,15 +13,13 @@ Usage:
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Callable, Iterator
+from typing import Iterator
 
 import torch
 import torch.nn as nn
 
 from ultralytics.utils import LOGGER
 
-from .api import collect_all_moe_info, get_routing_weights_unified
-from .utils import is_core_moe_block
 
 
 # Layers that should retain FP16 or higher precision during quantization
@@ -119,7 +117,6 @@ def _quantize_onnx(
     dynamic_quantize: bool,
 ) -> Path:
     """Export to ONNX and apply quantization."""
-    from ultralytics.engine.exporter import Exporter
 
     # First export to ONNX
     if output_path is None:

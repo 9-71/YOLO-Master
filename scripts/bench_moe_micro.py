@@ -13,11 +13,14 @@ Usage:
     python scripts/bench_moe_micro.py
     python scripts/bench_moe_micro.py --bs 4 --runs 50 --warmup 10
 """
-import argparse, os, sys, time, warnings
+import argparse
+import os
+import sys
+import time
+import warnings
 warnings.filterwarnings("ignore")
 
 import torch
-import torch.nn as nn
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)

@@ -8,7 +8,6 @@ Verifies:
   - PEFTPlannerError inherits YOLOMasterError
 """
 
-import pytest
 
 from ultralytics.utils.errors import (
     YOLOMasterError,

@@ -10,7 +10,6 @@ Analyzes expert routing distributions across MoTBlocks, generating:
 from pathlib import Path
 import numpy as np
 import torch
-import torch.nn as nn
 from collections import defaultdict
 from ultralytics import YOLO
 import json
@@ -53,7 +52,6 @@ def collect_routing_hooks(model):
 
 def analyze_scenes(model, data_yaml, device, num_samples=50):
     """Run inference on val images and collect routing statistics."""
-    from ultralytics.data import build_dataloader
     from ultralytics.utils import yaml_load
 
     data_dict = yaml_load(data_yaml)
@@ -61,8 +59,6 @@ def analyze_scenes(model, data_yaml, device, num_samples=50):
     scene_metadata = []
 
     # Build dataloader for validation
-    from ultralytics.data import YOLODataset
-    from torch.utils.data import DataLoader
 
     val_path = Path(data_dict["path"]) / "images" / "val"
     if not val_path.exists():
@@ -202,7 +198,7 @@ def main():
         model.model, args.data, args.device, args.num_samples
     )
 
-    print(f"[3/4] Summarizing routing patterns...")
+    print("[3/4] Summarizing routing patterns...")
     summary, scene_analysis = summarize_routing(routing_data, scene_stats)
 
     # Print summary

@@ -60,7 +60,6 @@ from ultralytics.utils import SETTINGS
 SETTINGS["wandb"] = False
 
 from ultralytics import YOLO
-from ultralytics.cfg import DEFAULT_CFG_DICT
 
 # 标准 LoRA 基础设施
 from ultralytics.utils.lora import apply_lora

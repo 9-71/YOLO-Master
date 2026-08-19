@@ -7,14 +7,13 @@ Part B: 1-Epoch Training Smoke Test (if applicable)
 import sys
 import traceback
 import torch
-import torch.nn as nn
 from datetime import datetime
 
 # Add project root to path if needed
 import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from ultralytics.utils.lora.planner import ArchitectureFingerprint, PEFTPlanner, PlacementDecision
+from ultralytics.utils.lora.planner import ArchitectureFingerprint, PEFTPlanner
 from ultralytics.utils.lora.config import LoRAConfig
 from ultralytics.utils.lora.api import apply_lora, _compute_param_stats
 
@@ -61,7 +60,7 @@ def main():
 
     # 3. Compute ArchitectureFingerprint on the inner model
     fingerprint = ArchitectureFingerprint.compute(inner_model)
-    log(f"\nArchitecture Fingerprint:")
+    log("\nArchitecture Fingerprint:")
     log(f"  phi_attn   = {fingerprint.phi_attn:.4f}")
     log(f"  phi_text   = {fingerprint.phi_text:.4f}")
     log(f"  phi_dw     = {fingerprint.phi_dw:.4f}")
@@ -97,7 +96,7 @@ def main():
 
         # Check if model was actually modified
         stats = _compute_param_stats(modified_model)
-        log(f"\nParameter Statistics:")
+        log("\nParameter Statistics:")
         log(f"  Total parameters:      {stats.total:,}")
         log(f"  Trainable parameters:  {stats.trainable:,} ({stats.trainable_pct:.2f}%)")
         log(f"  Frozen parameters:     {stats.frozen:,}")
@@ -165,7 +164,7 @@ def main():
             log(f"Loaded fresh model: {type(model).__name__}")
 
             # Run 1-epoch training with MPS
-            log(f"Starting training: epochs=1, imgsz=320, batch=4, device=mps, lora_planner_enabled=True")
+            log("Starting training: epochs=1, imgsz=320, batch=4, device=mps, lora_planner_enabled=True")
             results = model.train(
                 data="coco128.yaml",
                 epochs=1,
@@ -227,7 +226,7 @@ def main():
             model = YOLO(weight_path)
             log(f"Loaded fresh model: {type(model).__name__}")
 
-            log(f"Starting Full-SFT training: epochs=1, imgsz=320, batch=4, device=mps, lora_r=0")
+            log("Starting Full-SFT training: epochs=1, imgsz=320, batch=4, device=mps, lora_r=0")
             results = model.train(
                 data="coco128.yaml",
                 epochs=1,
@@ -301,7 +300,7 @@ def main():
         for w in warnings:
             log(f"  - {w}")
     if error_traceback and training_result.startswith("FAILURE"):
-        log(f"\nLast Error Traceback (last 30 lines):")
+        log("\nLast Error Traceback (last 30 lines):")
         lines = error_traceback.strip().split("\n")
         for line in lines[-30:]:
             log(f"  {line}")

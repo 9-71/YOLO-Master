@@ -23,7 +23,7 @@ import torch
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from ultralytics.nn.modules.moe import HybridAdaptiveGateMoE, HybridAdaptiveGateMoEv2  # noqa: E402
+from ultralytics.nn.modules.moe import HybridAdaptiveGateMoEv2  # noqa: E402
 from ultralytics.nn.modules.moe.modules import DualStreamGateRouterV2  # noqa: E402
 
 

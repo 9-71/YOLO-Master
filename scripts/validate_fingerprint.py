@@ -77,10 +77,7 @@ if WORKSPACE not in sys.path:
     sys.path.insert(0, WORKSPACE)
 
 # ── 2.  Now we can import the planner internals directly ──
-import torch
-import torch.nn as nn
 
-from ultralytics.utils.lora.planner import ArchitectureFingerprint, PEFTPlanner
 from ultralytics.utils.lora.config import LoRAConfig
 
 

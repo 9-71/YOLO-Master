@@ -7,7 +7,6 @@ Part B: 1-Epoch Training Smoke Test (if applicable)
 import sys
 import traceback
 import torch
-import torch.nn as nn
 
 # Add project root to path if needed
 sys.path.insert(0, "/Users/gatilin/PycharmProjects/YOLO-Master-v260703")
@@ -61,7 +60,7 @@ def verify_model(model_name: str, weight_path: str):
 
     # 3. Compute architecture fingerprint
     fingerprint = ArchitectureFingerprint.compute(inner_model)
-    log(f"\nArchitecture Fingerprint:")
+    log("\nArchitecture Fingerprint:")
     log(f"  φ_attn   = {fingerprint.phi_attn:.4f}")
     log(f"  φ_text   = {fingerprint.phi_text:.4f}")
     log(f"  φ_dw     = {fingerprint.phi_dw:.4f}")
@@ -89,7 +88,7 @@ def verify_model(model_name: str, weight_path: str):
 
     # 5. Apply LoRA and verify
     stats_before = _compute_param_stats(model)
-    log(f"\nParameters BEFORE apply_lora:")
+    log("\nParameters BEFORE apply_lora:")
     log(f"  Total:    {stats_before.total:,}")
     log(f"  Trainable: {stats_before.trainable:,}")
     log(f"  Frozen:   {stats_before.frozen:,}")
@@ -103,7 +102,7 @@ def verify_model(model_name: str, weight_path: str):
         return model_name, fingerprint, None
 
     stats_after = _compute_param_stats(modified_model)
-    log(f"\nParameters AFTER apply_lora:")
+    log("\nParameters AFTER apply_lora:")
     log(f"  Total:    {stats_after.total:,}")
     log(f"  Trainable: {stats_after.trainable:,}")
     log(f"  Frozen:   {stats_after.frozen:,}")
@@ -120,14 +119,14 @@ def verify_model(model_name: str, weight_path: str):
         log(f"  Model ready for training: {stats_after.adapter > 0}")
 
         if stats_after.adapter <= 0:
-            log(f"  WARNING: Expected adapters but none found!")
+            log("  WARNING: Expected adapters but none found!")
 
     elif decision.status == "REFUSE":
-        log(f"\n  REFUSE verification:")
+        log("\n  REFUSE verification:")
         if adapter_added == 0 and stats_after.total == stats_before.total:
-            log(f"  ✓ Verified: Model returned unmodified (no adapter parameters added)")
+            log("  ✓ Verified: Model returned unmodified (no adapter parameters added)")
         else:
-            log(f"  ✗ WARNING: Model was modified despite REFUSE decision!")
+            log("  ✗ WARNING: Model was modified despite REFUSE decision!")
             log(f"    Adapter delta: {adapter_added}, Total delta: {stats_after.total - stats_before.total}")
 
     return model_name, fingerprint, decision

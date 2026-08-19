@@ -15,8 +15,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from _reproduce_common import (
-    DatasetSpec, ModelSpec, _read_last_metrics, _float_or_blank,
-    write_summary, _completed_epoch, _make_wandb_callbacks,
+    DatasetSpec, ModelSpec, _completed_epoch, _make_wandb_callbacks,
 )
 
 ROOT = Path(__file__).resolve().parents[2]
@@ -56,7 +55,6 @@ def _make_sparse_topk_callback():
 
 def _make_routing_diag_callback(every_n_epochs: int = 5):
     """每 N 个 epoch 在验证后收集路由诊断指标，记录到 W&B 及训练日志。"""
-    from ultralytics.nn.modules.moe.modules import ES_MOE
     from ultralytics.utils import LOGGER
 
     def _on_val_end(trainer):
@@ -243,7 +241,7 @@ if __name__ == "__main__":
 
     # 收集产物到项目目录
     dataset = DatasetSpec("VisDrone", "VisDrone.yaml", args.project)
-    run_dir = Path(args.project) / f"{dataset.name}_{spec.name}"
+    run_dir = Path(args.project) / f"{dataset.name}_{SPARSE_MODEL.name}"
     out_dir = Path(args.project) / "baseline"
     out_dir.mkdir(parents=True, exist_ok=True)
 

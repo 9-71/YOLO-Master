@@ -1,12 +1,10 @@
 """MoLoRA utilities: parameter stats, merge/unmerge, init, domain allocation."""
 import math
-from typing import Dict, List, Optional, Tuple, Union
+from typing import Dict, List, Tuple
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 
-from ultralytics.utils import LOGGER
 
 
 # ---------------------------------------------------------------------------

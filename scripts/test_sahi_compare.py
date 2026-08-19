@@ -8,7 +8,6 @@ import cv2
 import glob
 import time
 import numpy as np
-import torch
 from ultralytics import YOLO
 from ultralytics.utils import ASSETS
 

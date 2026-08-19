@@ -5,8 +5,7 @@ YOLO-PEFT Full Ablation Experiment — Unified Interface Specification
 本文件定义全量消融实验的统一数据结构规范，所有子脚本必须遵循。
 """
 from dataclasses import dataclass, field, asdict
-from typing import Dict, Any, List, Optional, Tuple
-from pathlib import Path
+from typing import Dict, Any, List, Optional
 
 
 @dataclass

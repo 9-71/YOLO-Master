@@ -208,7 +208,7 @@ def main():
     if map_val is not None:
         print(f"mAP50-95: {map_val:.4f}")
     else:
-        print(f"mAP50-95: N/A (check training output above)")
+        print("mAP50-95: N/A (check training output above)")
     print(f"{'='*70}")
 
     if not record["ok"]:

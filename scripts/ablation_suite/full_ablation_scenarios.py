@@ -484,7 +484,7 @@ def run_variant(
             else:
                 raise ValueError(f"Unknown peft_type: {variant_cfg.peft_type}")
         else:
-            print(f"[CL] 跳过 PEFT 应用，直接继承上一域模型状态。")
+            print("[CL] 跳过 PEFT 应用，直接继承上一域模型状态。")
 
         # ── 4.3 训练前统计 ──
         post_total, post_train = count_params(model.model)

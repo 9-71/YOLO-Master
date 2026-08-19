@@ -1,8 +1,6 @@
 #!/usr/bin/env python3
 """Generate comparison plots and HTML report from VOC training results."""
 import csv
-import json
-import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]

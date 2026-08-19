@@ -23,7 +23,6 @@ os.environ.setdefault("YOLO_AUTOINSTALL", "false")
 os.environ.setdefault("YOLO_VERBOSE", "false")
 
 import json
-import math
 
 import torch
 import torch.nn as nn

@@ -11,7 +11,7 @@ MODEL_PATH = REPO_ROOT / "YOLO-Master-EsMoE-N.pt"
 print(f"Loading {MODEL_PATH}...")
 model = YOLO(str(MODEL_PATH))
 
-print(f"\nModel info:")
+print("\nModel info:")
 print(f"  type: {type(model.model).__name__}")
 print(f"  total params: {sum(p.numel() for p in model.model.parameters()):,}")
 print(f"  named modules: {len(list(model.model.named_modules()))}")

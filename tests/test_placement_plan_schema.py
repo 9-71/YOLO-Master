@@ -3,7 +3,7 @@
 import pytest
 import torch.nn as nn
 
-from ultralytics.vpeft import PlacementPlan, PlacementTarget, PlannerResult
+from ultralytics.vpeft import PlacementPlan, PlacementTarget
 
 
 def test_placement_plan_roundtrip_is_stable():

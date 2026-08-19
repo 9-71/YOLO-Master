@@ -40,7 +40,7 @@ import shutil
 import sys
 import time
 import traceback
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -69,9 +69,7 @@ from ultralytics.data.utils import check_det_dataset
 # MoLoRA 基础设施
 from ultralytics.nn.peft.molora import (
     MoLoRAConfig,
-    MoLoRAConfigBuilder,
     get_peft_molora_model,
-    mark_only_molora_as_trainable,
 )
 
 # 标准 PEFT (LoRA) 基础设施
@@ -86,12 +84,6 @@ from ultralytics.nn.modules.moe.analysis import (
 from ultralytics.nn.modules.moe.diagnostics import (
     collect_moe_diagnostics,
     diagnostics_to_dict,
-    format_moe_diagnostics,
-)
-from ultralytics.nn.modules.moe.history import MoEDiagnosticsRecorder
-from ultralytics.nn.modules.moe.scheduler import (
-    MoEDynamicScheduler,
-    MoEDynamicSchedulerConfig,
 )
 
 # 确认加载的是当前仓库的 ultralytics

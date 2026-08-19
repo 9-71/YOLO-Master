@@ -26,14 +26,13 @@
 from __future__ import annotations
 
 import json
-import math
 import os
 import sys
 import time
 import traceback
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Tuple
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # 0. 环境初始化 —— 必须在 import ultralytics 之前完成
@@ -60,9 +59,7 @@ from ultralytics import YOLO
 # MoLoRA 基础设施
 from ultralytics.nn.peft.molora import (
     MoLoRAConfig,
-    MoLoRAConfigBuilder,
     get_peft_molora_model,
-    mark_only_molora_as_trainable,
     allocate_domain_experts,
 )
 from ultralytics.nn.peft.molora.layer import MoLoRALayer
@@ -71,8 +68,6 @@ from ultralytics.nn.peft.molora.model import MoLoRAModel
 # 诊断基础设施
 from ultralytics.nn.modules.moe.diagnostics import (
     MoELayerDiagnostic,
-    collect_moe_diagnostics,
-    diagnostics_to_dict,
     RoutingCollapseDetector,
 )
 from ultralytics.nn.modules.moe.history import MoEDiagnosticsRecorder

@@ -11,11 +11,8 @@ Covers gaps not in test_molora.py:
 import torch
 import torch.nn as nn
 import pytest
-import copy
 
-from ultralytics.nn.peft.molora.layer import MoLoRALayer, MoLoRAExpert
-from ultralytics.nn.peft.molora.loss import MoLoRALoss
-from ultralytics.nn.peft.molora.config import MoLoRAConfig
+from ultralytics.nn.peft.molora.layer import MoLoRALayer
 
 
 # ── Helpers ─────────────────────────────────────────────────────────────

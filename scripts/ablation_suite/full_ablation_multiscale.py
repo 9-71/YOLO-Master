@@ -27,9 +27,8 @@ import os
 import sys
 import time
 import traceback
-from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Tuple
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # 0. 环境初始化 —— 必须在 import ultralytics 之前完成
@@ -48,24 +47,19 @@ import torch
 import torch.nn as nn
 
 # 关闭 ultralytics 的 wandb 上报
-from ultralytics.utils import SETTINGS
+from ultralytics.utils import SETTINGS, LOGGER
 SETTINGS["wandb"] = False
 
 from ultralytics import YOLO
-from ultralytics.cfg import DEFAULT_CFG_DICT
 from ultralytics.models.yolo.detect import DetectionValidator
 from ultralytics.utils import check_requirements
 
 # MoLoRA 基础设施
 from ultralytics.nn.peft.molora import (
     MoLoRAConfig,
-    MoLoRAMoEAwareConfig,
     MoLoRAConfigBuilder,
     get_peft_molora_model,
-    build_moe_aware_layer,
-    mark_only_molora_as_trainable,
 )
-from ultralytics.nn.peft.molora.model import _parent_child_name, _get_submodule
 
 from ultralytics.utils.lora import apply_lora
 from ultralytics.utils.lora.config import LoRAConfig
@@ -78,12 +72,8 @@ assert str(REPO_ROOT) in ultralytics.__file__, (
 
 # 导入统一数据结构规范
 from full_ablation_spec import (
-    DatasetConfig,
     VariantConfig,
     ExperimentResult,
-    DATASET_REGISTRY,
-    FULL_ABLATION_VARIANTS,
-    QUICK_ABLATION_VARIANTS,
 )
 
 # ═══════════════════════════════════════════════════════════════════════════════

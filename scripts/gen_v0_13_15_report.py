@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Generate HTML report + plots for v0_12 vs v0_13 vs v0_14 vs v0_15 VOC comparison."""
-import csv, json, os, base64
+import csv
+import os
+import base64
 from pathlib import Path
 
 os.environ.setdefault("PYTORCH_ENABLE_MPS_FALLBACK", "1")

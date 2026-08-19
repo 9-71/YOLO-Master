@@ -10,7 +10,11 @@ Usage (在你自己的终端直接跑):
     # 自定义:
     python scripts/bench_moe_mps.py --bs 4 --imgsz 640 --runs 50 --warmup 10
 """
-import argparse, time, warnings, os, sys
+import argparse
+import time
+import warnings
+import os
+import sys
 warnings.filterwarnings("ignore")
 
 import torch

@@ -94,7 +94,7 @@ def main():
     print(f"\n[Part B] Model loading: {MODEL_PATH}")
     yolo = YOLO(MODEL_PATH)
     model = yolo.model
-    print(f"  ✅ Model loaded")
+    print("  ✅ Model loaded")
 
     cfg = MoLoRAMoEAwareConfig(
         r=8, alpha=16, num_experts=4, top_k=2,
@@ -135,7 +135,7 @@ def main():
     print(f"\n  Total MoE-aware layers with routing stats: {stats_collected}")
 
     # ---- Part D: Trainability check ----
-    print(f"\n[Part D] Trainability check...")
+    print("\n[Part D] Trainability check...")
     total_params = sum(p.numel() for p in model.parameters())
     trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f"  total params: {total_params:,}")
@@ -152,11 +152,11 @@ def main():
     )
     if all_ok:
         print("🎉 ALL CHECKS PASSED — MoE-aware PEFT pipeline is ready for COCO2017")
-        print(f"\nNext: run actual experiments with:")
-        print(f"  cd scripts && python3 ablation_moe_peft_e1_molora_rank.py")
-        print(f"  cd scripts && python3 ablation_moe_peft_e2_router_calibration.py")
-        print(f"  cd scripts && python3 ablation_moe_peft_e3_expert_load_viz.py")
-        print(f"  cd scripts && python3 eval_moe_peft.py")
+        print("\nNext: run actual experiments with:")
+        print("  cd scripts && python3 ablation_moe_peft_e1_molora_rank.py")
+        print("  cd scripts && python3 ablation_moe_peft_e2_router_calibration.py")
+        print("  cd scripts && python3 ablation_moe_peft_e3_expert_load_viz.py")
+        print("  cd scripts && python3 eval_moe_peft.py")
     else:
         print("❌ Some checks failed")
         sys.exit(1)

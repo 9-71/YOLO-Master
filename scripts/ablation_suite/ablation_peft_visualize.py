@@ -32,9 +32,8 @@ import argparse
 import traceback
 import re
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, Union
-from dataclasses import dataclass, asdict
-from collections import defaultdict
+from typing import Any, Dict, List, Optional
+from dataclasses import dataclass
 
 # ---------------------------------------------------------------------------
 # Environment setup (must happen before any ultralytics import)

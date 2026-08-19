@@ -11,7 +11,8 @@ Creates:
   - datasets/coco/val2017.txt  (all 5000 val2017 images)
 """
 
-import os, sys, zipfile
+import sys
+import zipfile
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -21,7 +22,7 @@ DATASETS_DIR = PROJECT_ROOT / "datasets"
 sys.path.insert(0, str(PROJECT_ROOT))
 
 from ultralytics.utils import ASSETS_URL
-from ultralytics.utils.downloads import download, safe_download
+from ultralytics.utils.downloads import safe_download
 
 
 def ensure_dir(path: Path):

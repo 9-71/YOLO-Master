@@ -72,7 +72,7 @@ print(f"Plots saved to: {out}")
 
 # Final summary table
 print(f"\n{'='*60}")
-print(f"  FINAL RESULTS (30 epochs, VOC subset 3000/800)")
+print("  FINAL RESULTS (30 epochs, VOC subset 3000/800)")
 print(f"{'='*60}")
 print(f"{'Metric':<15} {'v0_6':>12} {'v0_12':>12} {'Delta':>12} {'Delta%':>10}")
 print("-" * 60)

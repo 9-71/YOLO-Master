@@ -4,7 +4,6 @@ Reimplements GShard load-balancing, z-loss, and diversity loss so that
 MoLoRA can publish to the shared MOE_LOSS_REGISTRY with the same formula
 as the core MoE modules.
 """
-import math
 from typing import Optional, Dict, Union
 
 import torch

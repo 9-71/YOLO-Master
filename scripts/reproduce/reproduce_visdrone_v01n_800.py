@@ -1,5 +1,3 @@
-import os
-import wandb
 from multiprocessing import freeze_support
 from ultralytics import YOLO
 

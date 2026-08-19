@@ -12,7 +12,6 @@ Usage:
 
 from __future__ import annotations
 
-import json
 import time
 from pathlib import Path
 from typing import Any
@@ -20,7 +19,7 @@ from typing import Any
 import torch
 import torch.nn as nn
 
-from .api import collect_all_moe_info, get_aux_loss_unified, get_expert_usage_unified, moe_info
+from .api import collect_all_moe_info
 from .diagnostics import collect_moe_diagnostics, format_moe_diagnostics
 from .utils import is_core_moe_block
 

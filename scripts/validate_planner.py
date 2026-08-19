@@ -18,17 +18,14 @@ import argparse
 import json
 import time
 import statistics
-import tempfile
 from pathlib import Path
 from datetime import datetime
 
-import torch
 import torch.nn as nn
 
 from ultralytics.utils.lora.planner import (
     ArchitectureFingerprint,
     PEFTPlanner,
-    DecisionAudit,
     _fingerprint_cache,
 )
 from ultralytics.utils.lora.config import LoRAConfig
@@ -221,7 +218,7 @@ def run_train_compare(model_name: str, epochs: int = 3, batch: int = 8, imgsz: i
     # --- OFF (baseline) ---
     print(f"\n  [Planner OFF] Loading {model_name}...")
     model_off = YOLO(model_name)
-    print(f"  [Planner OFF] Training...")
+    print("  [Planner OFF] Training...")
     r_off = model_off.train(
         data="ultralytics/cfg/datasets/coco128.yaml",
         epochs=epochs,
@@ -242,7 +239,7 @@ def run_train_compare(model_name: str, epochs: int = 3, batch: int = 8, imgsz: i
     # --- ON ---
     print(f"\n  [Planner ON] Loading {model_name}...")
     model_on = YOLO(model_name)
-    print(f"  [Planner ON] Training...")
+    print("  [Planner ON] Training...")
     r_on = model_on.train(
         data="ultralytics/cfg/datasets/coco128.yaml",
         epochs=epochs,

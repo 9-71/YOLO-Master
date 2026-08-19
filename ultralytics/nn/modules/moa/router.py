@@ -2,7 +2,6 @@
 from __future__ import annotations
 import math
 import torch
-import torch.distributed as dist
 import torch.nn as nn
 import torch.nn.functional as F
 from ultralytics.nn.modules._numeric import (

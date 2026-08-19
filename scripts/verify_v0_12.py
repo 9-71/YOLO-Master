@@ -10,7 +10,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 import torch
-from ultralytics.nn.modules.moe import OptimalHybridGateMoE, HybridAdaptiveGateMoE
+from ultralytics.nn.modules.moe import OptimalHybridGateMoE
 from ultralytics.nn.modules.moe.modules import MOE_LOSS_REGISTRY
 from ultralytics.nn.tasks import DetectionModel
 

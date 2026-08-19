@@ -37,7 +37,6 @@ import os
 import sys
 import time
 import traceback
-import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -65,23 +64,18 @@ from ultralytics.utils import SETTINGS
 SETTINGS["wandb"] = False
 
 from ultralytics import YOLO
-from ultralytics.utils import ASSETS, LOGGER
+from ultralytics.utils import ASSETS
 
 # MoLoRA 基础设施
 from ultralytics.nn.peft.molora import (
     MoLoRAConfig,
-    MoLoRAMoEAwareConfig,
-    MoLoRAConfigBuilder,
     get_peft_molora_model,
-    build_moe_aware_layer,
-    mark_only_molora_as_trainable,
 )
-from ultralytics.nn.peft.molora.model import _parent_child_name, _get_submodule
 from ultralytics.nn.peft.molora.layer import MoLoRALayer
 
 # LoRA 基础设施
 from ultralytics.utils.lora import apply_lora, merge_lora_weights
-from ultralytics.utils.lora.config import LoRAConfig, LoRAConfigBuilder as LoRAStdConfigBuilder
+from ultralytics.utils.lora.config import LoRAConfig
 
 # 确认加载的是当前仓库的 ultralytics
 import ultralytics
@@ -643,7 +637,7 @@ def run_single_benchmark(spec: BenchmarkSpec, backend: str) -> Dict[str, Any]:
                   f"FPS={latency['fps']:.1f}")
         else:
             record["error"] = "Latency measurement returned None"
-            print(f"  [Latency] FAILED")
+            print("  [Latency] FAILED")
 
     except Exception as exc:
         record["ok"] = False

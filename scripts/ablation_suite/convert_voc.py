@@ -1,6 +1,5 @@
 import xml.etree.ElementTree as ET
 from pathlib import Path
-import os
 
 VOC_ROOT = Path('/Users/gatilin/MyWork/datasets/voc/VOC0712')
 VOC2007 = VOC_ROOT / 'VOCdevkit' / 'VOC2007'
