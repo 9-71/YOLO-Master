@@ -20,6 +20,8 @@ def test_wrapper_exposes_scalar_foundation_metrics_and_clears_eval_cache():
         "foundation_loss",
         "foundation_cosine_loss",
         "foundation_relational_loss",
+        "foundation_cosine_raw",
+        "foundation_relational_raw",
         "foundation_task_ratio",
         "foundation_loss_weight",
         "foundation_foreground_enabled",

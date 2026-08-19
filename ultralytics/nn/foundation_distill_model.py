@@ -938,6 +938,9 @@ class FoundationDistillationModel(nn.Module):
             "foundation_loss": foundation_scalar,
             "foundation_cosine_loss": float((cosine.detach().float() * self.loss_weight * batch_size).item()),
             "foundation_relational_loss": float((relation.detach().float() * self.loss_weight * batch_size).item()),
+            # Raw (unweighted) KD components: comparable across loss_weight and batch_size settings.
+            "foundation_cosine_raw": float(cosine.detach().float().item()),
+            "foundation_relational_raw": float(relation.detach().float().item()),
             "foundation_task_ratio": foundation_scalar / max(task_scalar, 1e-8),
             "foundation_loss_weight": float(self.loss_weight),
             "foundation_foreground_enabled": float(foreground_enabled),
