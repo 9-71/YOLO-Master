@@ -11,7 +11,11 @@ SOURCES_LIST = [ASSETS / "bus.jpg", ASSETS, ASSETS / "*", ASSETS / "**/*.jpg"]  
 CUDA_IS_AVAILABLE = checks.cuda_is_available()
 CUDA_DEVICE_COUNT = checks.cuda_device_count()
 TASK_MODEL_DATA = sorted(
-    [(task, WEIGHTS_DIR / TASK2MODEL[task], TASK2DATA[task]) for task in TASKS]
+    [
+        # YAML configs are passed by name so check_file() resolves them inside the repo; only weights are prefixed
+        (task, WEIGHTS_DIR / TASK2MODEL[task] if TASK2MODEL[task].endswith(".pt") else TASK2MODEL[task], TASK2DATA[task])
+        for task in TASKS
+    ]
 )  # (task, model, data) tuples
 MODELS = sorted([*list(TASK2MODEL.values()), "yolo11n-grayscale.pt"])  # task models plus grayscale variant
 SOLUTION_ASSETS = {

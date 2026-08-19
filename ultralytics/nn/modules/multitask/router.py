@@ -137,6 +137,26 @@ class TaskRouter(FP32RouterMixin, nn.Module):
         self.last_assignment: Optional[torch.Tensor] = None
         self.last_routing_stats: dict = {}
 
+    def __getstate__(self):
+        """Exclude graph-connected routing caches from deepcopy/pickle.
+
+        ``last_affinity`` intentionally stays graph-connected until the criterion consumes the
+        auxiliary loss, but a graph-connected (non-leaf) tensor crashes ``copy.deepcopy(model)``
+        during ModelEMA initialization. The caches are runtime-only and are repopulated on the
+        next forward, so copies (EMA, checkpoint serialization) start with empty caches.
+        """
+        state = super().__getstate__().copy()
+        state["last_affinity"] = None
+        state["last_assignment"] = None
+        return state
+
+    def __setstate__(self, state):
+        """Restore module state and reinitialize empty routing caches."""
+        super().__setstate__(state)
+        self.last_affinity = None
+        self.last_assignment = None
+        self.last_routing_stats = getattr(self, "last_routing_stats", {}) or {}
+
     @property
     def top_k(self) -> int:
         return self._top_k

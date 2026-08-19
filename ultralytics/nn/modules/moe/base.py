@@ -5,8 +5,7 @@ Keeping these aliases preserves historical imports and checkpoint pickle paths
 without maintaining a second, drifting copy of each class.
 """
 
-from .modules import _MOE_FINITE_DIAGNOSTICS, _MOE_FINITE_DIAGNOSTIC_MAX_EVENTS
-
+from .modules import _MOE_FINITE_DIAGNOSTICS, _MOE_FINITE_DIAGNOSTIC_MAX_EVENTS  # noqa: F401  # re-export
 from .modules import (
     A2C2fMoE,
     ABlockMoE,
@@ -25,4 +24,6 @@ __all__ = (
     "OptimizedMOEImproved",
     "ABlockMoE",
     "A2C2fMoE",
+    "_MOE_FINITE_DIAGNOSTICS",
+    "_MOE_FINITE_DIAGNOSTIC_MAX_EVENTS",
 )

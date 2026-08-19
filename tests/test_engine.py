@@ -124,9 +124,59 @@ def test_task(trainer_cls, validator_cls, predictor_cls, data, model, weights):
         trainer_cls(overrides={**overrides, "resume": trainer.last}).train()
 
 
+def _tiny_coco_multitask_yaml(root: Path) -> str:
+    """Create a minimal COCO-format detect+segment multi-task dataset YAML (4 images, 1 box each)."""
+    import json
+
+    import cv2
+    import numpy as np
+    import yaml
+
+    img_dir = root / "images" / "train"
+    img_dir.mkdir(parents=True)
+    images, annotations = [], []
+    for i in range(4):
+        cv2.imwrite(str(img_dir / f"img{i}.jpg"), np.full((32, 32, 3), i * 40, dtype=np.uint8))
+        images.append({"id": i, "file_name": f"img{i}.jpg", "width": 32, "height": 32})
+        annotations.append(
+            {
+                "id": i,
+                "image_id": i,
+                "category_id": 1,
+                "bbox": [4.0, 4.0, 16.0, 16.0],
+                "area": 256.0,
+                "iscrowd": 0,
+                "segmentation": [[4.0, 4.0, 20.0, 4.0, 20.0, 20.0, 4.0, 20.0]],
+            }
+        )
+    (root / "instances.json").write_text(
+        json.dumps({"images": images, "annotations": annotations, "categories": [{"id": 1, "name": "person"}]})
+    )
+    yaml_file = root / "data.yaml"
+    yaml_file.write_text(
+        yaml.safe_dump(
+            {
+                "path": str(root),
+                "train": "images/train",
+                "val": "images/train",
+                "names": {0: "person"},
+                "multitask_format": "coco",
+                "tasks": ["detect", "segment"],
+                "train_instances": "instances.json",
+                "val_instances": "instances.json",
+                "kpt_shape": [17, 3],
+            }
+        )
+    )
+    return str(yaml_file)
+
+
 @pytest.mark.parametrize("task,weight,data", TASK_MODEL_DATA)
 def test_resume_incomplete(task, weight, data, tmp_path):
     """Test training resumes from an incomplete checkpoint."""
+    if task == "multitask":
+        # Multi-task training requires COCO-format aligned targets; no 8-image multi-task fixture ships in-repo
+        data = _tiny_coco_multitask_yaml(tmp_path / "mt_data")
     train_args = {
         "data": data,
         "epochs": 2,

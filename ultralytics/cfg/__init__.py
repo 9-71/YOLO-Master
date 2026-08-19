@@ -66,7 +66,7 @@ TASK2DATA = {
     "pose": "coco8-pose.yaml",
     "obb": "dota8.yaml",
     "semantic": "cityscapes8.yaml",
-    "multitask": "coco8.yaml",
+    "multitask": "coco-multitask.yaml",
 }
 TASK2CALIBRATIONDATA = {
     "detect": "coco128.yaml",
