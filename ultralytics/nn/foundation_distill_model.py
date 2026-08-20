@@ -105,6 +105,30 @@ class FoundationDistillationModel(nn.Module):
         self.loss_weight = float(_get(config, "foundation_loss_weight", 0.0) or 0.0)
         if self.loss_weight < 0:
             raise ValueError("foundation_loss_weight must be non-negative.")
+        # Weight schedule: "constant" (legacy behavior) or "gate_decay" (cosine-gated ramp-in + late decay).
+        self.weight_schedule = str(_get(config, "foundation_weight_schedule", "constant") or "constant").lower()
+        if self.weight_schedule not in {"constant", "gate_decay"}:
+            raise ValueError(f"Unsupported foundation_weight_schedule={self.weight_schedule!r}.")
+        gate_cosine = _get(config, "foundation_gate_cosine", 1.0)
+        self.gate_cosine = float(1.0 if gate_cosine is None else gate_cosine)
+        gate_width = _get(config, "foundation_gate_width", 0.05)
+        self.gate_width = float(0.05 if gate_width is None else gate_width)
+        if self.gate_width <= 0:
+            raise ValueError("foundation_gate_width must be positive.")
+        decay_start = _get(config, "foundation_decay_start", 0.7)
+        self.decay_start = float(0.7 if decay_start is None else decay_start)
+        if not 0.0 <= self.decay_start < 1.0:
+            raise ValueError("foundation_decay_start must be in [0, 1).")
+        warmup_floor = _get(config, "foundation_warmup_floor", 0.2)
+        self.warmup_floor = float(0.2 if warmup_floor is None else warmup_floor)
+        if not 0.0 <= self.warmup_floor <= 1.0:
+            raise ValueError("foundation_warmup_floor must be in [0, 1].")
+        gate_ema = _get(config, "foundation_gate_ema", 0.9)
+        self.gate_ema = float(0.9 if gate_ema is None else gate_ema)
+        if not 0.0 <= self.gate_ema < 1.0:
+            raise ValueError("foundation_gate_ema must be in [0, 1).")
+        self.__dict__["_cosine_ema"] = None
+        self.__dict__["_train_progress"] = 0.0
         self.router_distill = bool(_get(config, "foundation_router_distill", False))
         self.router_loss_weight = float(_get(config, "foundation_router_loss_weight", 0.0) or 0.0)
         if self.router_loss_weight < 0:
@@ -845,6 +869,48 @@ class FoundationDistillationModel(nn.Module):
             return total, cosine_weight * cosine, relation_weight * relation
         raise ValueError(f"Unsupported foundation_loss={loss_name!r}.")
 
+    def set_foundation_progress(self, epoch: int, epochs: int) -> None:
+        """Update fractional training progress (0-1) for the Foundation weight schedule."""
+        total = max(int(epochs) - 1, 1)
+        self.__dict__["_train_progress"] = min(max(float(epoch) / total, 0.0), 1.0)
+
+    def _gate_factor(self) -> float:
+        """Cosine-gated ramp-in: opens as the raw cosine-loss EMA drops below the gate threshold."""
+        ema = self.__dict__.get("_cosine_ema")
+        if ema is None:
+            return 0.0
+        return min(max((self.gate_cosine - ema) / self.gate_width, 0.0), 1.0)
+
+    def _decay_factor(self) -> float:
+        """Linear decay to zero over the final (1 - decay_start) fraction of training."""
+        progress = float(self.__dict__.get("_train_progress", 0.0))
+        if progress <= self.decay_start:
+            return 1.0
+        return max((1.0 - progress) / (1.0 - self.decay_start), 0.0)
+
+    def effective_loss_weight(self) -> float:
+        """Return the scheduled Foundation loss weight for the current training step.
+
+        The "gate_decay" schedule keeps a warmup floor so the projector still learns while
+        features are near-orthogonal (cosine gate closed), ramps to the full weight as the
+        cosine EMA opens the gate, and decays to zero late in training so maturing detection
+        features are not pulled back toward teacher semantics.
+        """
+        if self.weight_schedule != "gate_decay":
+            return self.loss_weight
+        ramp = self.warmup_floor + (1.0 - self.warmup_floor) * self._gate_factor()
+        return self.loss_weight * ramp * self._decay_factor()
+
+    def _update_cosine_ema(self, cosine: torch.Tensor) -> None:
+        """Track an EMA of the raw cosine KD loss to drive the weight gate."""
+        cosine = cosine.detach().float()
+        if not torch.isfinite(cosine):
+            return
+        value = float(cosine.item())
+        ema = self.__dict__.get("_cosine_ema")
+        momentum = self.gate_ema
+        self.__dict__["_cosine_ema"] = value if ema is None else momentum * ema + (1.0 - momentum) * value
+
     def forward(self, x, *args, **kwargs):
         """Run student inference, or compute task plus Foundation loss for a training batch."""
         if not isinstance(x, dict) or self._disabled or not self.training:
@@ -917,13 +983,16 @@ class FoundationDistillationModel(nn.Module):
             relation = torch.stack([values[2] for _, values in components]).mean()
             if not torch.isfinite(kd):
                 raise ValueError("Foundation distillation loss is NaN or Inf.")
+            effective_weight = self.effective_loss_weight()
+            self._update_cosine_ema(cosine)
         else:
             source = next((value for value in student_features.values() if isinstance(value, torch.Tensor)), None)
             kd = source.sum() * 0.0 if source is not None else teacher_summary.sum() * 0.0
             cosine = kd
             relation = kd
+            effective_weight = self.loss_weight
         batch_size = int(batch["img"].shape[0])
-        feature_loss = kd * self.loss_weight * batch_size
+        feature_loss = kd * effective_weight * batch_size
         route_loss, route_metrics = self._routing_kd(teacher_summary, batch_size=batch_size)
         task_loss, task_items = self.student_model.loss(batch, preds)
         semantic_loss, semantic_metrics = (
@@ -936,13 +1005,14 @@ class FoundationDistillationModel(nn.Module):
         batch_size = max(int(batch["img"].shape[0]), 1)
         self.__dict__["_last_foundation_metrics"] = {
             "foundation_loss": foundation_scalar,
-            "foundation_cosine_loss": float((cosine.detach().float() * self.loss_weight * batch_size).item()),
-            "foundation_relational_loss": float((relation.detach().float() * self.loss_weight * batch_size).item()),
+            "foundation_cosine_loss": float((cosine.detach().float() * effective_weight * batch_size).item()),
+            "foundation_relational_loss": float((relation.detach().float() * effective_weight * batch_size).item()),
             # Raw (unweighted) KD components: comparable across loss_weight and batch_size settings.
             "foundation_cosine_raw": float(cosine.detach().float().item()),
             "foundation_relational_raw": float(relation.detach().float().item()),
             "foundation_task_ratio": foundation_scalar / max(task_scalar, 1e-8),
             "foundation_loss_weight": float(self.loss_weight),
+            "foundation_effective_weight": float(effective_weight),
             "foundation_foreground_enabled": float(foreground_enabled),
             "foundation_foreground_mean_weight": float(torch.stack(foreground_means).mean().item())
             if foreground_means
@@ -958,7 +1028,7 @@ class FoundationDistillationModel(nn.Module):
         if self.multiscale:
             for level, values in components:
                 self.__dict__["_last_foundation_metrics"][f"foundation_{level}_loss"] = float(
-                    (values[0].detach().float() * self.loss_weight * batch_size).item()
+                    (values[0].detach().float() * effective_weight * batch_size).item()
                 )
         return torch.cat([task_loss.reshape(-1), foundation_loss.reshape(1)]), torch.cat(
             [task_items.reshape(-1), foundation_loss.detach().reshape(1)]

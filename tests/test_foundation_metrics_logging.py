@@ -24,6 +24,7 @@ def test_wrapper_exposes_scalar_foundation_metrics_and_clears_eval_cache():
         "foundation_relational_raw",
         "foundation_task_ratio",
         "foundation_loss_weight",
+        "foundation_effective_weight",
         "foundation_foreground_enabled",
         "foundation_foreground_mean_weight",
     }

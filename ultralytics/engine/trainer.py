@@ -664,6 +664,9 @@ class BaseTrainer:
         self._oom_retries = 0  # OOM auto-reduce counter for first epoch
         while True:
             self.epoch = epoch
+            set_foundation_progress = getattr(unwrap_model(self.model), "set_foundation_progress", None)
+            if callable(set_foundation_progress):
+                set_foundation_progress(epoch, self.epochs)
             self.mixture_controller.begin_epoch(epoch)
             self.adapter_controller.begin_epoch(epoch)
             self.run_callbacks("on_train_epoch_start")

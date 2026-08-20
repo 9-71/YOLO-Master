@@ -124,6 +124,12 @@ foundation_loss: relational # (str) distillation loss: cosine, l2, relational, o
 foundation_relation_mode: sampled # (str) relational KD mode: sampled or full
 foundation_relation_samples: 256 # (int) maximum spatial tokens for sampled relational KD
 foundation_loss_weight: 0.0 # (float) total Foundation distillation loss weight; 0 disables teacher work
+foundation_weight_schedule: constant # (str) loss-weight schedule: constant or gate_decay (cosine-gated ramp-in + late decay)
+foundation_gate_cosine: 1.0 # (float) gate_decay: cosine-loss EMA threshold where the weight ramp starts opening
+foundation_gate_width: 0.05 # (float) gate_decay: cosine-loss EMA span over which the ramp fully opens
+foundation_warmup_floor: 0.2 # (float) gate_decay: minimum weight fraction while the gate is closed
+foundation_decay_start: 0.7 # (float) gate_decay: training-progress fraction where linear decay to zero begins
+foundation_gate_ema: 0.9 # (float) gate_decay: EMA momentum for the cosine gate signal
 foundation_relation_weight: 1.0 # (float) relational component weight
 foundation_cosine_weight: 1.0 # (float) cosine component weight
 foundation_foreground_weighting: False # (bool) apply GT foreground-aware weighting to Foundation KD
