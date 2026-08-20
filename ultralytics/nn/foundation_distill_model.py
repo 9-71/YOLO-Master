@@ -111,6 +111,10 @@ class FoundationDistillationModel(nn.Module):
             raise ValueError(f"Unsupported foundation_weight_schedule={self.weight_schedule!r}.")
         gate_cosine = _get(config, "foundation_gate_cosine", 1.0)
         self.gate_cosine = float(1.0 if gate_cosine is None else gate_cosine)
+        gate_cosine_low = _get(config, "foundation_gate_cosine_low", 0.9)
+        self.gate_cosine_low = None if not gate_cosine_low else float(gate_cosine_low)
+        if self.gate_cosine_low is not None and not 0.0 < self.gate_cosine_low < self.gate_cosine:
+            raise ValueError("foundation_gate_cosine_low must be in (0, foundation_gate_cosine), or 0 to disable.")
         gate_width = _get(config, "foundation_gate_width", 0.05)
         self.gate_width = float(0.05 if gate_width is None else gate_width)
         if self.gate_width <= 0:
@@ -875,11 +879,21 @@ class FoundationDistillationModel(nn.Module):
         self.__dict__["_train_progress"] = min(max(float(epoch) / total, 0.0), 1.0)
 
     def _gate_factor(self) -> float:
-        """Cosine-gated ramp-in: opens as the raw cosine-loss EMA drops below the gate threshold."""
+        """Cosine-gated ramp: opens as the alignment EMA drops below gate_cosine, and backs off
+        again below gate_cosine_low so the student is not over-aligned to teacher semantics.
+
+        Empirical basis (F08, 4 runs): final detection gap vs final cosine_raw was
+        0.79 -> -0.008, 0.87 -> -0.013, 0.92 -> +0.017, 0.93 -> +0.009 — alignment past
+        ~0.92 hurts. The gate therefore peaks near the band centre and fades both ways.
+        """
         ema = self.__dict__.get("_cosine_ema")
         if ema is None:
             return 0.0
-        return min(max((self.gate_cosine - ema) / self.gate_width, 0.0), 1.0)
+        ramp_up = min(max((self.gate_cosine - ema) / self.gate_width, 0.0), 1.0)
+        if self.gate_cosine_low is not None:
+            ramp_down = min(max((ema - self.gate_cosine_low) / self.gate_width, 0.0), 1.0)
+            return min(ramp_up, ramp_down)
+        return ramp_up
 
     def _decay_factor(self) -> float:
         """Linear decay to zero over the final (1 - decay_start) fraction of training."""
@@ -1539,6 +1553,11 @@ def rebuild_foundation_distillation_wrapper(
             wrapper.semantic_projector.load_state_dict(checkpoint_semantic_projector.state_dict())
         except (KeyError, RuntimeError, ValueError) as exc:
             raise RuntimeError("Foundation semantic projector is incompatible with the rebuilt student.") from exc
+    # The cosine-gate EMA is pickled with the checkpoint model; restore it so resume does not
+    # silently close the gate and drop the distillation weight back to the warmup floor.
+    cosine_ema = checkpoint_model.__dict__.get("_cosine_ema")
+    if cosine_ema is not None:
+        wrapper.__dict__["_cosine_ema"] = float(cosine_ema)
     return wrapper
 
 

@@ -126,6 +126,7 @@ foundation_relation_samples: 256 # (int) maximum spatial tokens for sampled rela
 foundation_loss_weight: 0.0 # (float) total Foundation distillation loss weight; 0 disables teacher work
 foundation_weight_schedule: constant # (str) loss-weight schedule: constant or gate_decay (cosine-gated ramp-in + late decay)
 foundation_gate_cosine: 1.0 # (float) gate_decay: cosine-loss EMA threshold where the weight ramp starts opening
+foundation_gate_cosine_low: 0.9 # (float) gate_decay: EMA level below which the gate closes again (prevents over-alignment); 0 disables
 foundation_gate_width: 0.05 # (float) gate_decay: cosine-loss EMA span over which the ramp fully opens
 foundation_warmup_floor: 0.2 # (float) gate_decay: minimum weight fraction while the gate is closed
 foundation_decay_start: 0.7 # (float) gate_decay: training-progress fraction where linear decay to zero begins

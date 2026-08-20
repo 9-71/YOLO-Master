@@ -28,13 +28,36 @@ def test_gate_decay_starts_at_warmup_floor():
 
 
 def test_gate_opens_as_cosine_ema_drops():
-    wrapper = _wrapper(foundation_gate_cosine=1.0, foundation_gate_width=0.1, foundation_warmup_floor=0.2)
+    wrapper = _wrapper(
+        foundation_gate_cosine=1.0,
+        foundation_gate_width=0.1,
+        foundation_warmup_floor=0.2,
+        foundation_gate_cosine_low=0,  # disable the lower band edge for a pure ramp-up check
+    )
     wrapper.__dict__["_cosine_ema"] = 0.97  # 30% through the gate span
     assert wrapper._gate_factor() == pytest.approx(0.3)
     assert wrapper.effective_loss_weight() == pytest.approx(wrapper.loss_weight * (0.2 + 0.8 * 0.3))
     wrapper.__dict__["_cosine_ema"] = 0.80  # fully open
     assert wrapper._gate_factor() == 1.0
     assert wrapper.effective_loss_weight() == pytest.approx(wrapper.loss_weight)
+
+
+def test_gate_band_closes_on_over_alignment():
+    wrapper = _wrapper(foundation_gate_cosine=1.0, foundation_gate_cosine_low=0.9, foundation_gate_width=0.05)
+    wrapper.__dict__["_cosine_ema"] = 0.95  # band centre: both ramps fully open
+    assert wrapper._gate_factor() == pytest.approx(1.0)
+    wrapper.__dict__["_cosine_ema"] = 0.93  # 40% into the closing edge
+    assert wrapper._gate_factor() == pytest.approx(0.6)
+    wrapper.__dict__["_cosine_ema"] = 0.88  # over-aligned: gate closed, back to floor
+    assert wrapper._gate_factor() == 0.0
+    assert wrapper.effective_loss_weight() == pytest.approx(wrapper.loss_weight * wrapper.warmup_floor)
+
+
+def test_gate_band_disabled_with_zero_low():
+    wrapper = _wrapper(foundation_gate_cosine_low=0)
+    assert wrapper.gate_cosine_low is None
+    wrapper.__dict__["_cosine_ema"] = 0.5  # deeply aligned: no close-out when disabled
+    assert wrapper._gate_factor() == 1.0
 
 
 def test_late_decay_reaches_zero_at_final_epoch():
@@ -94,3 +117,5 @@ def test_invalid_schedule_config_rejected():
         _wrapper(foundation_decay_start=1.0)
     with pytest.raises(ValueError, match="foundation_gate_width"):
         _wrapper(foundation_gate_width=0.0)
+    with pytest.raises(ValueError, match="foundation_gate_cosine_low"):
+        _wrapper(foundation_gate_cosine_low=1.5)  # above gate_cosine

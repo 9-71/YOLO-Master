@@ -53,6 +53,32 @@ def test_foundation_resume_rebuild_restores_projector_and_teacher_boundary():
     assert torch.equal(restored.projector.student_proj[0].weight, source.projector.student_proj[0].weight)
 
 
+def test_foundation_resume_rebuild_restores_cosine_gate_ema():
+    source = FoundationDistillationModel(TinyStudent(), DummyTeacher(), config(foundation_weight_schedule="gate_decay"))
+    source.__dict__["_cosine_ema"] = 0.93
+    checkpoint_model = copy.deepcopy(source)
+
+    restored = rebuild_foundation_distillation_wrapper(
+        TinyStudent(),
+        config(foundation_weight_schedule="gate_decay"),
+        checkpoint_model=checkpoint_model,
+        device="cpu",
+        teacher_manager=DummyTeacher(),
+    )
+
+    assert restored.__dict__["_cosine_ema"] == 0.93
+    # A pre-schedule checkpoint carries no EMA; the rebuilt wrapper must start fresh.
+    checkpoint_model.__dict__["_cosine_ema"] = None
+    restored_fresh = rebuild_foundation_distillation_wrapper(
+        TinyStudent(),
+        config(foundation_weight_schedule="gate_decay"),
+        checkpoint_model=checkpoint_model,
+        device="cpu",
+        teacher_manager=DummyTeacher(),
+    )
+    assert restored_fresh.__dict__["_cosine_ema"] is None
+
+
 def test_multiscale_checkpoint_metadata_records_per_level_channels():
     wrapper = FoundationDistillationModel(
         TinyStudent(), DummyTeacher(), config(foundation_multiscale=True, foundation_target_levels=["p3", "p4", "p5"])
