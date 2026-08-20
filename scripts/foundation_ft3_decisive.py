@@ -69,18 +69,19 @@ def main() -> None:
     assert group in ("baseline", "distill"), group
     epochs = int(sys.argv[2]) if len(sys.argv) > 2 else EPOCHS
     tag = sys.argv[3] if len(sys.argv) > 3 else None
-    name = f"coco128-ft3-{group}{'-' + tag if tag else ''}-e{epochs}"
+    seed = int(sys.argv[4]) if len(sys.argv) > 4 else 0
+    name = f"coco128-ft3-{group}{'-' + tag if tag else ''}-e{epochs}{'-s' + str(seed) if seed else ''}"
     last = ROOT / "runs/foundation" / name / "weights/last.pt"
     if last.exists():
         print(f"[ft3] resuming {name} from {last}", flush=True)
         YOLO(str(last)).train(resume=True)
         return
-    cfg = dict(COMMON, name=name, epochs=epochs)
+    cfg = dict(COMMON, name=name, epochs=epochs, seed=seed)
     if group == "distill":
         cfg.update(DISTILL)
         if tag == "gated":
             cfg.update(GATED)
-    print(f"[ft3] starting {name} (epochs={epochs}, SGD lr0=0.01)", flush=True)
+    print(f"[ft3] starting {name} (epochs={epochs}, SGD lr0=0.01, seed={seed})", flush=True)
     YOLO(str(ROOT / "weights/yolo26n.pt")).train(**cfg)
 
 
