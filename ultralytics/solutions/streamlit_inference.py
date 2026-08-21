@@ -43,13 +43,16 @@ class Inference:
         inference: Perform real-time object detection inference.
 
     Examples:
-        Create an Inference instance with a custom model
-        >>> inf = Inference(model="path/to/model.pt")
-        >>> inf.inference()
+        Create an Inference instance with a custom model (not runnable as a doctest: launches a
+        Streamlit server and captures webcam/video input)::
 
-        Create an Inference instance with default settings
-        >>> inf = Inference()
-        >>> inf.inference()
+            inf = Inference(model="path/to/model.pt")
+            inf.inference()
+
+        Create an Inference instance with default settings::
+
+            inf = Inference()
+            inf.inference()
     """
 
     def __init__(self, **kwargs: Any) -> None:
