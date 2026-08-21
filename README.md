@@ -4,6 +4,7 @@
   <a href="https://huggingface.co/spaces/gatilin/YOLO-Master-WebUI-Demo"><img src="https://img.shields.io/badge/%F0%9F%A4%97%20Hugging%20Face-Spaces-blue" alt="Hugging Face Spaces"></a>
   <a href="https://colab.research.google.com/drive/1gTKkCsE4sXIOWpu1cdNBjdFHEahBoZD0?usp=sharing"><img src="https://colab.research.google.com/assets/colab-badge.svg" alt="Open In Colab"></a>
   <a href="https://arxiv.org/abs/2512.23273"><img src="https://img.shields.io/badge/arXiv-2512.23273-b31b1b.svg" alt="arXiv"></a>
+  <a href="https://arxiv.org/abs/2608.07051"><img src="https://img.shields.io/badge/arXiv-2608.07051-b31b1b.svg" alt="YOLO-PEFT arXiv paper"></a>
   <a href="#-citation"><img src="https://img.shields.io/badge/CVPR-2026-6420AA.svg" alt="CVPR 2026"></a>
   <a href="https://github.com/Tencent/YOLO-Master/releases/tag/YOLO-Master-v26.02"><img src="https://img.shields.io/badge/%F0%9F%93%A6-Model%20Zoo-orange" alt="Model Zoo"></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/License-AGPL%203.0-blue.svg" alt="AGPL 3.0"></a>
@@ -123,6 +124,7 @@ For a deep dive into the design philosophy of MoE modules, detailed routing mech
 
 ## 🚀 Updates (Latest First)
 
+- **2026/08/07**: 📄 **New paper: [YOLO-PEFT: Parameter-Efficient Fine-Tuning on YOLO Family](https://arxiv.org/abs/2608.07051) ([PDF](https://arxiv.org/pdf/2608.07051))** — proposes a structure-aware, auditable constraint-planning framework for PEFT placement in YOLO detectors. Within the evaluated coverage, planner-selected RS-LoRA reaches **0.7138 / 0.7307 mAP50-95** on YOLO11s / YOLO12s versus **0.6428 / 0.6662** for Full-SFT; all seven evaluated LoRA-family configurations on RT-DETR-L trigger a calibrated Refuse-to-Full-SFT decision. A controlled YOLO11 audit reports **43.9% lower peak training memory** with **1.72x** training time.
 - **2026-06-29**: 🤖✅ **Agent Skill System Validation Complete** — Full end-to-end validation of `yolo-master-agent` Skill with 50/50 test cases passing across 8 suites (quick / fast-smoke / cli-smoke / dry-run / contract / deep-smoke / extended / all). Fixed `AttributeError` from missing `end2end` field in `default.yaml`. Verified complete training → validation → inference pipeline with MPS auto-selection and workers=0 auto-completion. Skill runners: `yolo.train`, `yolo.val`, `yolo.predict`, `yolo.benchmark`, `yolo.export`, `yolo.lora.diagnose`, `yolo.eval.peft_compare`, `yolo.multimodal.infer`, `yolo.system.doctor`.
 - **2026-06-29**: 🦏🏆 **Selected for Tencent Rhino Bird Open Source Program 2026** — YOLO-Master has been officially selected for the [Tencent Rhino Bird Open Source Program](https://opensource.tencent.com/summer-of-code/) (Summer of Code 2026). This program aims to cultivate outstanding open-source talents and promote the prosperity and development of the open-source community. YOLO-Master will receive continuous support from the Tencent Open Source Fund, including mentorship, resource allocation, and community promotion, to further advance the integration of dynamic intelligence and MoE architecture in real-time object detection.
 - **2026-06-28**: 🔀 **MoA + MoT Integration** — Mixture-of-Attention (MoA) and Mixture-of-Transformers (MoT) modules merged into main with regression tests. **MoA**: lightweight router assigns tokens to attention heads with different receptive fields (Local / Regional / Global). **MoT**: content-aware router assigns tokens to distinct Transformer experts (LocalConvTransformer / WindowTransformer / DeformableTransformer) with soft Top-K blending and optional load-balancing aux loss. New model configs added under `ultralytics/cfg/models/master/v0_1/`.
@@ -723,6 +725,13 @@ This project is licensed under the [GNU Affero General Public License v3.0 (AGPL
 
 This work builds upon the excellent [Ultralytics](https://github.com/ultralytics/ultralytics) framework. Huge thanks to the community for contributions, deployments, and tutorials!
 
+
+<div align="center">
+  <a href="https://github.com/Tencent/YOLO-Master/stargazers">
+    <img src="./docs/assets/star-history.svg" alt="Tencent/YOLO-Master GitHub star history" width="960" />
+  </a>
+</div>
+
 ## 📝 Citation
 
 If you use YOLO-Master in your research, please cite our paper:
@@ -733,6 +742,20 @@ If you use YOLO-Master in your research, please cite our paper:
   author={Lin, Xu and Peng, Jinlong and Gan, Zhenye and Zhu, Jiawen and Liu, Jun},
   booktitle={Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR)},
   year={2026}
+}
+```
+
+For the parameter-efficient fine-tuning work, please also cite:
+
+```bibtex
+@misc{lin2026yolopeft,
+  title={YOLO-PEFT: Parameter-Efficient Fine-Tuning on YOLO Family},
+  author={Lin, Xu and Nie, WenJie and Peng, Jinlong and Fu, Weifu and Ma, YueXiao and Zheng, Xiawu and Liu, Yong},
+  year={2026},
+  eprint={2608.07051},
+  archivePrefix={arXiv},
+  primaryClass={cs.CV},
+  url={https://arxiv.org/abs/2608.07051}
 }
 ```
 

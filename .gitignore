@@ -199,6 +199,7 @@ calibration_*.npy
 *.heic
 *.ico
 *.raw
+!docs/assets/star-history.svg
 
 # Training logs
 args.yaml

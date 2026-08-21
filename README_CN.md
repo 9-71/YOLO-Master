@@ -4,6 +4,7 @@
   <a href="https://huggingface.co/spaces/gatilin/YOLO-Master-WebUI-Demo"><img src="https://img.shields.io/badge/%F0%9F%A4%97%20Hugging%20Face-Spaces-blue" alt="Hugging Face Spaces"></a>
   <a href="https://colab.research.google.com/drive/1gTKkCsE4sXIOWpu1cdNBjdFHEahBoZD0?usp=sharing"><img src="https://colab.research.google.com/assets/colab-badge.svg" alt="Open In Colab"></a>
   <a href="https://arxiv.org/abs/2512.23273"><img src="https://img.shields.io/badge/arXiv-2512.23273-b31b1b.svg" alt="arXiv"></a>
+  <a href="https://arxiv.org/abs/2608.07051"><img src="https://img.shields.io/badge/arXiv-2608.07051-b31b1b.svg" alt="YOLO-PEFT arXiv 论文"></a>
   <a href="#-引用"><img src="https://img.shields.io/badge/CVPR-2026-6420AA.svg" alt="CVPR 2026"></a>
   <a href="https://github.com/Tencent/YOLO-Master/releases/tag/YOLO-Master-v26.02"><img src="https://img.shields.io/badge/%F0%9F%93%A6-Model%20Zoo-orange" alt="Model Zoo"></a>
   <a href="./LICENSE"><img src="https://img.shields.io/badge/License-AGPL%203.0-blue.svg" alt="AGPL 3.0"></a>
@@ -118,6 +119,7 @@
 
 ## 🚀 更新 (Latest First)
 
+- **2026/08/07**: 📄 **新论文：[YOLO-PEFT：YOLO 系列的参数高效微调](https://arxiv.org/abs/2608.07051)（[PDF](https://arxiv.org/pdf/2608.07051)）** — 提出面向 YOLO 检测器 PEFT 放置的结构感知、可审计约束规划框架。在论文覆盖的评测范围内，规划器选择的 RS-LoRA 在 YOLO11s / YOLO12s 上达到 **0.7138 / 0.7307 mAP50-95**，高于 Full-SFT 的 **0.6428 / 0.6662**；在 RT-DETR-L 上评测的 7 种 LoRA 系列配置均触发校准后的 Refuse-to-Full-SFT 决策。受控 YOLO11 审计显示，LoRA 可将训练峰值显存降低 **43.9%**，但训练时间为 **1.72 倍**。
 - **2026/06/29**: 🤖✅ **Agent Skill 系统验证完成** — `yolo-master-agent` Skill 全量端到端验证与修复。50/50 测试用例通过（8 个验证套件：quick / fast-smoke / cli-smoke / dry-run / contract / deep-smoke / extended / all）。修复 `default.yaml` 缺失 `end2end` 字段导致的 `AttributeError` 崩溃。验证训练 → 验证 → 推理完整闭环（MPS 设备自动选择，workers=0 自动补全）。Skill 运行器：`yolo.train`、`yolo.val`、`yolo.predict`、`yolo.benchmark`、`yolo.export`、`yolo.lora.diagnose`、`yolo.eval.peft_compare`、`yolo.multimodal.infer`、`yolo.system.doctor`。
 - **2026/06/29**: 🦏🏆 **入选 2026 腾讯犀牛鸟开源项目** — YOLO-Master 正式入选 [腾讯犀牛鸟开源人才培养计划](https://opensource.tencent.com/summer-of-code/)（Summer of Code 2026）。该计划旨在培养优秀的开源人才，推动开源社区的繁荣发展。YOLO-Master 将获得腾讯开源基金会的持续支持，包括导师指导、资源分配和社区推广，以进一步推进动态智能与 MoE 架构在实时目标检测中的融合与落地。
 - **2026/06/28**: 🔀 **MoA + MoT 正式集成** — Mixture-of-Attention (MoA) 与 Mixture-of-Transformers (MoT) 模块合并至主干，添加回归测试。MoA：轻量级路由器将 token 分配到不同感受野的 attention head（Local / Regional / Global）。MoT：内容感知路由器将 token 分配到不同 Transformer 专家架构（LocalConvTransformer / WindowTransformer / DeformableTransformer），支持软 Top-K 混合与负载均衡辅助损失。新增模型配置：`ultralytics/cfg/models/master/v0_1/`。
@@ -724,6 +726,20 @@ python app.py
   author={Lin, Xu and Peng, Jinlong and Gan, Zhenye and Zhu, Jiawen and Liu, Jun},
   booktitle={Proceedings of the IEEE/CVF Conference on Computer Vision and Pattern Recognition (CVPR)},
   year={2026}
+}
+```
+
+如果您使用了参数高效微调相关工作，也请引用：
+
+```bibtex
+@misc{lin2026yolopeft,
+  title={YOLO-PEFT: Parameter-Efficient Fine-Tuning on YOLO Family},
+  author={Lin, Xu and Nie, WenJie and Peng, Jinlong and Fu, Weifu and Ma, YueXiao and Zheng, Xiawu and Liu, Yong},
+  year={2026},
+  eprint={2608.07051},
+  archivePrefix={arXiv},
+  primaryClass={cs.CV},
+  url={https://arxiv.org/abs/2608.07051}
 }
 ```
 
