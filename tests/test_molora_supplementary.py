@@ -8,6 +8,7 @@ Covers gaps not in test_molora.py:
   - Scaling formula (rsLoRA vs standard)
   - Large batch routing stability
 """
+
 import torch
 import torch.nn as nn
 import pytest
@@ -17,20 +18,29 @@ from ultralytics.nn.peft.molora.layer import MoLoRALayer
 
 # ── Helpers ─────────────────────────────────────────────────────────────
 
+
 def _conv_layer(num_experts=4, top_k=2, r=4, alpha=8):
     return MoLoRALayer(
         nn.Conv2d(64, 64, 3, padding=1),
-        r=r, alpha=alpha, num_experts=num_experts, top_k=top_k,
+        r=r,
+        alpha=alpha,
+        num_experts=num_experts,
+        top_k=top_k,
     )
+
 
 def _linear_layer(num_experts=4, top_k=2, r=8, alpha=16):
     return MoLoRALayer(
         nn.Linear(64, 128),
-        r=r, alpha=alpha, num_experts=num_experts, top_k=top_k,
+        r=r,
+        alpha=alpha,
+        num_experts=num_experts,
+        top_k=top_k,
     )
 
 
 # ── Gradient flow tests ─────────────────────────────────────────────────
+
 
 class TestGradientFlow:
     """Verify gradients flow correctly from loss through router to experts."""
@@ -73,8 +83,7 @@ class TestGradientFlow:
         out = layer(x)
         out.sum().backward()
         for p in layer.base_layer.parameters():
-            assert p.grad is None or p.grad.abs().sum() == 0, \
-                "Base layer received gradient"
+            assert p.grad is None or p.grad.abs().sum() == 0, "Base layer received gradient"
 
     def test_aux_loss_gradient_to_router_only(self):
         """aux_loss backward should only update router, not experts."""
@@ -84,14 +93,12 @@ class TestGradientFlow:
         _ = layer(x)
         aux = layer.aux_loss
         aux.backward(retain_graph=True)
-        router_has_grad = any(
-            p.grad is not None and p.grad.abs().sum() > 0
-            for p in layer.router.parameters()
-        )
+        router_has_grad = any(p.grad is not None and p.grad.abs().sum() > 0 for p in layer.router.parameters())
         assert router_has_grad, "Router has no gradient from aux_loss"
 
 
 # ── state_dict persistence tests ────────────────────────────────────────
+
 
 class TestStateDictPersistence:
     """Verify state_dict save/load round-trip preserves behavior."""
@@ -108,7 +115,7 @@ class TestStateDictPersistence:
         layer1 = _conv_layer()
         layer1.train()
         x = torch.randn(2, 64, 8, 8)
-        out1 = layer1(x)
+        layer1(x)  # exercise training-mode forward before round-trip
 
         # Save state_dict
         sd = layer1.state_dict()
@@ -124,8 +131,7 @@ class TestStateDictPersistence:
         layer1.eval()
         with torch.no_grad():
             out1_eval = layer1(x)
-        assert torch.allclose(out1_eval, out2, atol=1e-5), \
-            "Outputs differ after state_dict round-trip"
+        assert torch.allclose(out1_eval, out2, atol=1e-5), "Outputs differ after state_dict round-trip"
 
     def test_warmup_state_restored(self):
         kwargs = dict(r=2, alpha=4, num_experts=3, top_k=3, top_k_warmup=1, warmup_steps=6)
@@ -170,6 +176,7 @@ class TestStateDictPersistence:
 
 # ── Expert isolation tests ──────────────────────────────────────────────
 
+
 class TestExpertIsolation:
     """Verify expert freezing isolates parameters correctly."""
 
@@ -203,6 +210,7 @@ class TestExpertIsolation:
 
 # ── Warmup schedule tests ───────────────────────────────────────────────
 
+
 class TestWarmupSchedule:
     """Verify top_k_warmup schedule works correctly."""
 
@@ -210,8 +218,12 @@ class TestWarmupSchedule:
         """During warmup, effective top_k should be <= configured top_k."""
         layer = MoLoRALayer(
             nn.Conv2d(64, 64, 3, padding=1),
-            r=4, alpha=8, num_experts=4, top_k=2,
-            top_k_warmup=1, warmup_steps=10,
+            r=4,
+            alpha=8,
+            num_experts=4,
+            top_k=2,
+            top_k_warmup=1,
+            warmup_steps=10,
         )
         layer.train()
         x = torch.randn(2, 64, 8, 8)
@@ -223,8 +235,12 @@ class TestWarmupSchedule:
         """After warmup_steps, effective top_k should reach configured top_k."""
         layer = MoLoRALayer(
             nn.Conv2d(64, 64, 3, padding=1),
-            r=4, alpha=8, num_experts=4, top_k=3,
-            top_k_warmup=1, warmup_steps=5,
+            r=4,
+            alpha=8,
+            num_experts=4,
+            top_k=3,
+            top_k_warmup=1,
+            warmup_steps=5,
         )
         layer.train()
         x = torch.randn(2, 64, 8, 8)
@@ -243,6 +259,7 @@ class TestWarmupSchedule:
 
 # ── Scaling formula tests ───────────────────────────────────────────────
 
+
 class TestScalingFormula:
     """Verify rsLoRA vs standard LoRA scaling."""
 
@@ -251,27 +268,32 @@ class TestScalingFormula:
         r, alpha = 4, 8
         layer = MoLoRALayer(
             nn.Conv2d(64, 64, 3, padding=1),
-            r=r, alpha=alpha, num_experts=1, top_k=1,
+            r=r,
+            alpha=alpha,
+            num_experts=1,
+            top_k=1,
             use_rslora=True,
         )
-        expected = alpha / (r ** 0.5)
-        assert abs(layer.scaling - expected) < 1e-4, \
-            f"rsLoRA scaling={layer.scaling}, expected {expected}"
+        expected = alpha / (r**0.5)
+        assert abs(layer.scaling - expected) < 1e-4, f"rsLoRA scaling={layer.scaling}, expected {expected}"
 
     def test_standard_lora_scaling(self):
         """Standard LoRA scaling = alpha / r."""
         r, alpha = 4, 8
         layer = MoLoRALayer(
             nn.Conv2d(64, 64, 3, padding=1),
-            r=r, alpha=alpha, num_experts=1, top_k=1,
+            r=r,
+            alpha=alpha,
+            num_experts=1,
+            top_k=1,
             use_rslora=False,
         )
         expected = alpha / r
-        assert abs(layer.scaling - expected) < 1e-4, \
-            f"Standard LoRA scaling={layer.scaling}, expected {expected}"
+        assert abs(layer.scaling - expected) < 1e-4, f"Standard LoRA scaling={layer.scaling}, expected {expected}"
 
 
 # ── Large batch stability tests ─────────────────────────────────────────
+
 
 class TestLargeBatchStability:
     """Verify routing stability with large batches."""
@@ -306,6 +328,7 @@ class TestLargeBatchStability:
 
 # ── Domain expert tests ─────────────────────────────────────────────────
 
+
 class TestDomainExperts:
     """Verify domain expert pre-allocation."""
 
@@ -314,7 +337,10 @@ class TestDomainExperts:
         domain_map = {"detection": [0, 1], "segmentation": [2, 3]}
         layer = MoLoRALayer(
             nn.Conv2d(64, 64, 3, padding=1),
-            r=4, alpha=8, num_experts=4, top_k=2,
+            r=4,
+            alpha=8,
+            num_experts=4,
+            top_k=2,
             domain_experts=domain_map,
         )
         assert layer.domain_experts is not None
@@ -323,7 +349,10 @@ class TestDomainExperts:
         """Clearing domain should reset mask to None."""
         layer = MoLoRALayer(
             nn.Conv2d(64, 64, 3, padding=1),
-            r=4, alpha=8, num_experts=4, top_k=2,
+            r=4,
+            alpha=8,
+            num_experts=4,
+            top_k=2,
             domain_experts={"a": [0, 1]},
         )
         layer.set_domain("a")

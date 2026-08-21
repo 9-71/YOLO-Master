@@ -52,6 +52,7 @@ os.environ.setdefault("YOLO_VERBOSE", "false")
 # ---------------------------------------------------------------------------
 try:
     import numpy as np
+
     HAS_NUMPY = True
 except ImportError:
     HAS_NUMPY = False
@@ -59,6 +60,7 @@ except ImportError:
 
 try:
     import torch
+
     HAS_TORCH = True
 except ImportError:
     HAS_TORCH = False
@@ -67,10 +69,11 @@ except ImportError:
 # Matplotlib configuration (Agg backend for headless environments)
 try:
     import matplotlib
+
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
-    from matplotlib.patches import Rectangle
     from matplotlib.gridspec import GridSpec
+
     HAS_MPL = True
 except ImportError:
     HAS_MPL = False
@@ -84,16 +87,16 @@ DEFAULT_OUTPUT_DIR = HERE / "ablation_reports"
 
 # Color palette (low-saturation, warm tones -- no blue-purple gradients)
 COLORS = {
-    "full":     "#5D5D5D",  # dark gray
-    "lora":     "#4A90A4",  # muted teal
-    "dora":     "#C75146",  # muted red
-    "ia3":      "#D4A373",  # warm sand
-    "loha":     "#6A994E",  # muted green
-    "adalora":  "#8B7090",  # muted purple-gray
-    "molora":   "#BC4749",  # terracotta
+    "full": "#5D5D5D",  # dark gray
+    "lora": "#4A90A4",  # muted teal
+    "dora": "#C75146",  # muted red
+    "ia3": "#D4A373",  # warm sand
+    "loha": "#6A994E",  # muted green
+    "adalora": "#8B7090",  # muted purple-gray
+    "molora": "#BC4749",  # terracotta
     "baseline": "#5D5D5D",
-    "uniform":  "#4A90A4",
-    "frequency":"#6A994E",
+    "uniform": "#4A90A4",
+    "frequency": "#6A994E",
     "calibrated_r4": "#D4A373",
     "calibrated_r8": "#C75146",
     "molora_baseline": "#5D5D5D",
@@ -105,7 +108,7 @@ PATTERN_MAP = {
     "full": "/",
     "lora": "\\",
     "dora": "|",
-    "ia3":  "-",
+    "ia3": "-",
     "loha": "+",
     "adalora": "x",
 }
@@ -119,14 +122,16 @@ METRIC_KEYS = [
     "fitness",
 ]
 
+
 # ---------------------------------------------------------------------------
 # Data structures
 # ---------------------------------------------------------------------------
 @dataclass
 class ExperimentRecord:
     """Unified record for a single experiment variant."""
-    experiment: str       # e.g. "E1", "E2", "E3", "EVAL", "PEFT"
-    variant: str          # e.g. "frequency", "calibrated_r4", "lora"
+
+    experiment: str  # e.g. "E1", "E2", "E3", "EVAL", "PEFT"
+    variant: str  # e.g. "frequency", "calibrated_r4", "lora"
     ok: bool
     params_total: int
     params_trainable: int
@@ -142,6 +147,7 @@ class ExperimentRecord:
 @dataclass
 class ExperimentSuite:
     """Collection of records from one experiment script."""
+
     name: str
     records: List[ExperimentRecord]
     source_file: Path
@@ -171,21 +177,23 @@ def parse_e1_data(data: Any, source: Path) -> List[ExperimentRecord]:
     # E1 can be either a single dict or a list of dicts
     items = data if isinstance(data, list) else [data]
     for item in items:
-        records.append(ExperimentRecord(
-            experiment="E1",
-            variant=item.get("name", item.get("variant", "unknown")),
-            ok=item.get("ok", False),
-            params_total=item.get("params_total", 0),
-            params_trainable=item.get("params_trainable", 0),
-            trainable_pct=item.get("trainable_pct", 0.0),
-            elapsed_sec=item.get("elapsed_sec", 0.0),
-            final_metrics=item.get("final_metrics", {}),
-            extra={
-                "rank_info": item.get("rank_info", ""),
-                "expert_ranks": item.get("expert_ranks", []),
-                "wrapped_layers": item.get("wrapped_layers", 0),
-            },
-        ))
+        records.append(
+            ExperimentRecord(
+                experiment="E1",
+                variant=item.get("name", item.get("variant", "unknown")),
+                ok=item.get("ok", False),
+                params_total=item.get("params_total", 0),
+                params_trainable=item.get("params_trainable", 0),
+                trainable_pct=item.get("trainable_pct", 0.0),
+                elapsed_sec=item.get("elapsed_sec", 0.0),
+                final_metrics=item.get("final_metrics", {}),
+                extra={
+                    "rank_info": item.get("rank_info", ""),
+                    "expert_ranks": item.get("expert_ranks", []),
+                    "wrapped_layers": item.get("wrapped_layers", 0),
+                },
+            )
+        )
     return records
 
 
@@ -194,20 +202,22 @@ def parse_e2_data(data: Any, source: Path) -> List[ExperimentRecord]:
     records = []
     items = data if isinstance(data, list) else [data]
     for item in items:
-        records.append(ExperimentRecord(
-            experiment="E2",
-            variant=item.get("name", "unknown"),
-            ok=item.get("ok", False),
-            params_total=item.get("params_total", 0),
-            params_trainable=item.get("params_trainable", 0),
-            trainable_pct=item.get("trainable_pct", 0.0),
-            elapsed_sec=item.get("elapsed_sec", 0.0),
-            final_metrics=item.get("final_metrics", {}),
-            extra={
-                "has_calibration": item.get("has_calibration", False),
-                "router_calib_rank": item.get("router_calib_rank", None),
-            },
-        ))
+        records.append(
+            ExperimentRecord(
+                experiment="E2",
+                variant=item.get("name", "unknown"),
+                ok=item.get("ok", False),
+                params_total=item.get("params_total", 0),
+                params_trainable=item.get("params_trainable", 0),
+                trainable_pct=item.get("trainable_pct", 0.0),
+                elapsed_sec=item.get("elapsed_sec", 0.0),
+                final_metrics=item.get("final_metrics", {}),
+                extra={
+                    "has_calibration": item.get("has_calibration", False),
+                    "router_calib_rank": item.get("router_calib_rank", None),
+                },
+            )
+        )
     return records
 
 
@@ -220,22 +230,24 @@ def parse_e3_data(source_dir: Path) -> List[ExperimentRecord]:
 
     records = []
     for variant, info in data.items():
-        records.append(ExperimentRecord(
-            experiment="E3",
-            variant=variant,
-            ok=True,
-            params_total=0,
-            params_trainable=0,
-            trainable_pct=0.0,
-            elapsed_sec=0.0,
-            final_metrics={},
-            extra={
-                "avg_usage": info.get("avg_usage", []),
-                "gini": info.get("gini", 0.0),
-                "ranks": info.get("ranks", []),
-                "num_layers": info.get("num_layers", 0),
-            },
-        ))
+        records.append(
+            ExperimentRecord(
+                experiment="E3",
+                variant=variant,
+                ok=True,
+                params_total=0,
+                params_trainable=0,
+                trainable_pct=0.0,
+                elapsed_sec=0.0,
+                final_metrics={},
+                extra={
+                    "avg_usage": info.get("avg_usage", []),
+                    "gini": info.get("gini", 0.0),
+                    "ranks": info.get("ranks", []),
+                    "num_layers": info.get("num_layers", 0),
+                },
+            )
+        )
     return records
 
 
@@ -251,25 +263,27 @@ def parse_eval_data(data: Any, source: Path) -> List[ExperimentRecord]:
         # Create a synthetic record from aggregate stats
         if seeds:
             first_ok = next((s for s in seeds if s.get("ok", False)), seeds[0])
-            records.append(ExperimentRecord(
-                experiment="EVAL",
-                variant=config_name,
-                ok=any(s.get("ok", False) for s in seeds),
-                params_total=first_ok.get("params_total", 0),
-                params_trainable=first_ok.get("params_trainable", 0),
-                trainable_pct=first_ok.get("trainable_pct", 0.0),
-                elapsed_sec=sum(s.get("elapsed_sec", 0) for s in seeds) / max(len(seeds), 1),
-                final_metrics={
-                    "metrics/mAP50-95(B)": agg.get("mean", 0.0),
-                    "metrics/mAP50-95_std": agg.get("std", 0.0),
-                },
-                extra={
-                    "n_seeds": len(seeds),
-                    "agg_mean": agg.get("mean"),
-                    "agg_std": agg.get("std"),
-                    "wrapped_layers": first_ok.get("wrapped_layers", 0),
-                },
-            ))
+            records.append(
+                ExperimentRecord(
+                    experiment="EVAL",
+                    variant=config_name,
+                    ok=any(s.get("ok", False) for s in seeds),
+                    params_total=first_ok.get("params_total", 0),
+                    params_trainable=first_ok.get("params_trainable", 0),
+                    trainable_pct=first_ok.get("trainable_pct", 0.0),
+                    elapsed_sec=sum(s.get("elapsed_sec", 0) for s in seeds) / max(len(seeds), 1),
+                    final_metrics={
+                        "metrics/mAP50-95(B)": agg.get("mean", 0.0),
+                        "metrics/mAP50-95_std": agg.get("std", 0.0),
+                    },
+                    extra={
+                        "n_seeds": len(seeds),
+                        "agg_mean": agg.get("mean"),
+                        "agg_std": agg.get("std"),
+                        "wrapped_layers": first_ok.get("wrapped_layers", 0),
+                    },
+                )
+            )
     return records
 
 
@@ -278,22 +292,24 @@ def parse_peft_validation_data(data: Any, source: Path) -> List[ExperimentRecord
     records = []
     items = data if isinstance(data, list) else [data]
     for item in items:
-        records.append(ExperimentRecord(
-            experiment="PEFT",
-            variant=item.get("name", "unknown"),
-            ok=item.get("ok", False),
-            params_total=item.get("params_total", 0),
-            params_trainable=item.get("params_trainable", 0),
-            trainable_pct=item.get("trainable_pct", 0.0),
-            elapsed_sec=item.get("elapsed_sec", 0.0),
-            final_metrics=item.get("final_metrics", {}),
-            extra={
-                "adapter_sig": item.get("adapter_sig", {}),
-                "lora_type": item.get("lora_type"),
-                "lora_backend": item.get("lora_backend"),
-                "delta_total_vs_baseline": item.get("delta_total_vs_baseline", 0),
-            },
-        ))
+        records.append(
+            ExperimentRecord(
+                experiment="PEFT",
+                variant=item.get("name", "unknown"),
+                ok=item.get("ok", False),
+                params_total=item.get("params_total", 0),
+                params_trainable=item.get("params_trainable", 0),
+                trainable_pct=item.get("trainable_pct", 0.0),
+                elapsed_sec=item.get("elapsed_sec", 0.0),
+                final_metrics=item.get("final_metrics", {}),
+                extra={
+                    "adapter_sig": item.get("adapter_sig", {}),
+                    "lora_type": item.get("lora_type"),
+                    "lora_backend": item.get("lora_backend"),
+                    "delta_total_vs_baseline": item.get("delta_total_vs_baseline", 0),
+                },
+            )
+        )
     return records
 
 
@@ -419,10 +435,16 @@ def fig_parameter_efficiency(suites: List[ExperimentSuite], output_dir: Path) ->
     # Add value labels on bars
     for bar, val in zip(bars, values):
         height = bar.get_height()
-        ax.annotate(f"{val:,.0f}",
-                    xy=(bar.get_x() + bar.get_width() / 2, height),
-                    xytext=(0, 3), textcoords="offset points",
-                    ha="center", va="bottom", fontsize=7, rotation=90)
+        ax.annotate(
+            f"{val:,.0f}",
+            xy=(bar.get_x() + bar.get_width() / 2, height),
+            xytext=(0, 3),
+            textcoords="offset points",
+            ha="center",
+            va="bottom",
+            fontsize=7,
+            rotation=90,
+        )
 
     # Right: Trainable percentage
     ax = axes[1]
@@ -437,10 +459,15 @@ def fig_parameter_efficiency(suites: List[ExperimentSuite], output_dir: Path) ->
 
     for bar, val in zip(bars, pct_values):
         height = bar.get_height()
-        ax.annotate(f"{val:.2f}%",
-                    xy=(bar.get_x() + bar.get_width() / 2, height),
-                    xytext=(0, 3), textcoords="offset points",
-                    ha="center", va="bottom", fontsize=8)
+        ax.annotate(
+            f"{val:.2f}%",
+            xy=(bar.get_x() + bar.get_width() / 2, height),
+            xytext=(0, 3),
+            textcoords="offset points",
+            ha="center",
+            va="bottom",
+            fontsize=8,
+        )
 
     plt.tight_layout()
     out_path = output_dir / "fig01_parameter_efficiency.png"
@@ -500,10 +527,15 @@ def fig_metrics_comparison(suites: List[ExperimentSuite], output_dir: Path) -> O
 
             for bar, val in zip(bars, values):
                 width = bar.get_width()
-                ax.annotate(f"{val:.4f}",
-                            xy=(width, bar.get_y() + bar.get_height() / 2),
-                            xytext=(3, 0), textcoords="offset points",
-                            ha="left", va="center", fontsize=8)
+                ax.annotate(
+                    f"{val:.4f}",
+                    xy=(width, bar.get_y() + bar.get_height() / 2),
+                    xytext=(3, 0),
+                    textcoords="offset points",
+                    ha="left",
+                    va="center",
+                    fontsize=8,
+                )
 
     plt.tight_layout()
     out_path = output_dir / "fig02_metrics_comparison.png"
@@ -535,15 +567,25 @@ def fig_training_efficiency(suites: List[ExperimentSuite], output_dir: Path) -> 
     fig, ax = plt.subplots(figsize=(10, 6))
 
     for r in time_records:
-        ax.scatter(r.params_trainable, r.elapsed_sec,
-                   s=200, c=get_color(r.variant),
-                   edgecolors="white", linewidths=1.5,
-                   alpha=0.8, zorder=5)
-        ax.annotate(f"{r.experiment}\n{r.variant}",
-                    xy=(r.params_trainable, r.elapsed_sec),
-                    xytext=(8, 8), textcoords="offset points",
-                    fontsize=8, ha="left",
-                    bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.7, edgecolor="none"))
+        ax.scatter(
+            r.params_trainable,
+            r.elapsed_sec,
+            s=200,
+            c=get_color(r.variant),
+            edgecolors="white",
+            linewidths=1.5,
+            alpha=0.8,
+            zorder=5,
+        )
+        ax.annotate(
+            f"{r.experiment}\n{r.variant}",
+            xy=(r.params_trainable, r.elapsed_sec),
+            xytext=(8, 8),
+            textcoords="offset points",
+            fontsize=8,
+            ha="left",
+            bbox=dict(boxstyle="round,pad=0.3", facecolor="white", alpha=0.7, edgecolor="none"),
+        )
 
     ax.set_xlabel("Trainable Parameters", fontsize=11)
     ax.set_ylabel("Training Time (seconds)", fontsize=11)
@@ -599,10 +641,16 @@ def fig_expert_rank_allocation(suites: List[ExperimentSuite], output_dir: Path) 
 
         for bar, val in zip(bars, ranks):
             height = bar.get_height()
-            ax.annotate(f"{val}",
-                        xy=(bar.get_x() + bar.get_width() / 2, height),
-                        xytext=(0, 3), textcoords="offset points",
-                        ha="center", va="bottom", fontsize=10, fontweight="bold")
+            ax.annotate(
+                f"{val}",
+                xy=(bar.get_x() + bar.get_width() / 2, height),
+                xytext=(0, 3),
+                textcoords="offset points",
+                ha="center",
+                va="bottom",
+                fontsize=10,
+                fontweight="bold",
+            )
 
     # Hide extra subplot if only 1 record
     if len(e1_suite.records) < 2 and len(axes) > 1:
@@ -644,10 +692,15 @@ def fig_router_calibration(suites: List[ExperimentSuite], output_dir: Path) -> O
 
     for bar, val in zip(bars, trainable):
         height = bar.get_height()
-        ax.annotate(f"{val:,.0f}",
-                    xy=(bar.get_x() + bar.get_width() / 2, height),
-                    xytext=(0, 3), textcoords="offset points",
-                    ha="center", va="bottom", fontsize=9)
+        ax.annotate(
+            f"{val:,.0f}",
+            xy=(bar.get_x() + bar.get_width() / 2, height),
+            xytext=(0, 3),
+            textcoords="offset points",
+            ha="center",
+            va="bottom",
+            fontsize=9,
+        )
 
     # Right: Time comparison
     ax = axes[1]
@@ -659,10 +712,15 @@ def fig_router_calibration(suites: List[ExperimentSuite], output_dir: Path) -> O
 
     for bar, val in zip(bars, times):
         height = bar.get_height()
-        ax.annotate(f"{val:.1f}s",
-                    xy=(bar.get_x() + bar.get_width() / 2, height),
-                    xytext=(0, 3), textcoords="offset points",
-                    ha="center", va="bottom", fontsize=9)
+        ax.annotate(
+            f"{val:.1f}s",
+            xy=(bar.get_x() + bar.get_width() / 2, height),
+            xytext=(0, 3),
+            textcoords="offset points",
+            ha="center",
+            va="bottom",
+            fontsize=9,
+        )
 
     plt.tight_layout()
     out_path = output_dir / "fig05_router_calibration.png"
@@ -706,13 +764,15 @@ def fig_expert_load_gini(suites: List[ExperimentSuite], output_dir: Path) -> Opt
         width = 0.35
 
         # Usage bars
-        bars1 = ax.bar(x - width/2, usage, width, label="Avg Usage", color="#4A90A4", edgecolor="white")
+        bars1 = ax.bar(x - width / 2, usage, width, label="Avg Usage", color="#4A90A4", edgecolor="white")
         # Rank bars (if available, scaled to match usage scale)
         if ranks:
             max_usage = max(usage) if usage else 1
             max_rank = max(ranks) if ranks else 1
             scaled_ranks = [rk * max_usage / max_rank for rk in ranks]
-            bars2 = ax.bar(x + width/2, scaled_ranks, width, label="Rank (scaled)", color="#D4A373", edgecolor="white")
+            bars2 = ax.bar(
+                x + width / 2, scaled_ranks, width, label="Rank (scaled)", color="#D4A373", edgecolor="white"
+            )
 
         ax.set_ylabel("Value", fontsize=11)
         ax.set_title(f"{r.variant}: Expert Load (Gini={gini:.4f})", fontsize=11, fontweight="bold")
@@ -722,10 +782,17 @@ def fig_expert_load_gini(suites: List[ExperimentSuite], output_dir: Path) -> Opt
         ax.grid(axis="y", alpha=0.3)
 
         # Annotate Gini
-        ax.text(0.98, 0.98, f"Gini = {gini:.4f}",
-                transform=ax.transAxes, ha="right", va="top",
-                fontsize=10, fontweight="bold",
-                bbox=dict(boxstyle="round", facecolor="wheat", alpha=0.6))
+        ax.text(
+            0.98,
+            0.98,
+            f"Gini = {gini:.4f}",
+            transform=ax.transAxes,
+            ha="right",
+            va="top",
+            fontsize=10,
+            fontweight="bold",
+            bbox=dict(boxstyle="round", facecolor="wheat", alpha=0.6),
+        )
 
     plt.tight_layout()
     out_path = output_dir / "fig06_expert_load_gini.png"
@@ -763,10 +830,15 @@ def fig_peft_standard_comparison(suites: List[ExperimentSuite], output_dir: Path
 
     for bar, val in zip(bars, trainable):
         height = bar.get_height()
-        ax.annotate(f"{val:,.0f}",
-                    xy=(bar.get_x() + bar.get_width() / 2, height),
-                    xytext=(0, 3), textcoords="offset points",
-                    ha="center", va="bottom", fontsize=9)
+        ax.annotate(
+            f"{val:,.0f}",
+            xy=(bar.get_x() + bar.get_width() / 2, height),
+            xytext=(0, 3),
+            textcoords="offset points",
+            ha="center",
+            va="bottom",
+            fontsize=9,
+        )
 
     # Right: Adapter signature presence
     ax = axes[1]
@@ -783,8 +855,14 @@ def fig_peft_standard_comparison(suites: List[ExperimentSuite], output_dir: Path
     width = 0.18
     sig_colors = ["#4A90A4", "#C75146", "#6A994E", "#D4A373"]
     for i, (key, vals) in enumerate(sig_present.items()):
-        ax.bar([xi + width * (i - 1.5) for xi in x], [1.0 if v else 0.0 for v in vals],
-               width, label=key, color=sig_colors[i], edgecolor="white")
+        ax.bar(
+            [xi + width * (i - 1.5) for xi in x],
+            [1.0 if v else 0.0 for v in vals],
+            width,
+            label=key,
+            color=sig_colors[i],
+            edgecolor="white",
+        )
 
     ax.set_ylabel("Presence (1=Yes, 0=No)", fontsize=11)
     ax.set_title("Adapter Signature Verification", fontsize=11, fontweight="bold")
@@ -847,9 +925,16 @@ def fig_combined_dashboard(suites: List[ExperimentSuite], output_dir: Path) -> O
         if name in ["molora", "baseline", "uniform", "frequency", "calibrated_r4", "calibrated_r8"]:
             continue  # Skip redundant aliases
         info_text.append(f"  * {name}: {color}")
-    ax2.text(0.05, 0.95, "\n".join(info_text), transform=ax2.transAxes,
-             fontsize=9, verticalalignment="top", fontfamily="monospace",
-             bbox=dict(boxstyle="round", facecolor="#f8f8f8", alpha=0.9))
+    ax2.text(
+        0.05,
+        0.95,
+        "\n".join(info_text),
+        transform=ax2.transAxes,
+        fontsize=9,
+        verticalalignment="top",
+        fontfamily="monospace",
+        bbox=dict(boxstyle="round", facecolor="#f8f8f8", alpha=0.9),
+    )
 
     # === Panel 3: mAP comparison (middle-left) ===
     ax3 = fig.add_subplot(gs[1, 0])
@@ -882,8 +967,14 @@ def fig_combined_dashboard(suites: List[ExperimentSuite], output_dir: Path) -> O
         ax4.tick_params(axis="x", rotation=15, labelsize=8)
         ax4.grid(axis="y", alpha=0.3)
         for bar, val in zip(bars, gini_vals):
-            ax4.annotate(f"{val:.4f}", xy=(bar.get_x() + bar.get_width()/2, bar.get_height()),
-                         xytext=(0, 3), textcoords="offset points", ha="center", fontsize=9)
+            ax4.annotate(
+                f"{val:.4f}",
+                xy=(bar.get_x() + bar.get_width() / 2, bar.get_height()),
+                xytext=(0, 3),
+                textcoords="offset points",
+                ha="center",
+                fontsize=9,
+            )
 
     # === Panel 5: Time comparison (middle-right) ===
     ax5 = fig.add_subplot(gs[1, 2])
@@ -939,9 +1030,15 @@ def fig_combined_dashboard(suites: List[ExperimentSuite], output_dir: Path) -> O
         delta = calib_p - baseline_p
         summary_lines.append(f"- Calibration overhead: +{delta:,} params")
     summary_lines.append(f"- Total variants tested: {total_variants}")
-    ax8.text(0.05, 0.95, "\n".join(summary_lines), transform=ax8.transAxes,
-             fontsize=9, verticalalignment="top",
-             bbox=dict(boxstyle="round", facecolor="#f0f8ff", alpha=0.9))
+    ax8.text(
+        0.05,
+        0.95,
+        "\n".join(summary_lines),
+        transform=ax8.transAxes,
+        fontsize=9,
+        verticalalignment="top",
+        bbox=dict(boxstyle="round", facecolor="#f0f8ff", alpha=0.9),
+    )
 
     fig.suptitle("YOLO-Master PEFT Ablation Dashboard", fontsize=16, fontweight="bold", y=0.98)
     out_path = output_dir / "fig08_combined_dashboard.png"
@@ -954,8 +1051,9 @@ def fig_combined_dashboard(suites: List[ExperimentSuite], output_dir: Path) -> O
 # ---------------------------------------------------------------------------
 # Report generation: Markdown
 # ---------------------------------------------------------------------------
-def generate_markdown_report(suites: List[ExperimentSuite], output_dir: Path,
-                              figure_paths: List[Optional[Path]]) -> Path:
+def generate_markdown_report(
+    suites: List[ExperimentSuite], output_dir: Path, figure_paths: List[Optional[Path]]
+) -> Path:
     """Generate comprehensive Markdown report."""
     lines: List[str] = []
 
@@ -963,7 +1061,9 @@ def generate_markdown_report(suites: List[ExperimentSuite], output_dir: Path,
     lines.append("")
     lines.append("> Auto-generated by `scripts/ablation_peft_visualize.py`")
     lines.append("> ")
-    lines.append(f"> Model: YOLO-Master-EsMoE-N.pt | Device: {'MPS' if HAS_TORCH and torch and torch.backends.mps.is_available() else 'CUDA' if HAS_TORCH and torch and torch.cuda.is_available() else 'CPU'}")
+    lines.append(
+        f"> Model: YOLO-Master-EsMoE-N.pt | Device: {'MPS' if HAS_TORCH and torch and torch.backends.mps.is_available() else 'CUDA' if HAS_TORCH and torch and torch.cuda.is_available() else 'CPU'}"
+    )
     lines.append("")
     lines.append("---")
     lines.append("")
@@ -1026,7 +1126,9 @@ def generate_markdown_report(suites: List[ExperimentSuite], output_dir: Path,
             has_calib = "Y" if r.extra.get("has_calibration") else "N"
             map_val = r.get_metric("metrics/mAP50-95(B)")
             map_str = f"{map_val:.4f}" if not math.isnan(map_val) else "N/A"
-            lines.append(f"| {r.variant} | {r.params_trainable:,} | +{overhead:,} | {has_calib} | {r.elapsed_sec:.1f} | {map_str} |")
+            lines.append(
+                f"| {r.variant} | {r.params_trainable:,} | +{overhead:,} | {has_calib} | {r.elapsed_sec:.1f} | {map_str} |"
+            )
         lines.append("")
 
     # E3 Section
@@ -1051,7 +1153,9 @@ def generate_markdown_report(suites: List[ExperimentSuite], output_dir: Path,
             g1 = e3.records[-1].extra.get("gini", 0.0)
             if g0 > 0:
                 improvement = (1 - g1 / g0) * 100
-                lines.append(f"**Finding**: Frequency-based rank allocation reduces Gini coefficient by **{improvement:.1f}%** (from {g0:.4f} to {g1:.4f}), indicating better expert load balancing.")
+                lines.append(
+                    f"**Finding**: Frequency-based rank allocation reduces Gini coefficient by **{improvement:.1f}%** (from {g0:.4f} to {g1:.4f}), indicating better expert load balancing."
+                )
                 lines.append("")
 
     # EVAL Section
@@ -1086,14 +1190,20 @@ def generate_markdown_report(suites: List[ExperimentSuite], output_dir: Path,
         for r in pv.records:
             sig = r.extra.get("adapter_sig", {})
             sig_parts = []
-            if sig.get("has_lora_A"): sig_parts.append("LoRA_A/B")
-            if sig.get("has_dora_magnitude"): sig_parts.append("DoRA")
-            if sig.get("has_loha"): sig_parts.append("LoHA")
-            if sig.get("has_ia3"): sig_parts.append("IA3")
+            if sig.get("has_lora_A"):
+                sig_parts.append("LoRA_A/B")
+            if sig.get("has_dora_magnitude"):
+                sig_parts.append("DoRA")
+            if sig.get("has_loha"):
+                sig_parts.append("LoHA")
+            if sig.get("has_ia3"):
+                sig_parts.append("IA3")
             sig_str = ", ".join(sig_parts) if sig_parts else "Full"
             map_val = r.get_metric("metrics/mAP50-95(B)")
             map_str = f"{map_val:.4f}" if not math.isnan(map_val) else "N/A"
-            lines.append(f"| {r.variant} | {r.params_trainable:,} | {r.trainable_pct:.3f}% | {sig_str} | {map_str} | {r.elapsed_sec:.1f} |")
+            lines.append(
+                f"| {r.variant} | {r.params_trainable:,} | {r.trainable_pct:.3f}% | {sig_str} | {map_str} | {r.elapsed_sec:.1f} |"
+            )
         lines.append("")
 
     # Figures reference
@@ -1149,17 +1259,19 @@ def generate_json_summary(suites: List[ExperimentSuite], output_dir: Path) -> Pa
             "variants": [],
         }
         for r in suite.records:
-            exp_summary["variants"].append({
-                "experiment": r.experiment,
-                "variant": r.variant,
-                "ok": r.ok,
-                "params_total": r.params_total,
-                "params_trainable": r.params_trainable,
-                "trainable_pct": r.trainable_pct,
-                "elapsed_sec": r.elapsed_sec,
-                "final_metrics": r.final_metrics,
-                "extra": r.extra,
-            })
+            exp_summary["variants"].append(
+                {
+                    "experiment": r.experiment,
+                    "variant": r.variant,
+                    "ok": r.ok,
+                    "params_total": r.params_total,
+                    "params_trainable": r.params_trainable,
+                    "trainable_pct": r.trainable_pct,
+                    "elapsed_sec": r.elapsed_sec,
+                    "final_metrics": r.final_metrics,
+                    "extra": r.extra,
+                }
+            )
         summary["experiments"].append(exp_summary)
 
     out_path = output_dir / "summary.json"
@@ -1171,8 +1283,9 @@ def generate_json_summary(suites: List[ExperimentSuite], output_dir: Path) -> Pa
 # ---------------------------------------------------------------------------
 # Report generation: HTML dashboard
 # ---------------------------------------------------------------------------
-def generate_html_dashboard(suites: List[ExperimentSuite], output_dir: Path,
-                             figure_paths: List[Optional[Path]]) -> Path:
+def generate_html_dashboard(
+    suites: List[ExperimentSuite], output_dir: Path, figure_paths: List[Optional[Path]]
+) -> Path:
     """Generate a simple HTML dashboard with embedded figures."""
 
     # Build figure HTML
@@ -1357,16 +1470,16 @@ Examples:
         """,
     )
     parser.add_argument(
-        "--output-dir", type=str, default=str(DEFAULT_OUTPUT_DIR),
-        help="Directory to save all outputs (default: scripts/ablation_reports)"
+        "--output-dir",
+        type=str,
+        default=str(DEFAULT_OUTPUT_DIR),
+        help="Directory to save all outputs (default: scripts/ablation_reports)",
     )
     parser.add_argument(
-        "--format", type=str, default="all",
-        help="Output formats: all, png, md, json, html (comma-separated)"
+        "--format", type=str, default="all", help="Output formats: all, png, md, json, html (comma-separated)"
     )
     parser.add_argument(
-        "--scripts-dir", type=str, default=str(HERE),
-        help="Directory containing experiment result JSON files"
+        "--scripts-dir", type=str, default=str(HERE), help="Directory containing experiment result JSON files"
     )
     args = parser.parse_args()
 

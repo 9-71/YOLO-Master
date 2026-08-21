@@ -334,7 +334,7 @@ class MoTBlock(nn.Module):
             ddp_sparse_safe=ddp_sparse_safe,
         )
         use_sparse = (not self.training or (sparse_train_ready and ddp_sparse_safe)) and not exporting
-        warmup_step = 0 if exporting else int(self._sparse_train_step.item())
+        warmup_step = int(self._sparse_train_step.item())
         B = x.shape[0]
         route_ids = indices if indices is not None else weights.argmax(dim=1, keepdim=True)
         route_mask = torch.zeros_like(weights, dtype=torch.bool)
@@ -342,12 +342,6 @@ class MoTBlock(nn.Module):
         token_mask_sparsity = 1.0 - float(route_mask.float().mean())
         experts_per_sample = route_mask.reshape(B, self.NUM_EXPERTS, -1).any(dim=2).sum(dim=1)
         batch_expert_union = int(route_mask.any(dim=(0, 2, 3)).sum())
-        routing_metrics = {
-            "token_mask_sparsity": token_mask_sparsity,
-            "experts_per_sample": experts_per_sample.detach().cpu(),
-            "mean_experts_per_sample": float(experts_per_sample.float().mean()),
-            "batch_expert_union": batch_expert_union,
-        }
         if use_sparse:
             expert_calls = 0
             for e_idx, expert in enumerate(self.experts):
@@ -368,7 +362,7 @@ class MoTBlock(nn.Module):
                         f"the input tensor shape."
                     )
                 out[batch_idx] = out[batch_idx] + (expert_out * w).to(out.dtype)
-            self._last_dispatch_stats = {"mode": "sample_sparse", "expert_calls": expert_calls, "selected_samples": B}
+            mode, expert_calls_total = "sample_sparse", expert_calls
         else:
             for e_idx, expert in enumerate(self.experts):
                 w = weights[:, e_idx : e_idx + 1]
@@ -380,7 +374,28 @@ class MoTBlock(nn.Module):
                         f"the input tensor shape."
                     )
                 out = out + (expert_out * w).to(out.dtype)
-            self._last_dispatch_stats = {"mode": "dense", "expert_calls": len(self.experts), "selected_samples": B}
+            mode, expert_calls_total = "dense", len(self.experts)
+        self._last_dispatch_stats = {
+            "mode": mode,
+            "policy": dispatch_policy,
+            "expert_calls": expert_calls_total,
+            "actual_expert_calls": expert_calls_total,
+            "selected_samples": B,
+            "selected_experts": batch_expert_union,
+            "sparsity_ratio": token_mask_sparsity,
+            "token_mask_sparsity": token_mask_sparsity,
+            "experts_per_sample": experts_per_sample.detach().cpu(),
+            "mean_experts_per_sample": float(experts_per_sample.float().mean()),
+            "batch_expert_union": batch_expert_union,
+            "warmup_step": warmup_step,
+            "ddp_active": ddp_active,
+            "ddp_find_unused_parameters": self._ddp_find_unused_parameters,
+            "ddp_contract_source": self._ddp_contract_source,
+            "ddp_fallback_reason": ddp_fallback_reason,
+        }
+        if self.training:
+            # Count each training forward so the dense-warmup schedule advances.
+            self._sparse_train_step.add_(1)
         return out
 
     def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
