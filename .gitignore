@@ -220,3 +220,22 @@ wiki/repowiki/*/meta/repowiki-metadata.json
 # Checked-in, reproducible figures for Tencent/YOLO-Master Issue #52
 !reports/issue52-figs/
 !reports/issue52-figs/*.png
+
+# Local working artifacts (not for upstream)
+/images.zip
+/embeddings.npy
+/paths.npy
+/default_copy.yaml
+/simple_*.pdf
+/yolo_aruni.pdf
+/yolo_langcn.pdf
+/yolo_stsong.pdf
+/tencent_rhino_bird_*.pdf
+/tencent_rhino_bird_*.pptx
+/solution_ci_pose_demo.mp4
+/solutions_ci_demo.mp4
+.qoder/
+agent/logs/
+
+# Foundation local run records (kept local per repo policy)
+reports/foundation/v0.1/
