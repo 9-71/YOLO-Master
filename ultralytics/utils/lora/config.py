@@ -27,21 +27,23 @@ from .fallback import (
     _validate_peft_init_compatibility,
 )
 
+
 @dataclass
 class LoRAConfig:
     """
     Configuration dataclass for LoRA training strategies.
     """
+
     # Core Parameters
     r: int = 0  # LoRA Rank. 0 means disabled.
-    alpha: int = 32 # Scaling factor.
+    alpha: int = 32  # Scaling factor.
     dropout: float = 0.05
     bias: str = "none"  # Options: "none", "all", "lora_only"
     backend: str = "auto"  # Execution backend: "auto", "peft", "fallback"
     variant: str = "lora"  # Adapter variant: "lora", "loha", "dora"
     include_head: bool = False  # Include detection head layers in target selection
     freeze_bn: bool = False  # Freeze BatchNorm layers during LoRA training
-    
+
     # Strategy Control
     lr_mult: float = 1.0
     include_moe: bool = True
@@ -61,54 +63,56 @@ class LoRAConfig:
     kernels: Optional[List[int]] = None
 
     # Capacity allocation knobs
-    skip_stem: bool = True  # Skip backbone stem (first 3 top-level layers) — prevents FP16 gradient NaN on un-normalized conv
-    min_channels: int = 0    # Skip narrow layers (min(in, out) below this threshold)
+    skip_stem: bool = (
+        True  # Skip backbone stem (first 3 top-level layers) — prevents FP16 gradient NaN on un-normalized conv
+    )
+    min_channels: int = 0  # Skip narrow layers (min(in, out) below this threshold)
 
     # Advanced Options
     gradient_checkpointing: bool = False
-    auto_r_ratio: float = 0.0 # Automatically calculate R based on parameter ratio
-    use_dora: bool = False # Enable DoRA (Weight-Decomposed Low-Rank Adaptation)
-    allow_rtdetr_dora: bool = False # Allow experimental RT-DETR + DoRA instead of auto-degrading to LoRA
-    use_rslora: bool = True # Enable Rank-Stabilized LoRA scaling (alpha / sqrt(r))
-    init_lora_weights: Union[str, bool] = True # LoRA init mode: True/False for std init, or "gaussian"/"pissa"/"olora"
-    peft_type: str = "lora" # Options: "lora", "loha", "lokr", "adalora", "ia3", "oft", "boft", "hra"
-    quantization: str = "none" # Options: "none", "4bit", "8bit" (Requires bitsandbytes)
-    only_3x3: bool = False # Skip 1x1 convs during auto target selection
+    auto_r_ratio: float = 0.0  # Automatically calculate R based on parameter ratio
+    use_dora: bool = False  # Enable DoRA (Weight-Decomposed Low-Rank Adaptation)
+    allow_rtdetr_dora: bool = False  # Allow experimental RT-DETR + DoRA instead of auto-degrading to LoRA
+    use_rslora: bool = True  # Enable Rank-Stabilized LoRA scaling (alpha / sqrt(r))
+    init_lora_weights: Union[str, bool] = True  # LoRA init mode: True/False for std init, or "gaussian"/"pissa"/"olora"
+    peft_type: str = "lora"  # Options: "lora", "loha", "lokr", "adalora", "ia3", "oft", "boft", "hra"
+    quantization: str = "none"  # Options: "none", "4bit", "8bit" (Requires bitsandbytes)
+    only_3x3: bool = False  # Skip 1x1 convs during auto target selection
 
     # Training strategy parameters (synced with default.yaml)
-    layer_decay: float = 0.0 # Layer-wise LR decay rate (0=disabled)
-    alpha_warmup: int = 0 # Alpha cosine warmup epochs (0=disabled)
-    ortho_weight: float = 0.0 # Orthogonal regularization weight (0=disabled)
-    ortho_frequency: int = 10 # Compute orthogonal loss every N batches
-    dropout_end: float = 0.15 # Final dropout for dynamic schedule
-    dropout_start_ratio: float = 0.3 # When to start increasing dropout (fraction of total epochs)
+    layer_decay: float = 0.0  # Layer-wise LR decay rate (0=disabled)
+    alpha_warmup: int = 0  # Alpha cosine warmup epochs (0=disabled)
+    ortho_weight: float = 0.0  # Orthogonal regularization weight (0=disabled)
+    ortho_frequency: int = 10  # Compute orthogonal loss every N batches
+    dropout_end: float = 0.15  # Final dropout for dynamic schedule
+    dropout_start_ratio: float = 0.3  # When to start increasing dropout (fraction of total epochs)
 
     # HRA specific (only used when peft_type=hra)
     hra_apply_gs: bool = False  # HRA: apply Gram-Schmidt orthogonalization
-    oft_block_size: int = 0          # OFT: block size (>0 overrides r)
-    oft_coft: bool = False           # OFT: use constrained (Cayley-Neumann) rotations
-    oft_eps: float = 6e-5            # OFT: numerical eps
-    oft_block_share: bool = False    # OFT: share rotation across blocks
-    boft_block_size: int = 2         # BOFT: butterfly block size (must divide kernel dim; 2 for YOLO 3x3 Conv)
-    boft_block_num: int = 0          # BOFT: number of butterfly blocks (0 = auto)
-    boft_n_butterfly_factor: int = 2 # BOFT: butterfly factor (paper default)
+    oft_block_size: int = 0  # OFT: block size (>0 overrides r)
+    oft_coft: bool = False  # OFT: use constrained (Cayley-Neumann) rotations
+    oft_eps: float = 6e-5  # OFT: numerical eps
+    oft_block_share: bool = False  # OFT: share rotation across blocks
+    boft_block_size: int = 2  # BOFT: butterfly block size (must divide kernel dim; 2 for YOLO 3x3 Conv)
+    boft_block_num: int = 0  # BOFT: number of butterfly blocks (0 = auto)
+    boft_n_butterfly_factor: int = 2  # BOFT: butterfly factor (paper default)
 
-    target_r: int = 8 # AdaLoRA target rank
-    init_r: int = 12 # AdaLoRA initial rank
-    tinit: int = 0 # AdaLoRA warmup steps before pruning
-    tfinal: int = 0 # AdaLoRA final fine-tuning steps
-    delta_t: int = 1 # AdaLoRA allocation interval
-    beta1: float = 0.85 # AdaLoRA EMA beta1
-    beta2: float = 0.85 # AdaLoRA EMA beta2
-    orth_reg_weight: float = 0.5 # AdaLoRA orthogonal regularization weight
-    total_step: Optional[int] = None # AdaLoRA total training steps, required by PEFT
+    target_r: int = 8  # AdaLoRA target rank
+    init_r: int = 12  # AdaLoRA initial rank
+    tinit: int = 0  # AdaLoRA warmup steps before pruning
+    tfinal: int = 0  # AdaLoRA final fine-tuning steps
+    delta_t: int = 1  # AdaLoRA allocation interval
+    beta1: float = 0.85  # AdaLoRA EMA beta1
+    beta2: float = 0.85  # AdaLoRA EMA beta2
+    orth_reg_weight: float = 0.5  # AdaLoRA orthogonal regularization weight
+    total_step: Optional[int] = None  # AdaLoRA total training steps, required by PEFT
 
     # Few-Shot Options
-    few_shot_mode: bool = False # Enable few-shot LoRA with enhanced regularization
-    few_shot_teacher: Optional[str] = None # Path to teacher model for knowledge distillation
-    few_shot_dropconnect: float = 0.1 # DropConnect rate (better than dropout for few-shot)
-    few_shot_distill_weight: float = 0.5 # Weight for distillation loss
-    few_shot_adaptive_rank: bool = True # Auto-adjust rank based on data scarcity
+    few_shot_mode: bool = False  # Enable few-shot LoRA with enhanced regularization
+    few_shot_teacher: Optional[str] = None  # Path to teacher model for knowledge distillation
+    few_shot_dropconnect: float = 0.1  # DropConnect rate (better than dropout for few-shot)
+    few_shot_distill_weight: float = 0.5  # Weight for distillation loss
+    few_shot_adaptive_rank: bool = True  # Auto-adjust rank based on data scarcity
     # Enhancements
     few_shot_dropconnect_schedule: str = "cosine"  # DropConnect schedule: constant/linear/cosine/exponential
     few_shot_dropconnect_max: float = 0.3  # Initial max DropConnect rate
@@ -184,24 +188,18 @@ class LoRAConfig:
                     f"must be >= lora_few_shot_dropconnect_min ({self.few_shot_dropconnect_min})"
                 )
             if not (0.0 <= self.few_shot_rank_budget <= 1.0):
-                raise ValueError(
-                    f"lora_few_shot_rank_budget ({self.few_shot_rank_budget}) must be in [0, 1]"
-                )
+                raise ValueError(f"lora_few_shot_rank_budget ({self.few_shot_rank_budget}) must be in [0, 1]")
             if self.few_shot_distill_weight_max < self.few_shot_distill_weight_min:
                 raise ValueError(
                     f"lora_few_shot_distill_weight_max ({self.few_shot_distill_weight_max}) "
                     f"must be >= lora_few_shot_distill_weight_min ({self.few_shot_distill_weight_min})"
                 )
             if not (0.0 < self.few_shot_ema_decay <= 1.0):
-                raise ValueError(
-                    f"lora_few_shot_ema_decay ({self.few_shot_ema_decay}) must be in (0, 1]"
-                )
+                raise ValueError(f"lora_few_shot_ema_decay ({self.few_shot_ema_decay}) must be in (0, 1]")
             if self.few_shot_distill_layers:
                 for idx in self.few_shot_distill_layers:
                     if not isinstance(idx, int) or idx < 0:
-                        raise ValueError(
-                            f"lora_few_shot_distill_layers must contain non-negative ints, got {idx}"
-                        )
+                        raise ValueError(f"lora_few_shot_distill_layers must contain non-negative ints, got {idx}")
             if self.few_shot_use_ema_teacher and not self.few_shot_teacher:
                 LOGGER.warning(
                     "[LoRA] lora_few_shot_use_ema_teacher=True but no teacher model specified. "
@@ -219,10 +217,10 @@ class LoRAConfig:
 
         # Mapping: LoRAConfig field -> Ultralytics args attribute
         mapping = {
-            "r": "lora_r", 
-            "alpha": "lora_alpha", 
+            "r": "lora_r",
+            "alpha": "lora_alpha",
             "dropout": "lora_dropout",
-            "bias": "lora_bias", 
+            "bias": "lora_bias",
             "backend": "lora_backend",
             "variant": "lora_variant",
             "include_head": "lora_include_head",
@@ -230,12 +228,12 @@ class LoRAConfig:
             "lr_mult": "lora_lr_mult",
             "include_moe": "lora_include_moe",
             "include_attention": "lora_include_attention",
-            "only_backbone": "lora_only_backbone", 
+            "only_backbone": "lora_only_backbone",
             "exclude_modules": "lora_exclude_modules",
-            "last_n": "lora_last_n", 
-            "from_layer": "lora_from_layer", 
+            "last_n": "lora_last_n",
+            "from_layer": "lora_from_layer",
             "to_layer": "lora_to_layer",
-            "allow_depthwise": "lora_allow_depthwise", 
+            "allow_depthwise": "lora_allow_depthwise",
             "kernels": "lora_kernels",
             "skip_stem": "lora_skip_stem",
             "min_channels": "lora_min_channels",
@@ -322,7 +320,7 @@ class LoRAConfig:
                 val = kwargs.get(arg_name)
                 if val is not None:
                     final_args[config_field] = val
-        
+
         # Extract arguments from the args object
         if args is not None:
             for config_field, arg_name in mapping.items():
@@ -330,7 +328,7 @@ class LoRAConfig:
                     val = getattr(args, arg_name, None)
                     if val is not None:
                         final_args[config_field] = val
-        
+
         return cls(**final_args)
 
 
@@ -338,13 +336,17 @@ class LoRAConfig:
 # 3. Smart Builder
 # ============================================================================
 
+
 class LoRAConfigBuilder:
     """
     Analyzes model structure to generate optimal LoRA configurations.
     """
 
     # Pre-compiled regex for performance
-    _PAT_BACKBONE_EXCLUDE = re.compile(r"(head|detect|box|cls|pred|fpn|pan|seg|pose|enc_score_head|enc_bbox_head|dec_score_head|dec_bbox_head)", re.IGNORECASE)
+    _PAT_BACKBONE_EXCLUDE = re.compile(
+        r"(head|detect|box|cls|pred|fpn|pan|seg|pose|enc_score_head|enc_bbox_head|dec_score_head|dec_bbox_head)",
+        re.IGNORECASE,
+    )
     # MoE expert / block names. Kept broad so ``include_moe=False`` actually
     # excludes the whole MoE block, not only modules whose name contains "expert".
     _PAT_MOE = re.compile(
@@ -368,9 +370,7 @@ class LoRAConfigBuilder:
     # post-attention residual MLP path also causes gradient explosion (→ NaN
     # mid-training). Match the *.m.<n>.<k>.mlp.<*>.conv path that lives inside
     # A2C2f -> ABlock and is therefore on the same residual stream as AAttn.
-    _PAT_AREA_ATTN_MLP = re.compile(
-        r"\.m\.\d+\.\d+\.mlp\.\d+(\.|$)", re.IGNORECASE
-    )
+    _PAT_AREA_ATTN_MLP = re.compile(r"\.m\.\d+\.\d+\.mlp\.\d+(\.|$)", re.IGNORECASE)
     # RT-DETR MSDeformAttn geometry-sensitive Linear layers.
     # sampling_offsets carries grid-initialized bias encoding the deformable
     # sampling grid; LoRA perturbation breaks sampling geometry consistency
@@ -378,11 +378,11 @@ class LoRAConfigBuilder:
     # attention_weights feeds a softmax whose weights are zero-initialized;
     # even small LoRA deltas saturate the softmax. Both are excluded by
     # default; opt-in requires r<=4 and long alpha_warmup.
-    _PAT_MSDEFORM_RISKY = re.compile(
-        r"(sampling_offsets|attention_weights)(\.|$)", re.IGNORECASE
-    )
-    _PAT_INDEX = re.compile(r"^(\d+)\.") # Matches "0" in "0.conv"
-    _PAT_INDEX_ANY = re.compile(r"(?:^|\.)(\d+)\.")  # Matches first numeric segment anywhere (e.g. "model.5.m.0.cv1" -> 5)
+    _PAT_MSDEFORM_RISKY = re.compile(r"(sampling_offsets|attention_weights)(\.|$)", re.IGNORECASE)
+    _PAT_INDEX = re.compile(r"^(\d+)\.")  # Matches "0" in "0.conv"
+    _PAT_INDEX_ANY = re.compile(
+        r"(?:^|\.)(\d+)\."
+    )  # Matches first numeric segment anywhere (e.g. "model.5.m.0.cv1" -> 5)
 
     @staticmethod
     def _get_layer_index(name: str) -> int:
@@ -452,7 +452,7 @@ class LoRAConfigBuilder:
         rank_pattern = {str(name): int(rank) for name, rank in (kwargs.get("rank_pattern") or {}).items()}
 
         # Determine layer range
-        total_layers = len(model) if hasattr(model, '__len__') else 1000
+        total_layers = len(model) if hasattr(model, "__len__") else 1000
         start_idx = 0
         end_idx = total_layers
 
@@ -462,9 +462,9 @@ class LoRAConfigBuilder:
             start_idx = max(start_idx, layer_from)
         if layer_to is not None:
             end_idx = min(total_layers, layer_to)
-        
+
         apply_idx_filter = (last_n is not None) or (layer_from is not None) or (layer_to is not None)
-        
+
         if apply_idx_filter:
             LOGGER.debug(f"[LoRA] Layer filter active: {start_idx} - {end_idx}")
 
@@ -476,6 +476,7 @@ class LoRAConfigBuilder:
         if planner_enabled:
             try:
                 from .planner import PEFTPlanner
+
                 planner = PEFTPlanner()
                 # Reconstruct a minimal LoRAConfig from kwargs for the planner
                 config_fields = set(LoRAConfig.__dataclass_fields__)
@@ -489,9 +490,7 @@ class LoRAConfigBuilder:
                         f"(status={getattr(decision, 'status', 'UNKNOWN')})"
                     )
             except ImportError:
-                LOGGER.warning(
-                    "[Planner] PEFTPlanner module not found; falling back to standard auto-detection."
-                )
+                LOGGER.warning("[Planner] PEFTPlanner module not found; falling back to standard auto-detection.")
             except Exception as exc:
                 LOGGER.warning(
                     f"[Planner] PEFTPlanner failed ({type(exc).__name__}: {exc}); "
@@ -511,7 +510,7 @@ class LoRAConfigBuilder:
         for name, module in model.named_modules():
             if not name:
                 continue
-            
+
             # 0. Explicit Exclusion
             if name in exclude_set:
                 continue
@@ -570,14 +569,14 @@ class LoRAConfigBuilder:
                 if module.groups > 1:
                     # FIX: Properly handle grouped convolutions.
                     # PEFT requires: LoRA rank must be a multiple of groups for Conv2d.
-                    # 
+                    #
                     # Key distinction:
                     # - Depthwise: groups == in_channels == out_channels (extremely sparse, usually skip)
                     # - Standard grouped conv: groups < in_channels (e.g., C3k2 uses groups=4, 8)
                     #   These should be INCLUDED if r % groups == 0.
-                    
-                    is_depthwise = (module.in_channels == module.out_channels == module.groups)
-                    
+
+                    is_depthwise = module.in_channels == module.out_channels == module.groups
+
                     # Check rank divisibility first
                     if effective_rank > 0 and (effective_rank % module.groups != 0):
                         # Skip to avoid PEFT ValueError
@@ -586,7 +585,7 @@ class LoRAConfigBuilder:
                             "(rank % groups != 0)"
                         )
                         continue
-                    
+
                     # Handle depthwise specifically
                     if is_depthwise:
                         # Only include depthwise if explicitly allowed
@@ -596,7 +595,7 @@ class LoRAConfigBuilder:
                         # Even if allowed, warn as depthwise LoRA is often ineffective
                         LOGGER.info(f"[LoRA] Including depthwise layer {name} (allow_depthwise=True)")
                     # else: standard grouped conv (groups < in_channels) -> ALLOW through
-                
+
                 # Pointwise Conv (1x1) Check - Highly Recommended for LoRA
                 # Standard Conv (3x3) Check - Supported
                 # Kernel Size Check
@@ -608,7 +607,7 @@ class LoRAConfigBuilder:
                     k_size = module.kernel_size
                     if k_size == 1 or k_size == (1, 1):
                         continue
-            
+
             # 5. Semantic Name Checks
             lname = name.lower()
 
@@ -620,13 +619,13 @@ class LoRAConfigBuilder:
                 # However, usually we want to LoRA the 'Detect' module's internal convs but NOT the final 1x1 convs.
                 # For RT-DETR, the heads are explicit Linear layers.
                 if "score_head" in lname or "bbox_head" in lname:
-                     continue
+                    continue
 
             # Detect Head Special Handling
             # YOLO Detect head uses DFL (Distribution Focal Loss) which has a Conv2d layer that should NOT be trained or LoRA-ed usually.
             # DFL conv weight is fixed (non-trainable) in standard YOLO.
             if "dfl" in lname:
-                 continue
+                continue
 
             # MoE Check
             if not include_moe and LoRAConfigBuilder._PAT_MOE.search(lname):
@@ -652,9 +651,7 @@ class LoRAConfigBuilder:
                 # have no LayerNorm; LoRA injection here triggers gradient
                 # explosion → NaN around epoch ~9–14 in YOLO12 training.
                 if is_conv and LoRAConfigBuilder._PAT_AREA_ATTN_MLP.search(lname):
-                    LOGGER.debug(
-                        f"[LoRA] Skip ABlock-MLP conv {name} (include_attention=False)"
-                    )
+                    LOGGER.debug(f"[LoRA] Skip ABlock-MLP conv {name} (include_attention=False)")
                     continue
 
             # RT-DETR MSDeformAttn geometry-sensitive layers.
@@ -664,9 +661,7 @@ class LoRAConfigBuilder:
             # Users who really want to adapt these need to opt-in via explicit
             # target_modules and tune r<=4 + long alpha_warmup.
             if is_linear and LoRAConfigBuilder._PAT_MSDEFORM_RISKY.search(lname):
-                LOGGER.debug(
-                    f"[LoRA] Skip MSDeformAttn geometry-sensitive layer {name}"
-                )
+                LOGGER.debug(f"[LoRA] Skip MSDeformAttn geometry-sensitive layer {name}")
                 continue
 
             targets.add(name)
@@ -677,11 +672,11 @@ class LoRAConfigBuilder:
     def calculate_auto_rank(model: nn.Module, targets: List[str], ratio: float) -> int:
         """
         Heuristically calculates the Rank based on the target parameter ratio.
-        
+
         Approximation: LoRA_Params ≈ Num_Targets * Rank * (In_Ch + Out_Ch)
         """
         if not targets or ratio <= 0:
-            return 16 
+            return 16
 
         total_params = sum(p.numel() for p in model.parameters())
         target_param_budget = total_params * ratio
@@ -691,9 +686,9 @@ class LoRAConfigBuilder:
         sample_size = min(len(targets), 50)
         step = max(1, len(targets) // sample_size)
         sampled_targets = targets[::step]
-        
+
         modules_dict = dict(model.named_modules())
-        
+
         for name in sampled_targets:
             m = modules_dict.get(name)
             if m:
@@ -706,10 +701,10 @@ class LoRAConfigBuilder:
             return 16
 
         avg_dim = sum(in_out_sums) / len(in_out_sums)
-        
+
         # R = Target_Params / (Num_Targets * Avg_Dim)
         raw_r = target_param_budget / (len(targets) * avg_dim)
-        
+
         # Clamp to range [4, 128] and round to nearest multiple of 4
         estimated_r = int(raw_r)
         estimated_r = max(4, min(128, estimated_r))
@@ -725,59 +720,58 @@ class LoRAConfigBuilder:
         alpha: Optional[int] = None,
         auto_r_ratio: float = 0.0,
         peft_type: str = "lora",
-        **kwargs
-    ) -> Union['PeftLoraConfig', 'LoHaConfig', 'LoKrConfig',
-               'IA3Config', 'OFTConfig', 'BOFTConfig', 'HRAConfig', None]:
+        **kwargs,
+    ) -> Union["PeftLoraConfig", "LoHaConfig", "LoKrConfig", "IA3Config", "OFTConfig", "BOFTConfig", "HRAConfig", None]:
         """Factory method: Generates a PEFT Config object."""
-        
-        targets = kwargs.get('target_modules')
+
+        targets = kwargs.get("target_modules")
 
         # 1. Auto-detection & Validation
         # Even if targets are provided explicitly (e.g. ['conv']), we MUST run auto_detect_targets
         # to filter out incompatible layers (e.g. grouped convs where r % groups != 0).
         # We pass the explicit targets as a filter to auto_detect_targets.
-        
+
         # If targets is NOT None, we use it to restrict the search space of auto_detect_targets.
-        # But `auto_detect_targets` doesn't inherently support a "whitelist" input, 
+        # But `auto_detect_targets` doesn't inherently support a "whitelist" input,
         # it scans the whole model.
         # So we modify the logic: Always run auto_detect, but if explicit targets are provided,
         # we check if the auto-detected target matches the explicit list (partial match).
-        
+
         # Actually, simpler approach:
         # Pass the explicit targets (if any) as a "whitelist" to auto_detect_targets?
         # No, auto_detect_targets is designed to scan.
-        
+
         # Better: Let's just always run auto_detect_targets.
         # If kwargs['target_modules'] was set, we need to handle it carefully.
         # If the user said "conv", they imply "all valid convs".
         # So we should clear 'target_modules' from kwargs before calling auto_detect,
         # but use the user's input as a guide.
-        
-        user_targets = kwargs.get('target_modules')
-        
+
+        user_targets = kwargs.get("target_modules")
+
         # If user provided targets, we temporarily remove it to let auto_detect scan freely,
         # but we need to ensure auto_detect respects the USER's intent (e.g. only 'conv').
         # However, auto_detect has its own logic.
-        
+
         # CORRECT APPROACH:
         # Run auto_detect_targets with all constraints.
         # If user_targets is provided (e.g. ['conv']), we treat it as an additional filter on the result.
         # Wait, if user provided ['conv'], auto_detect might return ['model.0.conv', ...].
         # We want the intersection of "valid layers" and "user request".
-        
+
         # So:
         # 1. Run auto_detect to find ALL structurally valid layers (skipping bad grouped convs).
         # 2. If user provided targets, filter the valid list to only include those matching user's string.
-        
-        # To do this, we must ensure auto_detect doesn't get 'target_modules' in kwargs, 
+
+        # To do this, we must ensure auto_detect doesn't get 'target_modules' in kwargs,
         # otherwise it might be confused if it expects it to be None for auto-mode.
-        
+
         detect_kwargs = kwargs.copy()
-        if 'target_modules' in detect_kwargs:
-            del detect_kwargs['target_modules']
-            
+        if "target_modules" in detect_kwargs:
+            del detect_kwargs["target_modules"]
+
         valid_targets = LoRAConfigBuilder.auto_detect_targets(model, r=r, **detect_kwargs)
-        
+
         if user_targets:
             targets = _filter_target_modules(valid_targets, user_targets)
         else:
@@ -835,49 +829,43 @@ class LoRAConfigBuilder:
         target_modules_val = targets
         if user_targets and peft_type.lower() != "adalora":
             target_modules_val = _build_peft_exact_target_regex(targets)
-            
+
         # 4. Common arguments
         common_kwargs = {
             "r": r,
             "target_modules": target_modules_val,
-            "exclude_modules": kwargs.get('exclude_modules'), # FIX: Pass exclude_modules to LoraConfig!
-            "task_type": None, # YOLO custom models usually do not require task_type
+            "exclude_modules": kwargs.get("exclude_modules"),  # FIX: Pass exclude_modules to LoraConfig!
+            "task_type": None,  # YOLO custom models usually do not require task_type
         }
-        
+
         # 5. Dispatch based on PEFT type
         peft_type = peft_type.lower()
-        
+
         if peft_type == "loha":
             # LoHa specific
-            return LoHaConfig(
-                alpha=alpha,
-                module_dropout=kwargs.get('dropout', 0.0),
-                **common_kwargs
-            )
-            
+            return LoHaConfig(alpha=alpha, module_dropout=kwargs.get("dropout", 0.0), **common_kwargs)
+
         elif peft_type == "lokr":
             # LoKr specific
-            return LoKrConfig(
-                alpha=alpha,
-                module_dropout=kwargs.get('dropout', 0.0),
-                **common_kwargs
-            )
+            return LoKrConfig(alpha=alpha, module_dropout=kwargs.get("dropout", 0.0), **common_kwargs)
 
         elif peft_type == "adalora":
             total_step = resolve_adalora_total_step("adalora", kwargs.get("total_step"), 0)
             if total_step is None or total_step <= 0:
-                raise ValueError("AdaLoRA requires `total_step > 0`. Pass lora_total_step or let trainer auto-populate it.")
+                raise ValueError(
+                    "AdaLoRA requires `total_step > 0`. Pass lora_total_step or let trainer auto-populate it."
+                )
             adalora_kwargs = {
                 "lora_alpha": alpha,
-                "lora_dropout": kwargs.get('dropout', 0.05),
-                "bias": kwargs.get('bias', "none"),
-                "use_dora": kwargs.get('use_dora', False),
+                "lora_dropout": kwargs.get("dropout", 0.05),
+                "bias": kwargs.get("bias", "none"),
+                "use_dora": kwargs.get("use_dora", False),
                 **common_kwargs,
             }
             if _supports_peft_kwarg(AdaLoraConfig, "use_rslora"):
-                adalora_kwargs["use_rslora"] = kwargs.get('use_rslora', True)
+                adalora_kwargs["use_rslora"] = kwargs.get("use_rslora", True)
             if _supports_peft_kwarg(AdaLoraConfig, "init_lora_weights"):
-                adalora_kwargs["init_lora_weights"] = _normalize_lora_init(kwargs.get('init_lora_weights', True))
+                adalora_kwargs["init_lora_weights"] = _normalize_lora_init(kwargs.get("init_lora_weights", True))
 
             adalora_kwargs["target_r"] = kwargs.get("target_r", r)
             adalora_kwargs["init_r"] = kwargs.get("init_r", max(r, kwargs.get("target_r", r)))
@@ -1035,12 +1023,12 @@ class LoRAConfigBuilder:
                 modules_to_save=kwargs.get("modules_to_save"),
             )
 
-        else: # Default to LoRA (and DoRA)
+        else:  # Default to LoRA (and DoRA)
             lora_kwargs = {
                 "lora_alpha": alpha,
-                "lora_dropout": kwargs.get('dropout', 0.05),
-                "bias": kwargs.get('bias', "none"),
-                "use_dora": kwargs.get('use_dora', False),
+                "lora_dropout": kwargs.get("dropout", 0.05),
+                "bias": kwargs.get("bias", "none"),
+                "use_dora": kwargs.get("use_dora", False),
                 **common_kwargs,
             }
             rank_pattern = kwargs.get("rank_pattern") or {}
@@ -1056,21 +1044,32 @@ class LoRAConfigBuilder:
                             "The installed PEFT version does not support rank_pattern required by the V-PEFT plan."
                         )
             if _supports_peft_kwarg(PeftLoraConfig, "use_rslora"):
-                lora_kwargs["use_rslora"] = kwargs.get('use_rslora', True)
-            elif kwargs.get('use_rslora', True):
+                lora_kwargs["use_rslora"] = kwargs.get("use_rslora", True)
+            elif kwargs.get("use_rslora", True):
                 LOGGER.warning("[LoRA] Installed PEFT does not support use_rslora; falling back to standard scaling.")
 
             if _supports_peft_kwarg(PeftLoraConfig, "init_lora_weights"):
                 # FIX: Final guard against non-bool/non-str values that PEFT rejects
                 if not isinstance(normalized_init, (bool, str)):
-                    LOGGER.warning(f"[LoRA] init_lora_weights normalized to unexpected type {type(normalized_init).__name__}; falling back to True.")
+                    LOGGER.warning(
+                        f"[LoRA] init_lora_weights normalized to unexpected type {type(normalized_init).__name__}; falling back to True."
+                    )
                     normalized_init = True
                 lora_kwargs["init_lora_weights"] = normalized_init
             else:
-                requested_init = _normalize_lora_init(kwargs.get('init_lora_weights', True))
+                requested_init = _normalize_lora_init(kwargs.get("init_lora_weights", True))
                 # Only warn if user explicitly requested a non-default init mode
-                if isinstance(requested_init, str) and requested_init not in {"default", "true", "false", "gaussian", "pissa", "olora"}:
-                    LOGGER.warning(f"[LoRA] Installed PEFT does not support init_lora_weights='{requested_init}'; using PEFT defaults.")
+                if isinstance(requested_init, str) and requested_init not in {
+                    "default",
+                    "true",
+                    "false",
+                    "gaussian",
+                    "pissa",
+                    "olora",
+                }:
+                    LOGGER.warning(
+                        f"[LoRA] Installed PEFT does not support init_lora_weights='{requested_init}'; using PEFT defaults."
+                    )
 
             return PeftLoraConfig(**lora_kwargs)
 

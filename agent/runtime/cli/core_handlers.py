@@ -95,7 +95,9 @@ def run_train_like(request: dict[str, Any], skill_name: str, deps: CoreDeps) -> 
         return submit_async_skill(effective_request)
     if is_dry_run(request):
         if prefer_cli(request):
-            values = build_cli_key_values(effective_request, skip_inputs={"task"}, skip_params=set(), inject_save_dir=True)
+            values = build_cli_key_values(
+                effective_request, skip_inputs={"task"}, skip_params=set(), inject_save_dir=True
+            )
             return cli_plan(
                 request,
                 cli_args_from_values("train", values),
@@ -162,7 +164,9 @@ def run_train_like(request: dict[str, Any], skill_name: str, deps: CoreDeps) -> 
         return response(
             skill_name,
             "ok",
-            "training finished after automatic cpu fallback" if recovery and recovery.get("recovered") else "training finished",
+            "training finished after automatic cpu fallback"
+            if recovery and recovery.get("recovered")
+            else "training finished",
             job={
                 "mode": "sync",
                 "save_dir": json_safe(save_dir),
@@ -224,7 +228,9 @@ def run_val(request: dict[str, Any], deps: CoreDeps) -> dict[str, Any]:
     effective_request["params"] = params
     if is_dry_run(request):
         if prefer_cli(request):
-            values = build_cli_key_values(effective_request, skip_inputs={"task"}, skip_params=set(), inject_save_dir=True)
+            values = build_cli_key_values(
+                effective_request, skip_inputs={"task"}, skip_params=set(), inject_save_dir=True
+            )
             return cli_plan(
                 request,
                 cli_args_from_values("val", values),
@@ -266,7 +272,11 @@ def run_val(request: dict[str, Any], deps: CoreDeps) -> dict[str, Any]:
         artifacts = []
         metrics, evaluation = parse_detection_cli_metrics(cli_result["stdout"])
         speed = parse_cli_speed(cli_result["stdout"])
-        evaluation = build_evaluation_summary(metrics, cli_result["stdout"]) if metrics else ({"speed_ms": speed} if speed else {})
+        evaluation = (
+            build_evaluation_summary(metrics, cli_result["stdout"])
+            if metrics
+            else ({"speed_ms": speed} if speed else {})
+        )
         environment = collect_environment_report(
             effective_request,
             selected_device=final_device,
@@ -279,7 +289,9 @@ def run_val(request: dict[str, Any], deps: CoreDeps) -> dict[str, Any]:
         return response(
             request["skill"],
             "ok",
-            "validation finished after automatic cpu fallback" if recovery and recovery.get("recovered") else "validation finished",
+            "validation finished after automatic cpu fallback"
+            if recovery and recovery.get("recovered")
+            else "validation finished",
             metrics=metrics,
             evaluation=evaluation,
             environment=environment,
@@ -327,7 +339,9 @@ def run_predict_like(request: dict[str, Any], mode: str, deps: CoreDeps) -> dict
     effective_request["inputs"]["source"] = source
     if is_dry_run(request):
         if prefer_cli(request):
-            values = build_cli_key_values(effective_request, skip_inputs={"task"}, skip_params={"max_items"}, inject_save_dir=True)
+            values = build_cli_key_values(
+                effective_request, skip_inputs={"task"}, skip_params={"max_items"}, inject_save_dir=True
+            )
             return cli_plan(
                 effective_request,
                 cli_args_from_values(mode, values),
@@ -351,7 +365,9 @@ def run_predict_like(request: dict[str, Any], mode: str, deps: CoreDeps) -> dict
         )
 
     if prefer_cli(request):
-        values = build_cli_key_values(effective_request, skip_inputs={"task"}, skip_params={"max_items"}, inject_save_dir=True)
+        values = build_cli_key_values(
+            effective_request, skip_inputs={"task"}, skip_params={"max_items"}, inject_save_dir=True
+        )
         cli_execution = deps.run_cli_with_recovery(
             request,
             mode,
@@ -379,7 +395,9 @@ def run_predict_like(request: dict[str, Any], mode: str, deps: CoreDeps) -> dict
         payload = response(
             request["skill"],
             "ok",
-            f"{mode} finished after automatic cpu fallback" if recovery and recovery.get("recovered") else f"{mode} finished",
+            f"{mode} finished after automatic cpu fallback"
+            if recovery and recovery.get("recovered")
+            else f"{mode} finished",
             job={"mode": "sync", "save_dir": json_safe(save_dir), "executor": "cli", "device": final_device},
             results=results[:max_items],
             environment=environment,
@@ -494,7 +512,9 @@ def run_benchmark(request: dict[str, Any], deps: CoreDeps) -> dict[str, Any]:
     effective_request["params"] = params
     if is_dry_run(request):
         if prefer_cli(request):
-            values = build_cli_key_values(effective_request, skip_inputs={"task"}, skip_params=set(), inject_save_dir=True)
+            values = build_cli_key_values(
+                effective_request, skip_inputs={"task"}, skip_params=set(), inject_save_dir=True
+            )
             return cli_plan(
                 request,
                 cli_args_from_values("benchmark", values),
@@ -536,7 +556,9 @@ def run_benchmark(request: dict[str, Any], deps: CoreDeps) -> dict[str, Any]:
         return response(
             request["skill"],
             "ok",
-            "benchmark finished after automatic cpu fallback" if recovery and recovery.get("recovered") else "benchmark finished",
+            "benchmark finished after automatic cpu fallback"
+            if recovery and recovery.get("recovered")
+            else "benchmark finished",
             data={"benchmark": {}},
             environment=collect_environment_report(
                 effective_request,

@@ -57,8 +57,7 @@ def test_composite_aux_keeps_router_gradient_connection():
     loss.backward()
 
     assert any(
-        parameter.grad is not None and parameter.grad.abs().sum() > 0
-        for parameter in block.m[0].router.parameters()
+        parameter.grad is not None and parameter.grad.abs().sum() > 0 for parameter in block.m[0].router.parameters()
     )
 
 

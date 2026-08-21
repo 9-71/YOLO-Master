@@ -56,6 +56,7 @@ import torch.nn as nn
 
 # 关闭 ultralytics 的 wandb 上报
 from ultralytics.utils import SETTINGS
+
 SETTINGS["wandb"] = False
 
 from ultralytics import YOLO
@@ -77,9 +78,8 @@ from ultralytics.utils.lora.config import LoRAConfig
 
 # 确认加载的是当前仓库的 ultralytics
 import ultralytics
-assert str(REPO_ROOT) in ultralytics.__file__, (
-    f"加载的不是当前仓库的 ultralytics！got {ultralytics.__file__}"
-)
+
+assert str(REPO_ROOT) in ultralytics.__file__, f"加载的不是当前仓库的 ultralytics！got {ultralytics.__file__}"
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # 1. 全局配置
@@ -87,7 +87,7 @@ assert str(REPO_ROOT) in ultralytics.__file__, (
 
 HERE = Path(__file__).parent
 MODEL_PATH = str(REPO_ROOT / "YOLO-Master-EsMoE-N.pt")
-DATA_YAML = "coco128.yaml"          # ultralytics 内置数据集，首次运行自动下载
+DATA_YAML = "coco128.yaml"  # ultralytics 内置数据集，首次运行自动下载
 PROJECT_DIR = HERE / "runs_peft_ablation"
 RESULTS_JSON = HERE / "ablation_peft_coco128_results.json"
 
@@ -117,6 +117,7 @@ LORA_DROPOUT = 0.05
 # ═══════════════════════════════════════════════════════════════════════════════
 # 2. 工具函数
 # ═══════════════════════════════════════════════════════════════════════════════
+
 
 def count_params(m: nn.Module) -> Tuple[int, int]:
     """统计模型总参数量与可训练参数量。"""
@@ -186,15 +187,9 @@ def extract_final_metrics(results) -> Dict[str, float]:
         return final_metrics
 
     if hasattr(results, "results_dict") and results.results_dict:
-        final_metrics = {
-            k: float(v) for k, v in results.results_dict.items()
-            if isinstance(v, (int, float))
-        }
+        final_metrics = {k: float(v) for k, v in results.results_dict.items() if isinstance(v, (int, float))}
     elif hasattr(results, "metrics") and results.metrics:
-        final_metrics = {
-            k: float(v) for k, v in results.metrics.items()
-            if isinstance(v, (int, float))
-        }
+        final_metrics = {k: float(v) for k, v in results.metrics.items() if isinstance(v, (int, float))}
 
     return final_metrics
 
@@ -202,6 +197,7 @@ def extract_final_metrics(results) -> Dict[str, float]:
 # ═══════════════════════════════════════════════════════════════════════════════
 # 3. PEFT 应用器 —— 统一接口封装不同 PEFT 方法的应用逻辑
 # ═══════════════════════════════════════════════════════════════════════════════
+
 
 def apply_peft_via_train_args(model: YOLO, kwargs: Dict[str, Any]) -> YOLO:
     """
@@ -365,14 +361,16 @@ def apply_molora_router_calibration(model: YOLO, config: Dict[str, Any]) -> YOLO
 # 4. 实验变体定义
 # ═══════════════════════════════════════════════════════════════════════════════
 
+
 @dataclass
 class VariantSpec:
     """单个消融实验变体的规格定义。"""
-    name: str                                    # 变体名称 (用于目录和输出)
-    peft_type: str                               # peft | molora | molora_aware | molora_calib
-    train_kwargs: Dict[str, Any] = field(default_factory=dict)   # 传给 model.train() 的额外参数
+
+    name: str  # 变体名称 (用于目录和输出)
+    peft_type: str  # peft | molora | molora_aware | molora_calib
+    train_kwargs: Dict[str, Any] = field(default_factory=dict)  # 传给 model.train() 的额外参数
     molora_config: Dict[str, Any] = field(default_factory=dict)  # MoLoRA 专属配置
-    description: str = ""                        # 人类可读描述
+    description: str = ""  # 人类可读描述
 
 
 # 公共配置片段
@@ -386,9 +384,9 @@ COMMON_TRAIN_KWARGS = {
     "exist_ok": True,
     "verbose": False,
     "workers": 2,
-    "patience": 0,      # 不早停
-    "plots": False,     # 不生成 val 图，加速
-    "save": False,      # 不保留 checkpoint，节省磁盘
+    "patience": 0,  # 不早停
+    "plots": False,  # 不生成 val 图，加速
+    "save": False,  # 不保留 checkpoint，节省磁盘
 }
 
 LORA_COMMON = {
@@ -407,7 +405,6 @@ VARIANTS: List[VariantSpec] = [
         train_kwargs={},
         description="Full fine-tuning (no PEFT). All parameters trainable.",
     ),
-
     # ── 1. 标准 LoRA ──
     VariantSpec(
         name="lora",
@@ -415,7 +412,6 @@ VARIANTS: List[VariantSpec] = [
         train_kwargs={"lora_type": "lora", **LORA_COMMON},
         description="Standard LoRA (Hu et al. 2021).",
     ),
-
     # ── 2. DoRA (Weight-Decomposed LoRA) ──
     VariantSpec(
         name="dora",
@@ -423,7 +419,6 @@ VARIANTS: List[VariantSpec] = [
         train_kwargs={"lora_type": "lora", "lora_use_dora": True, **LORA_COMMON},
         description="DoRA: Decompose pretrained weight into magnitude and direction, adapt direction only.",
     ),
-
     # ── 3. IA3 ──
     VariantSpec(
         name="ia3",
@@ -431,7 +426,6 @@ VARIANTS: List[VariantSpec] = [
         train_kwargs={"lora_type": "ia3", "lora_backend": "peft"},
         description="IA3: Scale inner activations with learned vectors (no low-rank matrices).",
     ),
-
     # ── 4. LoHA ──
     VariantSpec(
         name="loha",
@@ -439,7 +433,6 @@ VARIANTS: List[VariantSpec] = [
         train_kwargs={"lora_type": "loha", **LORA_COMMON},
         description="LoHA: Hadamard product parameterization for higher expressiveness at same rank.",
     ),
-
     # ── 5. AdaLoRA ──
     VariantSpec(
         name="adalora",
@@ -447,7 +440,6 @@ VARIANTS: List[VariantSpec] = [
         train_kwargs={"lora_type": "adalora", **LORA_COMMON},
         description="AdaLoRA: Adaptive budget allocation among singular values via SVD-based importance scoring.",
     ),
-
     # ── 6. 标准 MoLoRA (E=4, K=2, r=8) ──
     VariantSpec(
         name="molora",
@@ -466,7 +458,6 @@ VARIANTS: List[VariantSpec] = [
         },
         description="Mixture-of-LoRA (MoLoRA): sparse expert selection on top of low-rank adapters.",
     ),
-
     # ── 7. MoLoRA + MoE-aware (per-expert rank, frequency-based) ──
     VariantSpec(
         name="molora_aware",
@@ -487,7 +478,6 @@ VARIANTS: List[VariantSpec] = [
         },
         description="MoLoRA + MoE-aware: per-expert rank allocated by activation frequency (same total budget).",
     ),
-
     # ── 8. MoLoRA + Router Calibration (ΔW_r) ──
     VariantSpec(
         name="molora_calib",
@@ -514,14 +504,15 @@ VARIANTS: List[VariantSpec] = [
 # 5. 单变体执行逻辑
 # ═══════════════════════════════════════════════════════════════════════════════
 
+
 def run_variant(spec: VariantSpec) -> Dict[str, Any]:
     """
     运行单个消融实验变体。
     返回结构化结果字典，包含参数统计、训练指标、耗时和错误信息。
     """
-    print(f"\n{'='*78}")
-    print(f"=== Variant: {spec.name.upper()} {'='*55}")
-    print(f"{'='*78}")
+    print(f"\n{'=' * 78}")
+    print(f"=== Variant: {spec.name.upper()} {'=' * 55}")
+    print(f"{'=' * 78}")
     print(f"Description: {spec.description}")
     print(f"PEFT type  : {spec.peft_type}")
     if spec.train_kwargs:
@@ -549,7 +540,7 @@ def run_variant(spec: VariantSpec) -> Dict[str, Any]:
         # ── 5.1 加载模型 ──
         model = YOLO(MODEL_PATH)
         base_total, base_train = count_params(model.model)
-        print(f"[Pre-train]  total={base_total:,}  trainable={base_train:,}  ({base_train/base_total*100:.2f}%)")
+        print(f"[Pre-train]  total={base_total:,}  trainable={base_train:,}  ({base_train / base_total * 100:.2f}%)")
 
         # ── 5.2 应用 PEFT ──
         if spec.peft_type == "peft":
@@ -569,12 +560,14 @@ def run_variant(spec: VariantSpec) -> Dict[str, Any]:
         sig = detect_adapter_signature(model.model)
         molora_diag = collect_molora_diagnostics(model.model)
 
-        print(f"[Post-wrap]  total={post_total:,}  trainable={post_train:,}  ({post_train/post_total*100:.2f}%)")
+        print(f"[Post-wrap]  total={post_total:,}  trainable={post_train:,}  ({post_train / post_total * 100:.2f}%)")
         print(f"[Adapter]    {sig}")
         if molora_diag.get("molora_enabled"):
-            print(f"[MoLoRA]     enabled={molora_diag['molora_enabled']}, "
-                  f"router_calib={molora_diag['router_calib_present']}, "
-                  f"ranks={molora_diag['per_expert_ranks']}")
+            print(
+                f"[MoLoRA]     enabled={molora_diag['molora_enabled']}, "
+                f"router_calib={molora_diag['router_calib_present']}, "
+                f"ranks={molora_diag['per_expert_ranks']}"
+            )
 
         # ── 5.4 训练 ──
         train_kwargs = {**COMMON_TRAIN_KWARGS, "name": f"v_{spec.name}"}
@@ -618,6 +611,7 @@ def run_variant(spec: VariantSpec) -> Dict[str, Any]:
 # ═══════════════════════════════════════════════════════════════════════════════
 # 6. 主流程
 # ═══════════════════════════════════════════════════════════════════════════════
+
 
 def print_header():
     """打印实验环境信息。"""
@@ -700,7 +694,7 @@ def main():
     # ── 最终汇总 ──
     print_summary_table(all_records)
 
-    print(f"\n{'='*78}")
+    print(f"\n{'=' * 78}")
     print(f"全部 {len(VARIANTS)} 个变体运行完毕。")
     print(f"详细结果 JSON: {RESULTS_JSON}")
     print(f"训练日志目录: {PROJECT_DIR}")

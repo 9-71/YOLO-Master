@@ -125,9 +125,7 @@ def point_in_polygon(point: tuple[float, float], polygon: list[list[float]]) -> 
     for i, current in enumerate(polygon):
         xi, yi = current
         xj, yj = polygon[j]
-        intersects = ((yi > y) != (yj > y)) and (
-            x < (xj - xi) * (y - yi) / ((yj - yi) or 1e-9) + xi
-        )
+        intersects = ((yi > y) != (yj > y)) and (x < (xj - xi) * (y - yi) / ((yj - yi) or 1e-9) + xi)
         if intersects:
             inside = not inside
         j = i
@@ -361,7 +359,9 @@ def fused_prediction_records_for_metric(image_path: Path, fusion_preview: dict[s
     return records
 
 
-def yolo_classification_predictions_for_metric(image_path: Path, detections: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def yolo_classification_predictions_for_metric(
+    image_path: Path, detections: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
     records: dict[int, dict[str, Any]] = {}
     for item in normalize_detection_boxes(detections):
         class_id = coerce_int(item.get("class_id"))
@@ -380,7 +380,9 @@ def yolo_classification_predictions_for_metric(image_path: Path, detections: lis
     return list(records.values())
 
 
-def fused_classification_predictions_for_metric(image_path: Path, verdict: dict[str, Any], detections: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def fused_classification_predictions_for_metric(
+    image_path: Path, verdict: dict[str, Any], detections: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
     records = normalize_global_classification_items(verdict)
     if records:
         return [
@@ -396,7 +398,9 @@ def fused_classification_predictions_for_metric(image_path: Path, verdict: dict[
     return yolo_classification_predictions_for_metric(image_path, detections)
 
 
-def yolo_segmentation_predictions_for_metric(image_path: Path, detections: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def yolo_segmentation_predictions_for_metric(
+    image_path: Path, detections: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
     records: list[dict[str, Any]] = []
     for item in normalize_detection_boxes(detections):
         class_id = coerce_int(item.get("class_id"))
@@ -420,7 +424,9 @@ def yolo_segmentation_predictions_for_metric(image_path: Path, detections: list[
     return records
 
 
-def fused_segmentation_predictions_for_metric(image_path: Path, verdict: dict[str, Any], detections: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def fused_segmentation_predictions_for_metric(
+    image_path: Path, verdict: dict[str, Any], detections: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
     records = normalize_segmentation_proposals(verdict)
     if records:
         return [
@@ -479,8 +485,14 @@ def average_precision(recalls: list[float], precisions: list[float]) -> float:
     return round(ap, 6)
 
 
-def match_class_predictions(predictions: list[dict[str, Any]], ground_truth: list[dict[str, Any]], *, class_id: int, iou_threshold: float) -> dict[str, Any]:
-    class_predictions = sorted([item for item in predictions if coerce_int(item.get("class_id")) == class_id], key=lambda item: float(item.get("confidence") or 0.0), reverse=True)
+def match_class_predictions(
+    predictions: list[dict[str, Any]], ground_truth: list[dict[str, Any]], *, class_id: int, iou_threshold: float
+) -> dict[str, Any]:
+    class_predictions = sorted(
+        [item for item in predictions if coerce_int(item.get("class_id")) == class_id],
+        key=lambda item: float(item.get("confidence") or 0.0),
+        reverse=True,
+    )
     class_ground_truth = [item for item in ground_truth if coerce_int(item.get("class_id")) == class_id]
     gt_by_image: dict[str, list[dict[str, Any]]] = {}
     for item in class_ground_truth:
@@ -518,15 +530,31 @@ def match_class_predictions(predictions: list[dict[str, Any]], ground_truth: lis
         fp_cum += fp
         recalls.append(tp_cum / len(class_ground_truth) if class_ground_truth else 0.0)
         precisions.append(tp_cum / (tp_cum + fp_cum) if tp_cum + fp_cum else 0.0)
-    return {"tp": tp_total, "fp": fp_total, "fn": fn_total, "ap": average_precision(recalls, precisions) if class_ground_truth else None}
+    return {
+        "tp": tp_total,
+        "fp": fp_total,
+        "fn": fn_total,
+        "ap": average_precision(recalls, precisions) if class_ground_truth else None,
+    }
 
 
-def evaluate_detection_metric_preview(predictions: list[dict[str, Any]], ground_truth: list[dict[str, Any]], *, iou_thresholds: list[float] | None = None) -> dict[str, Any]:
+def evaluate_detection_metric_preview(
+    predictions: list[dict[str, Any]], ground_truth: list[dict[str, Any]], *, iou_thresholds: list[float] | None = None
+) -> dict[str, Any]:
     thresholds = iou_thresholds or [round(0.5 + 0.05 * idx, 2) for idx in range(10)]
     if not ground_truth:
-        return {"status": "skipped", "reason": "ground_truth_unavailable", "predictions": len(predictions), "ground_truth": 0}
-    gt_classes = sorted({int(item["class_id"]) for item in ground_truth if coerce_int(item.get("class_id")) is not None})
-    pred_classes = sorted({int(item["class_id"]) for item in predictions if coerce_int(item.get("class_id")) is not None})
+        return {
+            "status": "skipped",
+            "reason": "ground_truth_unavailable",
+            "predictions": len(predictions),
+            "ground_truth": 0,
+        }
+    gt_classes = sorted(
+        {int(item["class_id"]) for item in ground_truth if coerce_int(item.get("class_id")) is not None}
+    )
+    pred_classes = sorted(
+        {int(item["class_id"]) for item in predictions if coerce_int(item.get("class_id")) is not None}
+    )
     all_classes = sorted(set(gt_classes) | set(pred_classes))
     per_threshold: dict[str, dict[str, Any]] = {}
     ap_by_threshold: dict[float, list[float]] = {threshold: [] for threshold in thresholds}
@@ -542,14 +570,42 @@ def evaluate_detection_metric_preview(predictions: list[dict[str, Any]], ground_
             if class_id in gt_classes:
                 ap_by_threshold[threshold].append(float(result["ap"] or 0.0))
             if abs(threshold - 0.5) < 1e-9:
-                per_class_50[str(class_id)] = {"tp": int(result["tp"]), "fp": int(result["fp"]), "fn": int(result["fn"]), "ap": result["ap"]}
-        precision = threshold_counts["tp"] / (threshold_counts["tp"] + threshold_counts["fp"]) if threshold_counts["tp"] + threshold_counts["fp"] else 0.0
-        recall = threshold_counts["tp"] / (threshold_counts["tp"] + threshold_counts["fn"]) if threshold_counts["tp"] + threshold_counts["fn"] else 0.0
-        per_threshold[f"{threshold:.2f}"] = {**threshold_counts, "precision": round(precision, 6), "recall": round(recall, 6), "map": round(sum(ap_by_threshold[threshold]) / len(ap_by_threshold[threshold]), 6) if ap_by_threshold[threshold] else 0.0}
+                per_class_50[str(class_id)] = {
+                    "tp": int(result["tp"]),
+                    "fp": int(result["fp"]),
+                    "fn": int(result["fn"]),
+                    "ap": result["ap"],
+                }
+        precision = (
+            threshold_counts["tp"] / (threshold_counts["tp"] + threshold_counts["fp"])
+            if threshold_counts["tp"] + threshold_counts["fp"]
+            else 0.0
+        )
+        recall = (
+            threshold_counts["tp"] / (threshold_counts["tp"] + threshold_counts["fn"])
+            if threshold_counts["tp"] + threshold_counts["fn"]
+            else 0.0
+        )
+        per_threshold[f"{threshold:.2f}"] = {
+            **threshold_counts,
+            "precision": round(precision, 6),
+            "recall": round(recall, 6),
+            "map": round(sum(ap_by_threshold[threshold]) / len(ap_by_threshold[threshold]), 6)
+            if ap_by_threshold[threshold]
+            else 0.0,
+        }
         if abs(threshold - 0.5) < 1e-9:
             counts_at_50 = threshold_counts
-    precision_50 = counts_at_50["tp"] / (counts_at_50["tp"] + counts_at_50["fp"]) if counts_at_50["tp"] + counts_at_50["fp"] else 0.0
-    recall_50 = counts_at_50["tp"] / (counts_at_50["tp"] + counts_at_50["fn"]) if counts_at_50["tp"] + counts_at_50["fn"] else 0.0
+    precision_50 = (
+        counts_at_50["tp"] / (counts_at_50["tp"] + counts_at_50["fp"])
+        if counts_at_50["tp"] + counts_at_50["fp"]
+        else 0.0
+    )
+    recall_50 = (
+        counts_at_50["tp"] / (counts_at_50["tp"] + counts_at_50["fn"])
+        if counts_at_50["tp"] + counts_at_50["fn"]
+        else 0.0
+    )
     map50 = per_threshold.get("0.50", {}).get("map", 0.0)
     maps = [value["map"] for value in per_threshold.values()]
     map50_95 = round(sum(maps) / len(maps), 6) if maps else 0.0
@@ -577,13 +633,22 @@ def metric_delta(fused: dict[str, Any], yolo: dict[str, Any]) -> dict[str, Any]:
         if isinstance(fused.get(key), (int, float)) and isinstance(yolo.get(key), (int, float)):
             delta[key] = round(float(fused[key]) - float(yolo[key]), 6)
     if "map50_95" in delta:
-        delta["direction"] = "improved" if delta["map50_95"] > 0 else ("regressed" if delta["map50_95"] < 0 else "unchanged")
+        delta["direction"] = (
+            "improved" if delta["map50_95"] > 0 else ("regressed" if delta["map50_95"] < 0 else "unchanged")
+        )
     return delta
 
 
-def evaluate_classification_metric_preview(predictions: list[dict[str, Any]], ground_truth: list[dict[str, Any]]) -> dict[str, Any]:
+def evaluate_classification_metric_preview(
+    predictions: list[dict[str, Any]], ground_truth: list[dict[str, Any]]
+) -> dict[str, Any]:
     if not ground_truth:
-        return {"status": "skipped", "reason": "ground_truth_unavailable", "ground_truth": 0, "predictions": len(predictions)}
+        return {
+            "status": "skipped",
+            "reason": "ground_truth_unavailable",
+            "ground_truth": 0,
+            "predictions": len(predictions),
+        }
     gt_labels: dict[str, set[int]] = {}
     for item in ground_truth:
         class_id = coerce_int(item.get("class_id"))
@@ -600,7 +665,9 @@ def evaluate_classification_metric_preview(predictions: list[dict[str, Any]], gr
     fp = 0
     fn = 0
     for image_id, gt_classes in gt_labels.items():
-        preds = sorted(pred_by_image.get(image_id, []), key=lambda entry: float(entry.get("confidence") or 0.0), reverse=True)
+        preds = sorted(
+            pred_by_image.get(image_id, []), key=lambda entry: float(entry.get("confidence") or 0.0), reverse=True
+        )
         pred_classes = {int(item["class_id"]) for item in preds if coerce_int(item.get("class_id")) is not None}
         if pred_classes == gt_classes:
             exact_match += 1
@@ -635,13 +702,26 @@ def classification_metric_delta(fused: dict[str, Any], yolo: dict[str, Any]) -> 
         if isinstance(fused.get(key), (int, float)) and isinstance(yolo.get(key), (int, float)):
             delta[key] = round(float(fused[key]) - float(yolo[key]), 6)
     if "top1_accuracy" in delta:
-        delta["direction"] = "improved" if delta["top1_accuracy"] > 0 else ("regressed" if delta["top1_accuracy"] < 0 else "unchanged")
+        delta["direction"] = (
+            "improved" if delta["top1_accuracy"] > 0 else ("regressed" if delta["top1_accuracy"] < 0 else "unchanged")
+        )
     return delta
 
 
-def evaluate_segmentation_metric_preview(predictions: list[dict[str, Any]], ground_truth: list[dict[str, Any]], *, iou_threshold: float = 0.5, polygon_iou_approx_fn=None) -> dict[str, Any]:
+def evaluate_segmentation_metric_preview(
+    predictions: list[dict[str, Any]],
+    ground_truth: list[dict[str, Any]],
+    *,
+    iou_threshold: float = 0.5,
+    polygon_iou_approx_fn=None,
+) -> dict[str, Any]:
     if not ground_truth:
-        return {"status": "skipped", "reason": "ground_truth_unavailable", "ground_truth": 0, "predictions": len(predictions)}
+        return {
+            "status": "skipped",
+            "reason": "ground_truth_unavailable",
+            "ground_truth": 0,
+            "predictions": len(predictions),
+        }
     predictions_sorted = sorted(predictions, key=lambda entry: float(entry.get("confidence") or 0.0), reverse=True)
     gt_by_image: dict[str, list[dict[str, Any]]] = {}
     for item in ground_truth:
@@ -679,7 +759,18 @@ def evaluate_segmentation_metric_preview(predictions: list[dict[str, Any]], grou
     recall = tp / (tp + fn) if tp + fn else 0.0
     f1 = (2 * precision * recall / (precision + recall)) if precision + recall else 0.0
     mean_iou = iou_sum / tp if tp else 0.0
-    return {"status": "ok", "basis": "polygon_iou_preview", "ground_truth": len(ground_truth), "predictions": len(predictions), "precision": round(precision, 6), "recall": round(recall, 6), "f1": round(f1, 6), "mean_iou": round(mean_iou, 6), "mask_ap50_proxy": round(precision, 6), "counts": {"tp": tp, "fp": fp, "fn": fn}}
+    return {
+        "status": "ok",
+        "basis": "polygon_iou_preview",
+        "ground_truth": len(ground_truth),
+        "predictions": len(predictions),
+        "precision": round(precision, 6),
+        "recall": round(recall, 6),
+        "f1": round(f1, 6),
+        "mean_iou": round(mean_iou, 6),
+        "mask_ap50_proxy": round(precision, 6),
+        "counts": {"tp": tp, "fp": fp, "fn": fn},
+    }
 
 
 def segmentation_metric_delta(fused: dict[str, Any], yolo: dict[str, Any]) -> dict[str, Any]:
@@ -688,7 +779,11 @@ def segmentation_metric_delta(fused: dict[str, Any], yolo: dict[str, Any]) -> di
         if isinstance(fused.get(key), (int, float)) and isinstance(yolo.get(key), (int, float)):
             delta[key] = round(float(fused[key]) - float(yolo[key]), 6)
     if "mask_ap50_proxy" in delta:
-        delta["direction"] = "improved" if delta["mask_ap50_proxy"] > 0 else ("regressed" if delta["mask_ap50_proxy"] < 0 else "unchanged")
+        delta["direction"] = (
+            "improved"
+            if delta["mask_ap50_proxy"] > 0
+            else ("regressed" if delta["mask_ap50_proxy"] < 0 else "unchanged")
+        )
     return delta
 
 
@@ -738,14 +833,28 @@ def build_item_metric_preview(
     polygon_iou_approx_fn=None,
 ) -> dict[str, Any]:
     ground_truth_records_for_metric_fn = ground_truth_records_for_metric_fn or ground_truth_records_for_metric
-    ground_truth_classification_records_for_metric_fn = ground_truth_classification_records_for_metric_fn or ground_truth_classification_records_for_metric
-    ground_truth_segmentation_records_for_metric_fn = ground_truth_segmentation_records_for_metric_fn or ground_truth_segmentation_records_for_metric
+    ground_truth_classification_records_for_metric_fn = (
+        ground_truth_classification_records_for_metric_fn or ground_truth_classification_records_for_metric
+    )
+    ground_truth_segmentation_records_for_metric_fn = (
+        ground_truth_segmentation_records_for_metric_fn or ground_truth_segmentation_records_for_metric
+    )
     yolo_prediction_records_for_metric_fn = yolo_prediction_records_for_metric_fn or yolo_prediction_records_for_metric
-    fused_prediction_records_for_metric_fn = fused_prediction_records_for_metric_fn or fused_prediction_records_for_metric
-    yolo_classification_predictions_for_metric_fn = yolo_classification_predictions_for_metric_fn or yolo_classification_predictions_for_metric
-    fused_classification_predictions_for_metric_fn = fused_classification_predictions_for_metric_fn or fused_classification_predictions_for_metric
-    yolo_segmentation_predictions_for_metric_fn = yolo_segmentation_predictions_for_metric_fn or yolo_segmentation_predictions_for_metric
-    fused_segmentation_predictions_for_metric_fn = fused_segmentation_predictions_for_metric_fn or fused_segmentation_predictions_for_metric
+    fused_prediction_records_for_metric_fn = (
+        fused_prediction_records_for_metric_fn or fused_prediction_records_for_metric
+    )
+    yolo_classification_predictions_for_metric_fn = (
+        yolo_classification_predictions_for_metric_fn or yolo_classification_predictions_for_metric
+    )
+    fused_classification_predictions_for_metric_fn = (
+        fused_classification_predictions_for_metric_fn or fused_classification_predictions_for_metric
+    )
+    yolo_segmentation_predictions_for_metric_fn = (
+        yolo_segmentation_predictions_for_metric_fn or yolo_segmentation_predictions_for_metric
+    )
+    fused_segmentation_predictions_for_metric_fn = (
+        fused_segmentation_predictions_for_metric_fn or fused_segmentation_predictions_for_metric
+    )
     polygon_iou_approx_fn = polygon_iou_approx_fn or polygon_iou_approx
     ground_truth = ground_truth_records_for_metric_fn(image_path, names)
     ground_truth_classes = ground_truth_classification_records_for_metric_fn(image_path, names)
@@ -760,8 +869,12 @@ def build_item_metric_preview(
     fused_class_metrics = evaluate_classification_metric_preview(fused_class_predictions, ground_truth_classes)
     yolo_seg_predictions = yolo_segmentation_predictions_for_metric_fn(image_path, detections)
     fused_seg_predictions = fused_segmentation_predictions_for_metric_fn(image_path, verdict or {}, detections)
-    yolo_seg_metrics = evaluate_segmentation_metric_preview(yolo_seg_predictions, ground_truth_segments, polygon_iou_approx_fn=polygon_iou_approx_fn)
-    fused_seg_metrics = evaluate_segmentation_metric_preview(fused_seg_predictions, ground_truth_segments, polygon_iou_approx_fn=polygon_iou_approx_fn)
+    yolo_seg_metrics = evaluate_segmentation_metric_preview(
+        yolo_seg_predictions, ground_truth_segments, polygon_iou_approx_fn=polygon_iou_approx_fn
+    )
+    fused_seg_metrics = evaluate_segmentation_metric_preview(
+        fused_seg_predictions, ground_truth_segments, polygon_iou_approx_fn=polygon_iou_approx_fn
+    )
     status = "ok" if yolo_metrics.get("status") == "ok" or fused_metrics.get("status") == "ok" else "skipped"
     return {
         "status": status,
@@ -771,8 +884,16 @@ def build_item_metric_preview(
         "ground_truth_classes": len(ground_truth_classes),
         "ground_truth_segments": len(ground_truth_segments),
         "detection": {"yolo": yolo_metrics, "fused": fused_metrics, "delta": metric_delta(fused_metrics, yolo_metrics)},
-        "classification": {"yolo": yolo_class_metrics, "fused": fused_class_metrics, "delta": classification_metric_delta(fused_class_metrics, yolo_class_metrics)},
-        "segmentation": {"yolo": yolo_seg_metrics, "fused": fused_seg_metrics, "delta": segmentation_metric_delta(fused_seg_metrics, yolo_seg_metrics)},
+        "classification": {
+            "yolo": yolo_class_metrics,
+            "fused": fused_class_metrics,
+            "delta": classification_metric_delta(fused_class_metrics, yolo_class_metrics),
+        },
+        "segmentation": {
+            "yolo": yolo_seg_metrics,
+            "fused": fused_seg_metrics,
+            "delta": segmentation_metric_delta(fused_seg_metrics, yolo_seg_metrics),
+        },
         "yolo": yolo_metrics,
         "fused": fused_metrics,
         "delta": metric_delta(fused_metrics, yolo_metrics),
@@ -798,14 +919,28 @@ def aggregate_metric_preview(
     from runtime.multimodal.fusion import merge_verdicts
 
     ground_truth_records_for_metric_fn = ground_truth_records_for_metric_fn or ground_truth_records_for_metric
-    ground_truth_classification_records_for_metric_fn = ground_truth_classification_records_for_metric_fn or ground_truth_classification_records_for_metric
-    ground_truth_segmentation_records_for_metric_fn = ground_truth_segmentation_records_for_metric_fn or ground_truth_segmentation_records_for_metric
+    ground_truth_classification_records_for_metric_fn = (
+        ground_truth_classification_records_for_metric_fn or ground_truth_classification_records_for_metric
+    )
+    ground_truth_segmentation_records_for_metric_fn = (
+        ground_truth_segmentation_records_for_metric_fn or ground_truth_segmentation_records_for_metric
+    )
     yolo_prediction_records_for_metric_fn = yolo_prediction_records_for_metric_fn or yolo_prediction_records_for_metric
-    fused_prediction_records_for_metric_fn = fused_prediction_records_for_metric_fn or fused_prediction_records_for_metric
-    yolo_classification_predictions_for_metric_fn = yolo_classification_predictions_for_metric_fn or yolo_classification_predictions_for_metric
-    fused_classification_predictions_for_metric_fn = fused_classification_predictions_for_metric_fn or fused_classification_predictions_for_metric
-    yolo_segmentation_predictions_for_metric_fn = yolo_segmentation_predictions_for_metric_fn or yolo_segmentation_predictions_for_metric
-    fused_segmentation_predictions_for_metric_fn = fused_segmentation_predictions_for_metric_fn or fused_segmentation_predictions_for_metric
+    fused_prediction_records_for_metric_fn = (
+        fused_prediction_records_for_metric_fn or fused_prediction_records_for_metric
+    )
+    yolo_classification_predictions_for_metric_fn = (
+        yolo_classification_predictions_for_metric_fn or yolo_classification_predictions_for_metric
+    )
+    fused_classification_predictions_for_metric_fn = (
+        fused_classification_predictions_for_metric_fn or fused_classification_predictions_for_metric
+    )
+    yolo_segmentation_predictions_for_metric_fn = (
+        yolo_segmentation_predictions_for_metric_fn or yolo_segmentation_predictions_for_metric
+    )
+    fused_segmentation_predictions_for_metric_fn = (
+        fused_segmentation_predictions_for_metric_fn or fused_segmentation_predictions_for_metric
+    )
     merge_verdicts_fn = merge_verdicts_fn or merge_verdicts
     polygon_iou_approx_fn = polygon_iou_approx_fn or polygon_iou_approx
     ground_truth: list[dict[str, Any]] = []
@@ -838,8 +973,14 @@ def aggregate_metric_preview(
             yolo_predictions.extend(yolo_prediction_records_for_metric_fn(image_path, [detector_summary]))
             yolo_class_predictions.extend(yolo_classification_predictions_for_metric_fn(image_path, [detector_summary]))
             yolo_seg_predictions.extend(yolo_segmentation_predictions_for_metric_fn(image_path, [detector_summary]))
-        fusion_preview = item.get("multimodal", {}).get("fusion", {}) if isinstance(item.get("multimodal"), dict) else {}
-        fused_predictions.extend(fused_prediction_records_for_metric_fn(image_path, fusion_preview if isinstance(fusion_preview, dict) else {}))
+        fusion_preview = (
+            item.get("multimodal", {}).get("fusion", {}) if isinstance(item.get("multimodal"), dict) else {}
+        )
+        fused_predictions.extend(
+            fused_prediction_records_for_metric_fn(
+                image_path, fusion_preview if isinstance(fusion_preview, dict) else {}
+            )
+        )
         verdict = {}
         multimodal = item.get("multimodal", {}) if isinstance(item.get("multimodal"), dict) else {}
         vlm = multimodal.get("vlm", {}) if isinstance(multimodal, dict) else {}
@@ -849,14 +990,22 @@ def aggregate_metric_preview(
         if isinstance(llm_refine, dict) and isinstance(llm_refine.get("verdict"), dict):
             verdict = merge_verdicts_fn(verdict, llm_refine.get("verdict", {}))
         if isinstance(detector_summary, dict):
-            fused_class_predictions.extend(fused_classification_predictions_for_metric_fn(image_path, verdict, [detector_summary]))
-            fused_seg_predictions.extend(fused_segmentation_predictions_for_metric_fn(image_path, verdict, [detector_summary]))
+            fused_class_predictions.extend(
+                fused_classification_predictions_for_metric_fn(image_path, verdict, [detector_summary])
+            )
+            fused_seg_predictions.extend(
+                fused_segmentation_predictions_for_metric_fn(image_path, verdict, [detector_summary])
+            )
     yolo_metrics = evaluate_detection_metric_preview(yolo_predictions, ground_truth)
     fused_metrics = evaluate_detection_metric_preview(fused_predictions, ground_truth)
     yolo_class_metrics = evaluate_classification_metric_preview(yolo_class_predictions, ground_truth_classes)
     fused_class_metrics = evaluate_classification_metric_preview(fused_class_predictions, ground_truth_classes)
-    yolo_seg_metrics = evaluate_segmentation_metric_preview(yolo_seg_predictions, ground_truth_segments, polygon_iou_approx_fn=polygon_iou_approx_fn)
-    fused_seg_metrics = evaluate_segmentation_metric_preview(fused_seg_predictions, ground_truth_segments, polygon_iou_approx_fn=polygon_iou_approx_fn)
+    yolo_seg_metrics = evaluate_segmentation_metric_preview(
+        yolo_seg_predictions, ground_truth_segments, polygon_iou_approx_fn=polygon_iou_approx_fn
+    )
+    fused_seg_metrics = evaluate_segmentation_metric_preview(
+        fused_seg_predictions, ground_truth_segments, polygon_iou_approx_fn=polygon_iou_approx_fn
+    )
     status = "ok" if yolo_metrics.get("status") == "ok" or fused_metrics.get("status") == "ok" else "skipped"
     return {
         "status": status,
@@ -869,8 +1018,16 @@ def aggregate_metric_preview(
         "yolo_predictions": len(yolo_predictions),
         "fused_predictions": len(fused_predictions),
         "detection": {"yolo": yolo_metrics, "fused": fused_metrics, "delta": metric_delta(fused_metrics, yolo_metrics)},
-        "classification": {"yolo": yolo_class_metrics, "fused": fused_class_metrics, "delta": classification_metric_delta(fused_class_metrics, yolo_class_metrics)},
-        "segmentation": {"yolo": yolo_seg_metrics, "fused": fused_seg_metrics, "delta": segmentation_metric_delta(fused_seg_metrics, yolo_seg_metrics)},
+        "classification": {
+            "yolo": yolo_class_metrics,
+            "fused": fused_class_metrics,
+            "delta": classification_metric_delta(fused_class_metrics, yolo_class_metrics),
+        },
+        "segmentation": {
+            "yolo": yolo_seg_metrics,
+            "fused": fused_seg_metrics,
+            "delta": segmentation_metric_delta(fused_seg_metrics, yolo_seg_metrics),
+        },
         "yolo": yolo_metrics,
         "fused": fused_metrics,
         "delta": metric_delta(fused_metrics, yolo_metrics),
@@ -888,11 +1045,22 @@ def prediction_records_to_coco(records: list[dict[str, Any]], image_path: Path |
         source_path = image_path or Path(str(record.get("image_id", "")))
         stem = source_path.stem if str(source_path) else str(record.get("image_id", ""))
         image_id: int | str = int(stem) if stem.isdigit() else stem
-        coco_records.append({"image_id": image_id, "category_id": class_id, "bbox": xyxy_to_xywh(bbox), "score": round(score, 6), "source": record.get("source"), "action": record.get("action")})
+        coco_records.append(
+            {
+                "image_id": image_id,
+                "category_id": class_id,
+                "bbox": xyxy_to_xywh(bbox),
+                "score": round(score, 6),
+                "source": record.get("source"),
+                "action": record.get("action"),
+            }
+        )
     return coco_records
 
 
-def yolo_coco_records_for_items(items: list[dict[str, Any]], *, yolo_prediction_records_for_metric_fn=None) -> list[dict[str, Any]]:
+def yolo_coco_records_for_items(
+    items: list[dict[str, Any]], *, yolo_prediction_records_for_metric_fn=None
+) -> list[dict[str, Any]]:
     yolo_prediction_records_for_metric_fn = yolo_prediction_records_for_metric_fn or yolo_prediction_records_for_metric
     records: list[dict[str, Any]] = []
     for item in items:
@@ -902,7 +1070,11 @@ def yolo_coco_records_for_items(items: list[dict[str, Any]], *, yolo_prediction_
         image_path = Path(str(image_path_value))
         detector_summary = item.get("detector", {}).get("summary", {}) if isinstance(item.get("detector"), dict) else {}
         if isinstance(detector_summary, dict):
-            records.extend(prediction_records_to_coco(yolo_prediction_records_for_metric_fn(image_path, [detector_summary]), image_path=image_path))
+            records.extend(
+                prediction_records_to_coco(
+                    yolo_prediction_records_for_metric_fn(image_path, [detector_summary]), image_path=image_path
+                )
+            )
     return records
 
 
@@ -917,19 +1089,33 @@ def build_metric_guardrail(
     yolo_prediction_records_for_metric_fn = yolo_prediction_records_for_metric_fn or yolo_prediction_records_for_metric
     enabled = parse_bool(multimodal_params.get("fusion_metric_guardrail"), True)
     if not enabled:
-        return {"enabled": False, "selected": "fused_preview", "reason": "guardrail_disabled", "records": fused_coco_records}
+        return {
+            "enabled": False,
+            "selected": "fused_preview",
+            "reason": "guardrail_disabled",
+            "records": fused_coco_records,
+        }
     if metric_preview.get("status") != "ok":
-        return {"enabled": True, "selected": "fused_preview", "reason": "metric_preview_unavailable", "records": fused_coco_records}
+        return {
+            "enabled": True,
+            "selected": "fused_preview",
+            "reason": "metric_preview_unavailable",
+            "records": fused_coco_records,
+        }
     delta = metric_preview.get("delta", {}) if isinstance(metric_preview.get("delta"), dict) else {}
     min_map_delta = float(multimodal_params.get("fusion_guardrail_min_map50_95_delta", 1e-6))
     require_recall = parse_bool(multimodal_params.get("fusion_guardrail_require_recall_nonnegative"), True)
     map_delta = coerce_float(delta.get("map50_95"))
     recall_delta = coerce_float(delta.get("recall"))
-    material_change = len(fused_coco_records) != len(yolo_coco_records_for_items(items, yolo_prediction_records_for_metric_fn=yolo_prediction_records_for_metric_fn))
+    material_change = len(fused_coco_records) != len(
+        yolo_coco_records_for_items(items, yolo_prediction_records_for_metric_fn=yolo_prediction_records_for_metric_fn)
+    )
     if not material_change:
         fusion_summary = metric_preview.get("fused", {}) if isinstance(metric_preview.get("fused"), dict) else {}
         yolo_summary = metric_preview.get("yolo", {}) if isinstance(metric_preview.get("yolo"), dict) else {}
-        material_change = any((fusion_summary.get(key) != yolo_summary.get(key)) for key in ("precision", "recall", "map50", "map50_95"))
+        material_change = any(
+            (fusion_summary.get(key) != yolo_summary.get(key)) for key in ("precision", "recall", "map50", "map50_95")
+        )
     reasons: list[str] = []
     if not material_change:
         reasons.append("no_material_metric_or_prediction_change")
@@ -944,7 +1130,9 @@ def build_metric_guardrail(
             "reason": ",".join(reasons),
             "thresholds": {"min_map50_95_delta": min_map_delta, "require_recall_nonnegative": require_recall},
             "delta": delta,
-            "records": yolo_coco_records_for_items(items, yolo_prediction_records_for_metric_fn=yolo_prediction_records_for_metric_fn),
+            "records": yolo_coco_records_for_items(
+                items, yolo_prediction_records_for_metric_fn=yolo_prediction_records_for_metric_fn
+            ),
         }
     return {
         "enabled": True,
@@ -961,7 +1149,15 @@ def aggregate_multimodal_evaluation(items: list[dict[str, Any]]) -> dict[str, An
     gt_counts: dict[str, int] = {}
     detection_counts: dict[str, int] = {}
     flag_counts = {"confirmed": 0, "false_positives": 0, "possible_misses": 0, "duplicate_or_fragmented": 0}
-    fusion_counts = {"kept": 0, "suppressed": 0, "added": 0, "adjusted": 0, "relabelled": 0, "fused_boxes": 0, "coco_records": 0}
+    fusion_counts = {
+        "kept": 0,
+        "suppressed": 0,
+        "added": 0,
+        "adjusted": 0,
+        "relabelled": 0,
+        "fused_boxes": 0,
+        "coco_records": 0,
+    }
     parsed = 0
     total_boxes = 0
     total_gt_objects = 0
@@ -985,7 +1181,9 @@ def aggregate_multimodal_evaluation(items: list[dict[str, Any]]) -> dict[str, An
         verdict = preferred_verdict(item)
         for field in flag_counts:
             flag_counts[field] += verdict_field_count(verdict, field)
-        fusion_summary = multimodal.get("fusion", {}).get("summary", {}) if isinstance(multimodal.get("fusion"), dict) else {}
+        fusion_summary = (
+            multimodal.get("fusion", {}).get("summary", {}) if isinstance(multimodal.get("fusion"), dict) else {}
+        )
         for key in fusion_counts:
             try:
                 fusion_counts[key] += int(fusion_summary.get(key, 0) or 0)

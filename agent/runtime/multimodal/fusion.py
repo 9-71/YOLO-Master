@@ -192,14 +192,22 @@ def build_multimodal_fusion_preview(
     open_world_enabled = open_world_policy_enabled(multimodal_params) or open_world_template_enabled(multimodal_params)
     open_world_assist = policy in {"open_world_assist", "open-world-assist"}
     allow_add = policy in {"add_only", "balanced", "aggressive", "all"} or open_world_enabled
-    allow_suppress = policy in {"balanced", "aggressive", "all"} or (open_world_enabled and not open_world_assist and policy in {"open_world", "open-world"})
+    allow_suppress = policy in {"balanced", "aggressive", "all"} or (
+        open_world_enabled and not open_world_assist and policy in {"open_world", "open-world"}
+    )
     allow_adjust = policy in {"aggressive", "all"}
     allow_relabel = policy in {"aggressive", "all"}
     add_min = float(multimodal_params.get("fusion_add_confidence_min", 0.65))
-    open_world_add_min = float(multimodal_params.get("fusion_open_world_confidence_min", 0.55 if open_world_enabled else add_min))
+    open_world_add_min = float(
+        multimodal_params.get("fusion_open_world_confidence_min", 0.55 if open_world_enabled else add_min)
+    )
     add_require_unlinked = parse_bool(multimodal_params.get("fusion_add_require_unlinked"), True)
     add_max_linked_yolo_conf = float(multimodal_params.get("fusion_add_max_linked_yolo_confidence", 0.4))
-    add_allowed_bbox_quality = {str(v).lower() for v in as_list(multimodal_params.get("fusion_add_allowed_bbox_quality") or ["exact", "estimated"]) if v not in (None, "")}
+    add_allowed_bbox_quality = {
+        str(v).lower()
+        for v in as_list(multimodal_params.get("fusion_add_allowed_bbox_quality") or ["exact", "estimated"])
+        if v not in (None, "")
+    }
     suppress_min = float(multimodal_params.get("fusion_suppress_confidence_min", 0.75))
     adjust_min = float(multimodal_params.get("fusion_adjust_confidence_min", 0.7))
     suppress_max_yolo_conf = float(multimodal_params.get("fusion_suppress_max_yolo_confidence", 0.45))
@@ -207,15 +215,23 @@ def build_multimodal_fusion_preview(
     adjust_min_iou = float(multimodal_params.get("fusion_adjust_min_iou", 0.5))
     open_world_iou_relabel_enabled = parse_bool(multimodal_params.get("open_world_iou_relabel_enabled"), False)
     open_world_iou_relabel_threshold = float(multimodal_params.get("open_world_iou_relabel_threshold", 0.7) or 0.7)
-    open_world_iou_relabel_max_yolo_conf = float(multimodal_params.get("open_world_iou_relabel_max_yolo_confidence", 0.8) or 0.8)
+    open_world_iou_relabel_max_yolo_conf = float(
+        multimodal_params.get("open_world_iou_relabel_max_yolo_confidence", 0.8) or 0.8
+    )
     yolo_boxes = normalize_detection_boxes_fn(detections)
     yolo_by_index = {int(item["index"]): item for item in yolo_boxes}
     fusion_hints = verdict.get("fusion_hints", {}) if isinstance(verdict, dict) else {}
     fusion_hints = fusion_hints if isinstance(fusion_hints, dict) else {}
     cross_check = verdict.get("yolo_cross_check", {}) if isinstance(verdict, dict) else {}
     cross_check = cross_check if isinstance(cross_check, dict) else {}
-    vlm_proposals = [item for item in as_list(verdict.get("vlm_detections")) if isinstance(item, dict)] if isinstance(verdict, dict) else []
-    proposals_by_id = {str(item.get("proposal_id")): item for item in vlm_proposals if item.get("proposal_id") not in (None, "")}
+    vlm_proposals = (
+        [item for item in as_list(verdict.get("vlm_detections")) if isinstance(item, dict)]
+        if isinstance(verdict, dict)
+        else []
+    )
+    proposals_by_id = {
+        str(item.get("proposal_id")): item for item in vlm_proposals if item.get("proposal_id") not in (None, "")
+    }
     actions: list[dict[str, Any]] = []
     warnings: list[str] = []
     suppress_indices = set()
@@ -250,14 +266,41 @@ def build_multimodal_fusion_preview(
         score = coerce_float(item.get("confidence")) if isinstance(item, dict) else None
         for idx in extract_yolo_indices(item):
             if not allow_suppress:
-                actions.append({"type": "reject_suppress", "yolo_index": idx, "confidence": score, "yolo_confidence": yolo_confidence(idx), "reason": "fusion_policy_disallows_suppress", "policy": policy})
+                actions.append(
+                    {
+                        "type": "reject_suppress",
+                        "yolo_index": idx,
+                        "confidence": score,
+                        "yolo_confidence": yolo_confidence(idx),
+                        "reason": "fusion_policy_disallows_suppress",
+                        "policy": policy,
+                    }
+                )
                 continue
             allowed, reason = can_suppress(idx, score)
             if allowed:
                 suppress_indices.add(idx)
-                actions.append({"type": "suppress", "yolo_index": idx, "confidence": score, "yolo_confidence": yolo_confidence(idx), "reason": reason})
+                actions.append(
+                    {
+                        "type": "suppress",
+                        "yolo_index": idx,
+                        "confidence": score,
+                        "yolo_confidence": yolo_confidence(idx),
+                        "reason": reason,
+                    }
+                )
             else:
-                actions.append({"type": "reject_suppress", "yolo_index": idx, "confidence": score, "yolo_confidence": yolo_confidence(idx), "reason": reason, "threshold": suppress_min, "max_yolo_confidence": suppress_max_yolo_conf})
+                actions.append(
+                    {
+                        "type": "reject_suppress",
+                        "yolo_index": idx,
+                        "confidence": score,
+                        "yolo_confidence": yolo_confidence(idx),
+                        "reason": reason,
+                        "threshold": suppress_min,
+                        "max_yolo_confidence": suppress_max_yolo_conf,
+                    }
+                )
 
     adjustments: dict[int, dict[str, Any]] = {}
     for item in as_list(fusion_hints.get("adjust_boxes")):
@@ -267,7 +310,15 @@ def build_multimodal_fusion_preview(
         score = coerce_float(item.get("confidence"))
         if not allow_adjust:
             for idx in idx_set:
-                actions.append({"type": "reject_adjust_box", "yolo_index": idx, "confidence": score, "reason": "fusion_policy_disallows_adjust", "policy": policy})
+                actions.append(
+                    {
+                        "type": "reject_adjust_box",
+                        "yolo_index": idx,
+                        "confidence": score,
+                        "reason": "fusion_policy_disallows_adjust",
+                        "policy": policy,
+                    }
+                )
             continue
         bbox = valid_xyxy(item.get("bbox_xyxy") or item.get("bbox") or item.get("xyxy"))
         if bbox is None:
@@ -276,14 +327,40 @@ def build_multimodal_fusion_preview(
             original_box = yolo_box(idx)
             overlap = box_iou_xyxy(original_box, bbox) if original_box is not None else None
             if score is not None and score < adjust_min:
-                actions.append({"type": "reject_adjust_box", "yolo_index": idx, "confidence": score, "threshold": adjust_min})
+                actions.append(
+                    {"type": "reject_adjust_box", "yolo_index": idx, "confidence": score, "threshold": adjust_min}
+                )
             elif original_box is None:
-                actions.append({"type": "reject_adjust_box", "yolo_index": idx, "confidence": score, "reason": "missing_original_yolo_box"})
+                actions.append(
+                    {
+                        "type": "reject_adjust_box",
+                        "yolo_index": idx,
+                        "confidence": score,
+                        "reason": "missing_original_yolo_box",
+                    }
+                )
             elif overlap is None or overlap < adjust_min_iou:
-                actions.append({"type": "reject_adjust_box", "yolo_index": idx, "confidence": score, "iou_with_original": overlap, "min_iou": adjust_min_iou, "reason": "adjustment_too_far_from_original"})
+                actions.append(
+                    {
+                        "type": "reject_adjust_box",
+                        "yolo_index": idx,
+                        "confidence": score,
+                        "iou_with_original": overlap,
+                        "min_iou": adjust_min_iou,
+                        "reason": "adjustment_too_far_from_original",
+                    }
+                )
             else:
                 adjustments[idx] = {"bbox_xyxy": bbox, "confidence": score, "raw": item}
-                actions.append({"type": "adjust_box", "yolo_index": idx, "bbox_xyxy": bbox, "confidence": score, "iou_with_original": overlap})
+                actions.append(
+                    {
+                        "type": "adjust_box",
+                        "yolo_index": idx,
+                        "bbox_xyxy": bbox,
+                        "confidence": score,
+                        "iou_with_original": overlap,
+                    }
+                )
 
     relabels: dict[int, dict[str, Any]] = {}
     for item in as_list(fusion_hints.get("relabel_yolo")):
@@ -296,17 +373,44 @@ def build_multimodal_fusion_preview(
         label = item.get("label") or item.get("to_label") or item.get("new_label")
         if not allow_relabel:
             for idx in idx_set:
-                actions.append({"type": "reject_relabel", "yolo_index": idx, "class_id": class_id, "label": label, "reason": "fusion_policy_disallows_relabel", "policy": policy})
+                actions.append(
+                    {
+                        "type": "reject_relabel",
+                        "yolo_index": idx,
+                        "class_id": class_id,
+                        "label": label,
+                        "reason": "fusion_policy_disallows_relabel",
+                        "policy": policy,
+                    }
+                )
             continue
         if class_id is None and label in (None, ""):
             continue
         for idx in idx_set:
             yolo_conf = yolo_confidence(idx)
             if yolo_conf is not None and yolo_conf > relabel_max_yolo_conf:
-                actions.append({"type": "reject_relabel", "yolo_index": idx, "class_id": class_id, "label": label, "yolo_confidence": yolo_conf, "max_yolo_confidence": relabel_max_yolo_conf, "reason": "yolo_confidence_too_high"})
+                actions.append(
+                    {
+                        "type": "reject_relabel",
+                        "yolo_index": idx,
+                        "class_id": class_id,
+                        "label": label,
+                        "yolo_confidence": yolo_conf,
+                        "max_yolo_confidence": relabel_max_yolo_conf,
+                        "reason": "yolo_confidence_too_high",
+                    }
+                )
                 continue
             relabels[idx] = {"class_id": class_id, "label": label, "raw": item}
-            actions.append({"type": "relabel", "yolo_index": idx, "class_id": class_id, "label": label, "yolo_confidence": yolo_conf})
+            actions.append(
+                {
+                    "type": "relabel",
+                    "yolo_index": idx,
+                    "class_id": class_id,
+                    "label": label,
+                    "yolo_confidence": yolo_conf,
+                }
+            )
 
     explicit_adds: list[dict[str, Any]] = []
     explicit_open_world_adds: list[dict[str, Any]] = []
@@ -326,7 +430,11 @@ def build_multimodal_fusion_preview(
                 explicit_adds.append(proposal)
             elif allow_add and open_world_enabled:
                 explicit_open_world_adds.append(proposal)
-        elif action in {"open_world_add", "open-world-add", "open_world", "discover", "novel"} and allow_add and open_world_enabled:
+        elif (
+            action in {"open_world_add", "open-world-add", "open_world", "discover", "novel"}
+            and allow_add
+            and open_world_enabled
+        ):
             explicit_open_world_adds.append(proposal)
         elif action in {"suppress", "drop", "remove"}:
             for idx in extract_yolo_indices(proposal):
@@ -334,9 +442,28 @@ def build_multimodal_fusion_preview(
                 allowed, reason = can_suppress(idx, score)
                 if allow_suppress and allowed:
                     suppress_indices.add(idx)
-                    actions.append({"type": "suppress", "yolo_index": idx, "proposal_id": proposal.get("proposal_id"), "confidence": score, "yolo_confidence": yolo_confidence(idx), "reason": "vlm_proposal_action"})
+                    actions.append(
+                        {
+                            "type": "suppress",
+                            "yolo_index": idx,
+                            "proposal_id": proposal.get("proposal_id"),
+                            "confidence": score,
+                            "yolo_confidence": yolo_confidence(idx),
+                            "reason": "vlm_proposal_action",
+                        }
+                    )
                 else:
-                    actions.append({"type": "reject_suppress", "yolo_index": idx, "proposal_id": proposal.get("proposal_id"), "confidence": score, "yolo_confidence": yolo_confidence(idx), "reason": reason if allow_suppress else "fusion_policy_disallows_suppress", "policy": policy if not allow_suppress else None})
+                    actions.append(
+                        {
+                            "type": "reject_suppress",
+                            "yolo_index": idx,
+                            "proposal_id": proposal.get("proposal_id"),
+                            "confidence": score,
+                            "yolo_confidence": yolo_confidence(idx),
+                            "reason": reason if allow_suppress else "fusion_policy_disallows_suppress",
+                            "policy": policy if not allow_suppress else None,
+                        }
+                    )
 
     fused_predictions: list[dict[str, Any]] = []
     for item in yolo_boxes:
@@ -362,7 +489,9 @@ def build_multimodal_fusion_preview(
                 prediction["class_id"] = relabels[idx]["class_id"]
             if relabels[idx].get("label") not in (None, ""):
                 prediction["label"] = relabels[idx]["label"]
-            prediction["action"] = "relabelled" if prediction["action"] == "keep" else f"{prediction['action']}+relabelled"
+            prediction["action"] = (
+                "relabelled" if prediction["action"] == "keep" else f"{prediction['action']}+relabelled"
+            )
         fused_predictions.append(prediction)
 
     seen_adds: set[str] = set()
@@ -380,9 +509,30 @@ def build_multimodal_fusion_preview(
             continue
         allowed, reason = can_add(proposal)
         if not allowed or confidence is None or confidence < add_min:
-            actions.append({"type": "reject_add", "proposal_id": proposal.get("proposal_id"), "confidence": confidence, "reason": reason if not allowed else "confidence_below_threshold", "threshold": add_min if confidence is None or confidence < add_min else None})
+            actions.append(
+                {
+                    "type": "reject_add",
+                    "proposal_id": proposal.get("proposal_id"),
+                    "confidence": confidence,
+                    "reason": reason if not allowed else "confidence_below_threshold",
+                    "threshold": add_min if confidence is None or confidence < add_min else None,
+                }
+            )
             continue
-        fused_predictions.append({"source": "vlm", "proposal_id": proposal.get("proposal_id"), "class_id": class_id, "label": proposal.get("label"), "confidence": round(confidence, 4), "bbox_xyxy": bbox, "coco_bbox_xywh": xyxy_to_xywh(bbox), "bbox_quality": proposal.get("bbox_quality", "estimated"), "action": "added", "linked_yolo_indices": sorted(extract_yolo_indices(proposal))})
+        fused_predictions.append(
+            {
+                "source": "vlm",
+                "proposal_id": proposal.get("proposal_id"),
+                "class_id": class_id,
+                "label": proposal.get("label"),
+                "confidence": round(confidence, 4),
+                "bbox_xyxy": bbox,
+                "coco_bbox_xywh": xyxy_to_xywh(bbox),
+                "bbox_quality": proposal.get("bbox_quality", "estimated"),
+                "action": "added",
+                "linked_yolo_indices": sorted(extract_yolo_indices(proposal)),
+            }
+        )
         actions.append({"type": "add", "proposal_id": proposal.get("proposal_id"), "confidence": confidence})
 
     seen_open_world_adds: set[str] = set()
@@ -397,7 +547,9 @@ def build_multimodal_fusion_preview(
         class_id = proposal_coco_class_id(proposal)
         coco_label = proposal_coco_label(proposal)
         if bbox is None or open_label in (None, ""):
-            warnings.append(f"Skipped open-world VLM proposal without usable bbox/label: {proposal.get('proposal_id', key)}")
+            warnings.append(
+                f"Skipped open-world VLM proposal without usable bbox/label: {proposal.get('proposal_id', key)}"
+            )
             continue
         relabel_hit = None
         if open_world_iou_relabel_enabled:
@@ -407,24 +559,89 @@ def build_multimodal_fusion_preview(
                 if iou >= open_world_iou_relabel_threshold:
                     yolo_conf = coerce_float(yolo_item.get("confidence"))
                     if yolo_conf is not None and yolo_conf <= open_world_iou_relabel_max_yolo_conf:
-                        relabel_hit = {"yolo_index": yolo_item.get("index"), "yolo_label": yolo_item.get("label"), "yolo_confidence": yolo_conf, "iou": iou}
+                        relabel_hit = {
+                            "yolo_index": yolo_item.get("index"),
+                            "yolo_label": yolo_item.get("label"),
+                            "yolo_confidence": yolo_conf,
+                            "iou": iou,
+                        }
                         break
         if relabel_hit is not None:
-            open_world_predictions.append({"source": "vlm_open_world", "proposal_id": proposal.get("proposal_id"), "open_label": open_label, "label": coco_label or open_label, "class_id": class_id, "confidence": round(confidence or 0.0, 4), "bbox_xyxy": bbox, "bbox_quality": proposal.get("bbox_quality", "estimated"), "action": "open_world_relabelled", "linked_yolo_indices": sorted(extract_yolo_indices(proposal)), "ontology_aliases": as_list(proposal.get("ontology_aliases")), "relabelled_from": relabel_hit})
-            actions.append({"type": "relabel_open_world", "proposal_id": proposal.get("proposal_id"), "open_label": open_label, "yolo_index": relabel_hit["yolo_index"], "yolo_label": relabel_hit["yolo_label"], "iou": relabel_hit["iou"], "confidence": confidence})
+            open_world_predictions.append(
+                {
+                    "source": "vlm_open_world",
+                    "proposal_id": proposal.get("proposal_id"),
+                    "open_label": open_label,
+                    "label": coco_label or open_label,
+                    "class_id": class_id,
+                    "confidence": round(confidence or 0.0, 4),
+                    "bbox_xyxy": bbox,
+                    "bbox_quality": proposal.get("bbox_quality", "estimated"),
+                    "action": "open_world_relabelled",
+                    "linked_yolo_indices": sorted(extract_yolo_indices(proposal)),
+                    "ontology_aliases": as_list(proposal.get("ontology_aliases")),
+                    "relabelled_from": relabel_hit,
+                }
+            )
+            actions.append(
+                {
+                    "type": "relabel_open_world",
+                    "proposal_id": proposal.get("proposal_id"),
+                    "open_label": open_label,
+                    "yolo_index": relabel_hit["yolo_index"],
+                    "yolo_label": relabel_hit["yolo_label"],
+                    "iou": relabel_hit["iou"],
+                    "confidence": confidence,
+                }
+            )
             continue
         allowed, reason = can_add(proposal)
         if not allowed or confidence is None or confidence < open_world_add_min:
-            actions.append({"type": "reject_open_world_add", "proposal_id": proposal.get("proposal_id"), "confidence": confidence, "reason": reason if not allowed else "open_world_confidence_below_threshold", "threshold": open_world_add_min if confidence is None or confidence < open_world_add_min else None})
+            actions.append(
+                {
+                    "type": "reject_open_world_add",
+                    "proposal_id": proposal.get("proposal_id"),
+                    "confidence": confidence,
+                    "reason": reason if not allowed else "open_world_confidence_below_threshold",
+                    "threshold": open_world_add_min if confidence is None or confidence < open_world_add_min else None,
+                }
+            )
             continue
-        record = {"source": "vlm_open_world", "proposal_id": proposal.get("proposal_id"), "open_label": open_label, "label": coco_label or open_label, "class_id": class_id, "confidence": round(confidence, 4), "bbox_xyxy": bbox, "bbox_quality": proposal.get("bbox_quality", "estimated"), "action": "open_world_added", "linked_yolo_indices": sorted(extract_yolo_indices(proposal)), "ontology_aliases": as_list(proposal.get("ontology_aliases"))}
+        record = {
+            "source": "vlm_open_world",
+            "proposal_id": proposal.get("proposal_id"),
+            "open_label": open_label,
+            "label": coco_label or open_label,
+            "class_id": class_id,
+            "confidence": round(confidence, 4),
+            "bbox_xyxy": bbox,
+            "bbox_quality": proposal.get("bbox_quality", "estimated"),
+            "action": "open_world_added",
+            "linked_yolo_indices": sorted(extract_yolo_indices(proposal)),
+            "ontology_aliases": as_list(proposal.get("ontology_aliases")),
+        }
         if class_id is not None:
             record["coco_bbox_xywh"] = xyxy_to_xywh(bbox)
             fused_predictions.append(record)
-            actions.append({"type": "add_open_world_mapped", "proposal_id": proposal.get("proposal_id"), "confidence": confidence, "class_id": class_id, "open_label": open_label})
+            actions.append(
+                {
+                    "type": "add_open_world_mapped",
+                    "proposal_id": proposal.get("proposal_id"),
+                    "confidence": confidence,
+                    "class_id": class_id,
+                    "open_label": open_label,
+                }
+            )
         else:
             open_world_predictions.append(record)
-            actions.append({"type": "add_open_world", "proposal_id": proposal.get("proposal_id"), "confidence": confidence, "open_label": open_label})
+            actions.append(
+                {
+                    "type": "add_open_world",
+                    "proposal_id": proposal.get("proposal_id"),
+                    "confidence": confidence,
+                    "open_label": open_label,
+                }
+            )
 
     image_id: int | str | None = None
     if image_path not in (None, ""):
@@ -437,7 +654,16 @@ def build_multimodal_fusion_preview(
         bbox = prediction.get("coco_bbox_xywh")
         if image_id is None or class_id is None or score is None or not isinstance(bbox, list):
             continue
-        coco_records.append({"image_id": image_id, "category_id": class_id, "bbox": bbox, "score": round(score, 6), "source": prediction.get("source"), "action": prediction.get("action")})
+        coco_records.append(
+            {
+                "image_id": image_id,
+                "category_id": class_id,
+                "bbox": bbox,
+                "score": round(score, 6),
+                "source": prediction.get("source"),
+                "action": prediction.get("action"),
+            }
+        )
 
     summary = {
         "yolo_boxes": len(yolo_boxes),

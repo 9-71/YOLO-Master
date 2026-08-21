@@ -17,13 +17,19 @@ def test_torchrun_rank1_marker_reaches_parent_output(tmp_path):
 
     worker = tmp_path / "worker.py"
     logs = tmp_path / "logs"
-    elastic_import = "from torch.distributed.elastic.multiprocessing.errors import record\n@record\n" if TORCH_1_9 else ""
-    worker_source = "import os\n" + elastic_import + (
-        "def main():\n"
-        "    if int(os.environ['LOCAL_RANK']) == 1:\n"
-        f"        raise RuntimeError('{MARKER}')\n"
-        "if __name__ == '__main__':\n"
-        "    main()\n"
+    elastic_import = (
+        "from torch.distributed.elastic.multiprocessing.errors import record\n@record\n" if TORCH_1_9 else ""
+    )
+    worker_source = (
+        "import os\n"
+        + elastic_import
+        + (
+            "def main():\n"
+            "    if int(os.environ['LOCAL_RANK']) == 1:\n"
+            f"        raise RuntimeError('{MARKER}')\n"
+            "if __name__ == '__main__':\n"
+            "    main()\n"
+        )
     )
     worker.write_text(worker_source, encoding="utf-8")
     command = [

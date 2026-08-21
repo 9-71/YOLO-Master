@@ -48,6 +48,7 @@ import torch.nn as nn
 
 # 关闭 ultralytics 的 wandb 上报
 from ultralytics.utils import SETTINGS, LOGGER
+
 SETTINGS["wandb"] = False
 
 from ultralytics import YOLO
@@ -66,9 +67,8 @@ from ultralytics.utils.lora.config import LoRAConfig
 
 # 确认加载的是当前仓库的 ultralytics
 import ultralytics
-assert str(REPO_ROOT) in ultralytics.__file__, (
-    f"加载的不是当前仓库的 ultralytics！got {ultralytics.__file__}"
-)
+
+assert str(REPO_ROOT) in ultralytics.__file__, f"加载的不是当前仓库的 ultralytics！got {ultralytics.__file__}"
 
 # 导入统一数据结构规范
 from full_ablation_spec import (
@@ -171,15 +171,9 @@ def extract_final_metrics(results) -> Dict[str, float]:
     if results is None:
         return final_metrics
     if hasattr(results, "results_dict") and results.results_dict:
-        final_metrics = {
-            k: float(v) for k, v in results.results_dict.items()
-            if isinstance(v, (int, float))
-        }
+        final_metrics = {k: float(v) for k, v in results.results_dict.items() if isinstance(v, (int, float))}
     elif hasattr(results, "metrics") and results.metrics:
-        final_metrics = {
-            k: float(v) for k, v in results.metrics.items()
-            if isinstance(v, (int, float))
-        }
+        final_metrics = {k: float(v) for k, v in results.metrics.items() if isinstance(v, (int, float))}
     return final_metrics
 
 
@@ -295,25 +289,15 @@ def apply_peft_via_train_args(model: YOLO, kwargs: Dict[str, Any]) -> YOLO:
 def _resolve_target_modules(model: nn.Module, placement: str, r: int) -> List[str]:
     """根据 placement 策略解析目标模块列表。"""
     if placement == "backbone":
-        return MoLoRAConfigBuilder.auto_detect_targets(
-            model, r=r, include_moe=True, only_backbone=True
-        )
+        return MoLoRAConfigBuilder.auto_detect_targets(model, r=r, include_moe=True, only_backbone=True)
     elif placement == "neck":
-        full_targets = set(
-            MoLoRAConfigBuilder.auto_detect_targets(
-                model, r=r, include_moe=True, only_backbone=False
-            )
-        )
+        full_targets = set(MoLoRAConfigBuilder.auto_detect_targets(model, r=r, include_moe=True, only_backbone=False))
         backbone_targets = set(
-            MoLoRAConfigBuilder.auto_detect_targets(
-                model, r=r, include_moe=True, only_backbone=True
-            )
+            MoLoRAConfigBuilder.auto_detect_targets(model, r=r, include_moe=True, only_backbone=True)
         )
         return sorted(full_targets - backbone_targets)
     else:  # "full" or None
-        return MoLoRAConfigBuilder.auto_detect_targets(
-            model, r=r, include_moe=True, only_backbone=False
-        )
+        return MoLoRAConfigBuilder.auto_detect_targets(model, r=r, include_moe=True, only_backbone=False)
 
 
 def apply_molora(model: YOLO, config: Dict[str, Any]) -> YOLO:
@@ -422,9 +406,9 @@ def run_variant(variant: VariantConfig, seed: int = 42) -> ExperimentResult:
     """
     运行单个消融实验变体，返回 ExperimentResult 结构。
     """
-    print(f"\n{'='*78}")
-    print(f"=== Variant: {variant.name.upper()} {'='*55}")
-    print(f"{'='*78}")
+    print(f"\n{'=' * 78}")
+    print(f"=== Variant: {variant.name.upper()} {'=' * 55}")
+    print(f"{'=' * 78}")
     print(f"Description : {variant.description}")
     print(f"PEFT type   : {variant.peft_type}")
     print(f"Resolution  : {variant.imgsz}px")
@@ -447,7 +431,7 @@ def run_variant(variant: VariantConfig, seed: int = 42) -> ExperimentResult:
         # ── 6.1 加载模型 ──
         model = YOLO(MODEL_PATH)
         base_total, base_train = count_params(model.model)
-        print(f"[Pre-train]  total={base_total:,}  trainable={base_train:,}  ({base_train/base_total*100:.2f}%)")
+        print(f"[Pre-train]  total={base_total:,}  trainable={base_train:,}  ({base_train / base_total * 100:.2f}%)")
 
         # ── 6.2 应用 PEFT ──
         if variant.peft_type == "peft":
@@ -462,12 +446,14 @@ def run_variant(variant: VariantConfig, seed: int = 42) -> ExperimentResult:
         sig = detect_adapter_signature(model.model)
         molora_diag = collect_molora_diagnostics(model.model)
 
-        print(f"[Post-wrap]  total={post_total:,}  trainable={post_train:,}  ({post_train/post_total*100:.2f}%)")
+        print(f"[Post-wrap]  total={post_total:,}  trainable={post_train:,}  ({post_train / post_total * 100:.2f}%)")
         print(f"[Adapter]    {sig}")
         if molora_diag.get("molora_enabled"):
-            print(f"[MoLoRA]     enabled={molora_diag['molora_enabled']}, "
-                  f"router_calib={molora_diag['router_calib_present']}, "
-                  f"ranks={molora_diag['per_expert_ranks']}")
+            print(
+                f"[MoLoRA]     enabled={molora_diag['molora_enabled']}, "
+                f"router_calib={molora_diag['router_calib_present']}, "
+                f"ranks={molora_diag['per_expert_ranks']}"
+            )
             if molora_diag.get("router_types"):
                 print(f"[Router]     types={molora_diag['router_types']}")
 
@@ -495,9 +481,7 @@ def run_variant(variant: VariantConfig, seed: int = 42) -> ExperimentResult:
 
         # ── 6.5 训练后 scale-aware 验证 ──
         print("[Scale-aware validation] 运行 COCO 评估以获取 small/medium/large mAP...")
-        val_metrics, scale_metrics = run_scale_aware_validation(
-            model, imgsz=variant.imgsz, name=variant.name
-        )
+        val_metrics, scale_metrics = run_scale_aware_validation(model, imgsz=variant.imgsz, name=variant.name)
         # 将验证指标合并到 final_metrics（若有重复，val 覆盖 train）
         final_metrics.update(val_metrics)
 
@@ -602,8 +586,8 @@ def print_multiscale_summary(all_records: List[ExperimentResult]):
         recs = [r for r in all_records if f"_{imgsz}" in r.variant]
         if not recs:
             continue
-        print(f"\n{'─'*78}")
-        print(f"  Resolution: {imgsz}px  {'─'*(70-len(str(imgsz)))}")
+        print(f"\n{'─' * 78}")
+        print(f"  Resolution: {imgsz}px  {'─' * (70 - len(str(imgsz)))}")
         header = (
             f"{'Variant':<22} {'OK':<3} {'Total':>12} {'Trainable':>12} {'%':>7} "
             f"{'mAP50-95':>10} {'mAPsmall':>10} {'mAPmedium':>10} {'mAPlarge':>10}"
@@ -634,6 +618,7 @@ def generate_tradeoff_plot(all_records: List[ExperimentResult]):
     """生成分辨率-精度 trade-off 曲线图。"""
     try:
         import matplotlib
+
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
     except ImportError:
@@ -716,7 +701,7 @@ def main():
     # ── 生成 trade-off 曲线 ──
     generate_tradeoff_plot(all_records)
 
-    print(f"\n{'='*78}")
+    print(f"\n{'=' * 78}")
     print(f"全部 {len(VARIANTS)} 个变体运行完毕。")
     print(f"详细结果 JSON: {RESULTS_JSON}")
     print(f"训练日志目录: {PROJECT_DIR}")

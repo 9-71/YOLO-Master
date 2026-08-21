@@ -125,9 +125,7 @@ class MapSaturationSchedulerConfig:
         if self.window_size <= 0:
             raise ValueError(f"MapSaturationSchedulerConfig.window_size must be > 0, got {self.window_size}")
         if not (0.0 < self.decay_factor < 1.0):
-            raise ValueError(
-                f"MapSaturationSchedulerConfig.decay_factor must be in (0, 1), got {self.decay_factor}"
-            )
+            raise ValueError(f"MapSaturationSchedulerConfig.decay_factor must be in (0, 1), got {self.decay_factor}")
         if self.min_scale < 0.0:
             raise ValueError(f"MapSaturationSchedulerConfig.min_scale must be >= 0, got {self.min_scale}")
         if self.saturation_threshold < 0.0:
@@ -170,8 +168,7 @@ class MapSaturationScheduler:
         plateau = (
             self.config.enabled
             and len(self.map_history) >= 2 * (w := self.config.window_size)
-            and max(self.map_history[-w:]) - max(self.map_history[-2 * w : -w])
-            < self.config.saturation_threshold
+            and max(self.map_history[-w:]) - max(self.map_history[-2 * w : -w]) < self.config.saturation_threshold
         )
         if plateau:
             self.saturation_scale = max(

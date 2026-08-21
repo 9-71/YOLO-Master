@@ -91,9 +91,7 @@ class MoEDiagnosticsRecorder:
         """Export usage and aux-loss plots from the current history file."""
         return export_moe_history_plots(self.save_dir)
 
-    def _build_layer_payload(
-        self, *, diag: MoELayerDiagnostic, step: int, epoch: int, stage: str
-    ) -> dict[str, Any]:
+    def _build_layer_payload(self, *, diag: MoELayerDiagnostic, step: int, epoch: int, stage: str) -> dict[str, Any]:
         return {
             "stage": stage,
             "step": int(step),
@@ -196,14 +194,17 @@ class MoEDiagnosticsRecorder:
         if len(history) < self.dead_window:
             return False
         samples = list(history)[-self.dead_window :]
-        return all(expert_id < len(item["usage"]) and item["usage"][expert_id] <= self.dead_threshold for item in samples)
+        return all(
+            expert_id < len(item["usage"]) and item["usage"][expert_id] <= self.dead_threshold for item in samples
+        )
 
     def _is_collapsed(self, history: deque[dict[str, Any]], expert_id: int) -> bool:
         if len(history) < self.collapse_window or expert_id < 0:
             return False
         samples = list(history)[-self.collapse_window :]
         return all(
-            item["dominant_expert"] == expert_id and item["dominant_share"] >= self.collapse_threshold for item in samples
+            item["dominant_expert"] == expert_id and item["dominant_share"] >= self.collapse_threshold
+            for item in samples
         )
 
     def _build_alert(

@@ -3,6 +3,7 @@
 Part A: Verify coco2017.yaml is valid and COCO2017 dataset loads correctly.
 Part B: Verify MoE-aware wrapping + forward + routing stats collection.
 """
+
 import os
 import sys
 from pathlib import Path
@@ -19,6 +20,7 @@ os.environ.setdefault("YOLO_VERBOSE", "false")
 import torch
 import yaml
 from ultralytics.utils import SETTINGS
+
 SETTINGS["wandb"] = False
 
 from ultralytics import YOLO
@@ -30,6 +32,7 @@ def apply_moe_aware_to_model(model, config):
     target_modules = getattr(config, "target_modules", None)
     if target_modules is None or not target_modules:
         from ultralytics.nn.peft.molora import MoLoRAConfigBuilder
+
         target_modules = MoLoRAConfigBuilder.auto_detect_targets(
             model, r=config.r, include_moe=True, only_backbone=False
         )
@@ -51,6 +54,7 @@ def apply_moe_aware_to_model(model, config):
     model.molora_config = config
     model.molora_enabled = True
     from ultralytics.nn.peft.molora.utils import mark_only_molora_as_trainable
+
     mark_only_molora_as_trainable(model)
     return wrapped
 
@@ -97,12 +101,20 @@ def main():
     print("  ✅ Model loaded")
 
     cfg = MoLoRAMoEAwareConfig(
-        r=8, alpha=16, num_experts=4, top_k=2,
+        r=8,
+        alpha=16,
+        num_experts=4,
+        top_k=2,
         router_type="linear",
-        per_expert_rank=True, rank_allocator_mode="frequency",
-        rank_budget_total=32, rank_min=2,
-        router_calibration=True, router_calib_rank=4,
-        balance_loss_coef=0.01, z_loss_coef=0.001, use_rslora=True,
+        per_expert_rank=True,
+        rank_allocator_mode="frequency",
+        rank_budget_total=32,
+        rank_min=2,
+        router_calibration=True,
+        router_calib_rank=4,
+        balance_loss_coef=0.01,
+        z_loss_coef=0.001,
+        use_rslora=True,
     )
 
     print("  Wrapping with MoE-aware layers...")
@@ -140,16 +152,11 @@ def main():
     trainable_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
     print(f"  total params: {total_params:,}")
     print(f"  trainable params: {trainable_params:,}")
-    print(f"  trainable %: {trainable_params/total_params*100:.2f}%")
+    print(f"  trainable %: {trainable_params / total_params * 100:.2f}%")
 
     # ---- Summary ----
-    print(f"\n{'='*60}")
-    all_ok = (
-        train_count > 0 and val_count > 0
-        and wrapped > 0
-        and stats_collected > 0
-        and trainable_params > 0
-    )
+    print(f"\n{'=' * 60}")
+    all_ok = train_count > 0 and val_count > 0 and wrapped > 0 and stats_collected > 0 and trainable_params > 0
     if all_ok:
         print("🎉 ALL CHECKS PASSED — MoE-aware PEFT pipeline is ready for COCO2017")
         print("\nNext: run actual experiments with:")

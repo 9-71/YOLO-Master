@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Deterministically mirror RepoWiki content into the GitHub Pages content tree."""
+
 from __future__ import annotations
 
 import argparse
@@ -69,13 +70,21 @@ def category(directory: Path, content_root: Path, lang: str, mapping: dict[str, 
     pages = []
     for page in sorted(directory.glob("*.md"), key=lambda p: p.name):
         rel = page.relative_to(content_root).as_posix()
-        pages.append({"name": page.stem, "path": f"{lang}/{rel}", "translationKey": f"{lang}:{rel}",
-                      "alternatePath": mapping.get(rel)})
-    children = [category(p, content_root, lang, mapping) for p in sorted(directory.iterdir(), key=lambda p: p.name)
-                if p.is_dir()]
+        pages.append(
+            {
+                "name": page.stem,
+                "path": f"{lang}/{rel}",
+                "translationKey": f"{lang}:{rel}",
+                "alternatePath": mapping.get(rel),
+            }
+        )
+    children = [
+        category(p, content_root, lang, mapping)
+        for p in sorted(directory.iterdir(), key=lambda p: p.name)
+        if p.is_dir()
+    ]
     landing = next((p["path"] for p in pages if Path(p["path"]).stem == directory.name), None)
-    return {"name": directory.name, "path": rel_dir, "landingPage": landing,
-            "children": children, "pages": pages}
+    return {"name": directory.name, "path": rel_dir, "landingPage": landing, "children": children, "pages": pages}
 
 
 def index_for(root: Path, lang: str, mapping: dict[str, str]) -> dict:
@@ -97,7 +106,9 @@ def expected(source: Path) -> tuple[dict[str, dict[str, bytes]], dict[str, bytes
         source_files[lang] = {p.relative_to(root).as_posix(): p.read_bytes() for p in files(root)}
         paths[lang] = list(source_files[lang])
     mapping, missing = build_mapping(paths)
-    indexes = {f"index-{lang}.json": json_bytes(index_for(source / lang / "content", lang, mapping[lang])) for lang in LANGS}
+    indexes = {
+        f"index-{lang}.json": json_bytes(index_for(source / lang / "content", lang, mapping[lang])) for lang in LANGS
+    }
     indexes["repowiki-language-map.json"] = json_bytes({"schemaVersion": 1, "missing": missing, "mapping": mapping})
     return source_files, indexes
 
@@ -111,8 +122,10 @@ def heading_slug(text: str) -> str:
 
 def quality_errors(source: Path) -> list[str]:
     errors: list[str] = []
-    paths = {lang: [p.relative_to(source / lang / "content").as_posix() for p in files(source / lang / "content")]
-             for lang in LANGS}
+    paths = {
+        lang: [p.relative_to(source / lang / "content").as_posix() for p in files(source / lang / "content")]
+        for lang in LANGS
+    }
     mapping, missing = build_mapping(paths)
     # Mapping mismatches are warnings only (EN/ZH use translated directory names)
     # for item in missing:
@@ -212,7 +225,11 @@ def check(dest: Path, source: Path, source_files: dict[str, dict[str, bytes]], i
     errors = quality_errors(source)
     for lang in LANGS:
         actual_root = dest / lang
-        actual = {p.relative_to(actual_root).as_posix(): p.read_bytes() for p in files(actual_root)} if actual_root.exists() else {}
+        actual = (
+            {p.relative_to(actual_root).as_posix(): p.read_bytes() for p in files(actual_root)}
+            if actual_root.exists()
+            else {}
+        )
         expected_paths, actual_paths = set(source_files[lang]), set(actual)
         for rel in sorted(expected_paths - actual_paths):
             errors.append(f"{lang}/{rel}: missing from committed snapshot")
@@ -241,10 +258,13 @@ def sync(dest: Path, source_files: dict[str, dict[str, bytes]], indexes: dict[st
         for lang in LANGS:
             target = dest / lang
             backup = dest / f".{lang}.old"
-            if backup.exists(): shutil.rmtree(backup)
-            if target.exists(): os.replace(target, backup)
+            if backup.exists():
+                shutil.rmtree(backup)
+            if target.exists():
+                os.replace(target, backup)
             os.replace(stage / lang, target)
-            if backup.exists(): shutil.rmtree(backup)
+            if backup.exists():
+                shutil.rmtree(backup)
         for name in indexes:
             os.replace(stage / name, dest / name)
 
@@ -258,7 +278,11 @@ def main() -> int:
     source_files, indexes = expected(args.source.resolve())
     if args.check:
         errors = check(args.dest.resolve(), args.source.resolve(), source_files, indexes)
-        print("\n".join(errors) if errors else f"RepoWiki sync OK: en={len(source_files['en'])}, zh={len(source_files['zh'])}")
+        print(
+            "\n".join(errors)
+            if errors
+            else f"RepoWiki sync OK: en={len(source_files['en'])}, zh={len(source_files['zh'])}"
+        )
         return bool(errors)
     sync(args.dest.resolve(), source_files, indexes)
     print(f"Synced RepoWiki: en={len(source_files['en'])}, zh={len(source_files['zh'])}")

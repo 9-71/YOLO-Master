@@ -1,6 +1,7 @@
 from multiprocessing import freeze_support
 from ultralytics import YOLO
 
+
 def main():
     # Wandb配置（不需要可以注释掉，不影响训练）
     # os.environ["WANDB_MODE"] = "online"
@@ -34,17 +35,11 @@ def main():
         copy_paste=0.1,
         patience=20,
         close_mosaic=15,
-        plots=True
+        plots=True,
     )
 
     # 训练结束自动跑验证，输出最终指标
-    results = model.val(
-        data="ultralytics/cfg/datasets/VisDrone.yaml",
-        imgsz=800,
-        batch=8,
-        plots=True,
-        save_json=True
-    )
+    results = model.val(data="ultralytics/cfg/datasets/VisDrone.yaml", imgsz=800, batch=8, plots=True, save_json=True)
 
     print("===== 最终验证指标 =====")
     print(f"mAP50: {results.box.map50:.4f}")
@@ -52,6 +47,7 @@ def main():
 
     # wandb.finish()
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     freeze_support()
     main()

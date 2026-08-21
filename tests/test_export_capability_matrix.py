@@ -114,7 +114,9 @@ def _matrix(*, mot_supported=True, molora_requires_merge=False):
 
 
 def test_preflight_refuses_matrix_blocked_module():
-    report = export_preflight(MoTBlock(16, num_heads=2, top_k=1), "onnx", strict=False, matrix=_matrix(mot_supported=False))
+    report = export_preflight(
+        MoTBlock(16, num_heads=2, top_k=1), "onnx", strict=False, matrix=_matrix(mot_supported=False)
+    )
 
     assert report["supported"] is False
     assert report["decisions"][0]["strategy"] == "refuse"

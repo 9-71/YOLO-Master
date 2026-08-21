@@ -152,8 +152,8 @@ def main() -> int:
         report["import_smoke_error"] = f"{type(exc).__name__}: {exc}"
 
     report["recommended_commands"] = [
-        "pytest -q tests/test_engine.py -k \"lora or build_optimizer\"",
-        "pytest -q tests/test_python.py -k \"lora or fallback\"",
+        'pytest -q tests/test_engine.py -k "lora or build_optimizer"',
+        'pytest -q tests/test_python.py -k "lora or fallback"',
         "python tests/lora_e2e_smoke.py",
         "python tests/lora_rankless_smoke.py",
     ]

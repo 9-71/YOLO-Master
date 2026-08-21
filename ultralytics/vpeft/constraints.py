@@ -36,6 +36,7 @@ __all__ = [
 # NodeInfo — unified wrapper for module / node metadata
 # ---------------------------------------------------------------------------
 
+
 class NodeInfo:
     """Lightweight wrapper that normalises GraphNode, ModuleNode, nn.Module, or dict
     into a uniform interface consumed by constraints.
@@ -158,6 +159,7 @@ class NodeInfo:
 # Constraint(ABC) — abstract base
 # ---------------------------------------------------------------------------
 
+
 class Constraint(ABC):
     """Abstract base class for a V-PEFT constraint.
 
@@ -184,6 +186,7 @@ class Constraint(ABC):
 # ---------------------------------------------------------------------------
 # 1. OperatorCompatibilityConstraint (C_op)
 # ---------------------------------------------------------------------------
+
 
 class OperatorCompatibilityConstraint(Constraint):
     """Hard constraint: variant must support the operator type.
@@ -239,6 +242,7 @@ class OperatorCompatibilityConstraint(Constraint):
 # ---------------------------------------------------------------------------
 # 2. SemanticProtectionConstraint (C_sem)
 # ---------------------------------------------------------------------------
+
 
 class SemanticProtectionConstraint(Constraint):
     """Hard constraint: certain semantic roles are never adapted.
@@ -315,6 +319,7 @@ class CandidateTargetConstraint(Constraint):
 # 3. BudgetConstraint (C_budget)
 # ---------------------------------------------------------------------------
 
+
 class BudgetConstraint(Constraint):
     """Hard + soft constraint: total adapter parameter budget.
 
@@ -332,9 +337,7 @@ class BudgetConstraint(Constraint):
     def evaluate(self, graph: ComputationGraph, placement, ranks, variant) -> float:
         """Return budget violation (positive if over budget)."""
         used = sum(
-            graph.estimate_params(i, int(ranks[i].item()), variant)
-            for i in range(graph.n_nodes)
-            if placement[i] > 0.5
+            graph.estimate_params(i, int(ranks[i].item()), variant) for i in range(graph.n_nodes) if placement[i] > 0.5
         )
         return max(0.0, used - self.max_params)
 
@@ -345,15 +348,17 @@ class BudgetConstraint(Constraint):
         module = node_info.module
         if module is not None and hasattr(module, "params_for_rank"):
             return int(module.params_for_rank(rank, variant))
-        return int(_estimate_adapter_params(
-            rank,
-            variant,
-            node_info.operator_type,
-            node_info.in_channels,
-            node_info.out_channels,
-            node_info.kernel_size,
-            node_info.groups,
-        ))
+        return int(
+            _estimate_adapter_params(
+                rank,
+                variant,
+                node_info.operator_type,
+                node_info.in_channels,
+                node_info.out_channels,
+                node_info.kernel_size,
+                node_info.groups,
+            )
+        )
 
     def update_usage(self, node_info: NodeInfo, variant: str, rank: int) -> None:
         """Incrementally add a node's usage to the running total."""
@@ -380,6 +385,7 @@ class BudgetConstraint(Constraint):
 # 4. DeploymentCompatibilityConstraint (C_deploy)
 # ---------------------------------------------------------------------------
 
+
 class DeploymentCompatibilityConstraint(Constraint):
     """Hard/soft constraint: platform export compatibility.
 
@@ -393,8 +399,15 @@ class DeploymentCompatibilityConstraint(Constraint):
         "onnx": {"lora"},
         "tensorrt": {"lora"},
         "pytorch": {
-            "lora", "dora", "loha", "lokr", "ia3",
-            "adalora", "hra", "oft", "boft",
+            "lora",
+            "dora",
+            "loha",
+            "lokr",
+            "ia3",
+            "adalora",
+            "hra",
+            "oft",
+            "boft",
         },
     }
 
@@ -415,6 +428,7 @@ class DeploymentCompatibilityConstraint(Constraint):
 # ---------------------------------------------------------------------------
 # 5. VariantModuleCompatibilityConstraint (C_compat)
 # ---------------------------------------------------------------------------
+
 
 class VariantModuleCompatibilityConstraint(Constraint):
     """Fine-grained variant × module compatibility (hard constraint).
@@ -470,6 +484,7 @@ class VariantModuleCompatibilityConstraint(Constraint):
 # ---------------------------------------------------------------------------
 # 6. MoEConsistencyConstraint (C_moe)
 # ---------------------------------------------------------------------------
+
 
 class MoEConsistencyConstraint(Constraint):
     """Hard constraint: MoE expert homogeneity.
@@ -530,7 +545,9 @@ class MoEConsistencyConstraint(Constraint):
     def reset(self) -> None:
         self.registered_experts.clear()
 
-    def check_group_ranks(self, infos: List[NodeInfo], variant: str, ranks: List[int], epsilon: int | None = None) -> bool:
+    def check_group_ranks(
+        self, infos: List[NodeInfo], variant: str, ranks: List[int], epsilon: int | None = None
+    ) -> bool:
         """Validate a graph-discovered expert group without mutable registration."""
         if len(infos) < 2:
             return True
@@ -543,6 +560,7 @@ class MoEConsistencyConstraint(Constraint):
 # ---------------------------------------------------------------------------
 # 7. DivisibilityConstraint (C_div)
 # ---------------------------------------------------------------------------
+
 
 class DivisibilityConstraint(Constraint):
     """Hard/soft constraint: rank must be divisible by groups for Conv2d.
@@ -576,6 +594,7 @@ class DivisibilityConstraint(Constraint):
 # ConstraintRegistry — orchestrates all constraints
 # ---------------------------------------------------------------------------
 
+
 class ConstraintRegistry:
     """Registry of hard and soft constraints.
 
@@ -597,10 +616,10 @@ class ConstraintRegistry:
         soft_constraints: Optional[List[str]] = None,
     ):
         """Args:
-            constraints: List of instantiated Constraint objects (new path).
-            config: Optional dict for auto-building default constraints.
-            hard_constraints: Legacy list of constraint names (kept for compat).
-            soft_constraints: Legacy list of constraint names (kept for compat).
+        constraints: List of instantiated Constraint objects (new path).
+        config: Optional dict for auto-building default constraints.
+        hard_constraints: Legacy list of constraint names (kept for compat).
+        soft_constraints: Legacy list of constraint names (kept for compat).
         """
         self._constraints: List[Constraint] = []
         self._hard_constraints: List[Constraint] = []
@@ -799,14 +818,17 @@ class ConstraintRegistry:
                 feasible_sets = []
                 for i in indices:
                     info = self._node_info_from_graph(graph, i)
-                    feasible_sets.append({
-                        rank for rank in ranks
-                        if all(
-                            c.is_feasible(info, variant, rank)
-                            for c in self._hard_constraints
-                            if c is not self._moe_constraint
-                        )
-                    })
+                    feasible_sets.append(
+                        {
+                            rank
+                            for rank in ranks
+                            if all(
+                                c.is_feasible(info, variant, rank)
+                                for c in self._hard_constraints
+                                if c is not self._moe_constraint
+                            )
+                        }
+                    )
                 common = set.intersection(*feasible_sets) if feasible_sets else set()
                 if not common:
                     for i in indices:
@@ -959,9 +981,7 @@ class ConstraintRegistry:
         """Return whether a concrete graph node, variant, and rank satisfy all hard constraints."""
         return self.check_hard(self._node_info_from_graph(graph, idx), variant, rank)
 
-    def check_hard_with_reason(
-        self, node_info: NodeInfo, variant: str, rank: int
-    ) -> Tuple[bool, List[str]]:
+    def check_hard_with_reason(self, node_info: NodeInfo, variant: str, rank: int) -> Tuple[bool, List[str]]:
         """Return (feasible, list_of_violated_constraint_names)."""
         violated: List[str] = []
         for c in self._hard_constraints:
@@ -976,14 +996,9 @@ class ConstraintRegistry:
             total += c.weight * c.penalty(node_info, variant, rank)
         return total
 
-    def compute_penalty_breakdown(
-        self, node_info: NodeInfo, variant: str, rank: int
-    ) -> Dict[str, float]:
+    def compute_penalty_breakdown(self, node_info: NodeInfo, variant: str, rank: int) -> Dict[str, float]:
         """Per-constraint soft penalty decomposition."""
-        return {
-            c.name: c.weight * c.penalty(node_info, variant, rank)
-            for c in self._soft_constraints
-        }
+        return {c.name: c.weight * c.penalty(node_info, variant, rank) for c in self._soft_constraints}
 
     def get_budget_usage_per_node(self, node_info: NodeInfo, variant: str, rank: int) -> int:
         """Single adapter parameter count."""
@@ -1063,12 +1078,14 @@ class ConstraintRegistry:
     @staticmethod
     def _fallback_budget_usage(node_info: NodeInfo, variant: str, rank: int) -> int:
         """Fallback parameter estimation when no BudgetConstraint is registered."""
-        return int(_estimate_adapter_params(
-            rank,
-            variant,
-            node_info.operator_type,
-            node_info.in_channels,
-            node_info.out_channels,
-            node_info.kernel_size,
-            node_info.groups,
-        ))
+        return int(
+            _estimate_adapter_params(
+                rank,
+                variant,
+                node_info.operator_type,
+                node_info.in_channels,
+                node_info.out_channels,
+                node_info.kernel_size,
+                node_info.groups,
+            )
+        )

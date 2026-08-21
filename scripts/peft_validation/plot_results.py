@@ -6,6 +6,7 @@
 - metrics/mAP50-95(B)
 保存到 peft_compare_curves.png
 """
+
 import json
 from pathlib import Path
 import csv
@@ -24,10 +25,10 @@ def read_csv(path):
 
 fig, axes = plt.subplots(2, 2, figsize=(13, 9))
 panels = [
-    ("train/box_loss",       "Train Box Loss",       axes[0][0]),
-    ("train/cls_loss",       "Train Cls Loss",       axes[0][1]),
-    ("val/cls_loss",         "Val Cls Loss",         axes[1][0]),
-    ("metrics/mAP50-95(B)",  "Val mAP50-95",         axes[1][1]),
+    ("train/box_loss", "Train Box Loss", axes[0][0]),
+    ("train/cls_loss", "Train Cls Loss", axes[0][1]),
+    ("val/cls_loss", "Val Cls Loss", axes[1][0]),
+    ("metrics/mAP50-95(B)", "Val mAP50-95", axes[1][1]),
 ]
 
 for v in VARIANTS:
@@ -44,7 +45,9 @@ for v in VARIANTS:
 
 for col, title, ax in panels:
     ax.set_title(title, fontsize=12, fontweight="bold")
-    ax.set_xlabel("Epoch"); ax.grid(alpha=0.3); ax.legend(fontsize=9)
+    ax.set_xlabel("Epoch")
+    ax.grid(alpha=0.3)
+    ax.legend(fontsize=9)
 
 fig.suptitle("PEFT Variants on COCO128 (yolo11n, 2 epochs, MPS)", fontsize=14, fontweight="bold")
 fig.tight_layout()
@@ -54,25 +57,34 @@ print(f"Saved: {out}")
 
 # 同时把汇总打成 markdown 表
 data = json.load(open(HERE / "peft_compare_results.json"))
-md = ["# PEFT Variants Comparison (coco128, yolo11n, 2 epochs)\n",
-      "| Variant | OK | Total Params | Δ vs Full | adapter signature | mAP50 | mAP50-95 | Time(s) |",
-      "|---------|----|--------------|-----------|-------------------|-------|----------|---------|"]
+md = [
+    "# PEFT Variants Comparison (coco128, yolo11n, 2 epochs)\n",
+    "| Variant | OK | Total Params | Δ vs Full | adapter signature | mAP50 | mAP50-95 | Time(s) |",
+    "|---------|----|--------------|-----------|-------------------|-------|----------|---------|",
+]
 for r in data:
     sig = r["adapter_sig"]
     sig_str = []
-    if sig["has_lora_A"]:         sig_str.append("lora_A/B")
-    if sig["has_dora_magnitude"]: sig_str.append("DoRA-magnitude")
-    if sig["has_loha"]:           sig_str.append("hada")
-    if sig["has_ia3"]:            sig_str.append("ia3")
-    if not sig_str:               sig_str = ["-"]
+    if sig["has_lora_A"]:
+        sig_str.append("lora_A/B")
+    if sig["has_dora_magnitude"]:
+        sig_str.append("DoRA-magnitude")
+    if sig["has_loha"]:
+        sig_str.append("hada")
+    if sig["has_ia3"]:
+        sig_str.append("ia3")
+    if not sig_str:
+        sig_str = ["-"]
     fm = r["final_metrics"]
     delta = r["params_total"] - 2624080
-    md.append(f"| **{r['name'].upper()}** | {'✅' if r['ok'] else '❌'} | "
-              f"{r['params_total']:,} | {'+' if delta>=0 else ''}{delta:,} | "
-              f"{', '.join(sig_str)} | "
-              f"{fm.get('metrics/mAP50(B)', 0):.4f} | "
-              f"{fm.get('metrics/mAP50-95(B)', 0):.4f} | "
-              f"{r['elapsed_sec']:.0f} |")
+    md.append(
+        f"| **{r['name'].upper()}** | {'✅' if r['ok'] else '❌'} | "
+        f"{r['params_total']:,} | {'+' if delta >= 0 else ''}{delta:,} | "
+        f"{', '.join(sig_str)} | "
+        f"{fm.get('metrics/mAP50(B)', 0):.4f} | "
+        f"{fm.get('metrics/mAP50-95(B)', 0):.4f} | "
+        f"{r['elapsed_sec']:.0f} |"
+    )
 md_path = HERE / "peft_compare_summary.md"
 md_path.write_text("\n".join(md))
 print(f"Saved: {md_path}")

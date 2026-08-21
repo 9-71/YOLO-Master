@@ -37,11 +37,11 @@ def _expert_usage_bar_html(info_list: dict[str, Any]) -> str:
             height_pct = (val / max_val * 100) if max_val > 0 else 0
             color = "#e74c3c" if val < 0.01 else ("#f39c12" if val < 0.1 else "#2ecc71")
             bars += f'<div class="bar-item"><span class="bar-label">E{idx}</span><div class="bar-track"><div class="bar-fill" style="height:{height_pct:.1f}%;background:{color}"></div></div><span class="bar-val">{val:.3f}</span></div>'
-        cards.append(f'''
+        cards.append(f"""
         <div class="card">
             <h3>{name} <span class="badge">{info.class_name}</span></h3>
             <div class="bar-chart">{bars}</div>
-        </div>''')
+        </div>""")
     return "\n".join(cards) if cards else "<p>No expert usage data available.</p>"
 
 
@@ -71,11 +71,11 @@ def _routing_heatmap_html(model: nn.Module) -> str:
             intensity = min(val / max_w, 1.0) if max_w > 0 else 0
             bg = f"rgba(52, 152, 219, {intensity:.3f})"
             cells += f'<div class="heat-cell" style="background:{bg}" title="E{idx}: {val:.4f}">E{idx}<br><span>{val:.3f}</span></div>'
-        layers.append(f'''
+        layers.append(f"""
         <div class="card">
             <h3>{name} <span class="badge">{type(m).__name__}</span></h3>
             <div class="heatmap-grid">{cells}</div>
-        </div>''')
+        </div>""")
     return "\n".join(layers) if layers else "<p>No routing snapshots available (run a forward pass first).</p>"
 
 
@@ -84,10 +84,14 @@ def _alert_summary_html(diagnostics: list) -> str:
     alerts = []
     for diag in diagnostics:
         if diag.collapse_flag:
-            alerts.append(f'<div class="alert alert-collapse">⚠️ {diag.name}: routing collapse — expert E{diag.dominant_expert} dominates ({diag.dominant_share:.1%})</div>')
+            alerts.append(
+                f'<div class="alert alert-collapse">⚠️ {diag.name}: routing collapse — expert E{diag.dominant_expert} dominates ({diag.dominant_share:.1%})</div>'
+            )
         for idx, usage in enumerate(diag.usage):
             if usage < 0.01:
-                alerts.append(f'<div class="alert alert-dead">💀 {diag.name}: expert E{idx} is dead (usage={usage:.4f})</div>')
+                alerts.append(
+                    f'<div class="alert alert-dead">💀 {diag.name}: expert E{idx} is dead (usage={usage:.4f})</div>'
+                )
     if not alerts:
         return '<div class="alert alert-ok">✅ No routing issues detected.</div>'
     return "\n".join(alerts)
@@ -179,7 +183,7 @@ def generate_moe_dashboard(
 </head>
 <body>
 <h1>🔬 {title}</h1>
-<div class="timestamp">Generated: {time.strftime('%Y-%m-%d %H:%M:%S')}</div>
+<div class="timestamp">Generated: {time.strftime("%Y-%m-%d %H:%M:%S")}</div>
 
 <h2>Summary</h2>
 {stats_html}

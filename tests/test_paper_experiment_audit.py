@@ -8,12 +8,26 @@ from types import SimpleNamespace
 
 def _record(model, family, variant, seed, dataset="voc", targets=None, placement=None):
     record = {
-        "experiment_id": f"{model}_{variant}_{seed}", "model_name": model, "architecture_family": family,
-        "variant": variant, "seed": seed, "dataset": dataset, "epochs": 300, "imgsz": 640, "batch": 16,
-        "optimizer": "AdamW", "lr0": 0.001, "lrf": 0.01, "weight_decay": 0.0005, "amp": True,
-        "status": "success", "metrics": {"metrics/mAP50-95(B)": 0.5 if variant == "full" else 0.55},
-        "lora_runtime_metadata": {"target_modules": targets or []}, "target_set": placement,
-        "fingerprint": {"phi_attn": 0.45 if family == "yolo12" else 0.0}, "_source": "test",
+        "experiment_id": f"{model}_{variant}_{seed}",
+        "model_name": model,
+        "architecture_family": family,
+        "variant": variant,
+        "seed": seed,
+        "dataset": dataset,
+        "epochs": 300,
+        "imgsz": 640,
+        "batch": 16,
+        "optimizer": "AdamW",
+        "lr0": 0.001,
+        "lrf": 0.01,
+        "weight_decay": 0.0005,
+        "amp": True,
+        "status": "success",
+        "metrics": {"metrics/mAP50-95(B)": 0.5 if variant == "full" else 0.55},
+        "lora_runtime_metadata": {"target_modules": targets or []},
+        "target_set": placement,
+        "fingerprint": {"phi_attn": 0.45 if family == "yolo12" else 0.0},
+        "_source": "test",
     }
     return record
 

@@ -98,8 +98,7 @@ class MoLoRAConfig:
     issues = ConfigDriftDetector(tmp_path).check_config_mappings()
 
     assert any(
-        issue.code == "CONFIG_MAPPING_DEFAULT_MISSING" and "molora_num_experts" in issue.message
-        for issue in issues
+        issue.code == "CONFIG_MAPPING_DEFAULT_MISSING" and "molora_num_experts" in issue.message for issue in issues
     )
 
 
@@ -177,9 +176,7 @@ def test_check_all_includes_yolo26_master_configs(tmp_path):
 
     issues = detector.check_all()
 
-    assert any(
-        issue.code == "YAML_DUPLICATE_KEY" and issue.path.name == "yolo26-master-test.yaml" for issue in issues
-    )
+    assert any(issue.code == "YAML_DUPLICATE_KEY" and issue.path.name == "yolo26-master-test.yaml" for issue in issues)
 
 
 def test_lora_rank_pattern_cli_mapping_round_trip():

@@ -1,4 +1,5 @@
 """Regression coverage for non-autograd c10d all-reduce handling."""
+
 from contextlib import ExitStack
 from unittest.mock import patch
 

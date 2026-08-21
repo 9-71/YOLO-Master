@@ -1,5 +1,6 @@
 # 🐧Please note that this file has been modified by Tencent on 2026/01/16. All Tencent Modifications are Copyright (C) 2026 Tencent.
 """Analysis utilities for Mixture-of-Experts models"""
+
 import torch
 import argparse
 import numpy as np
@@ -13,6 +14,7 @@ from ultralytics.utils import LOGGER
 @dataclass
 class ExpertStats:
     """Statistics data structure for individual experts"""
+
     hits: float = 0.0
     weighted_sum: float = 0.0
 
@@ -34,11 +36,11 @@ class ExpertUsageTracker:
         torch.nn.AdaptiveAvgPool2d,
         torch.nn.Linear,
         torch.nn.GroupNorm,
-        torch.nn.Softmax
+        torch.nn.Softmax,
     )
 
     # Keywords to identify router modules
-    ROUTER_KEYWORDS = ('routing', 'router')
+    ROUTER_KEYWORDS = ("routing", "router")
 
     @staticmethod
     def _router_type_whitelist() -> tuple:
@@ -52,8 +54,12 @@ class ExpertUsageTracker:
         """
         try:
             from ultralytics.nn.modules.moe.routers import (
-                BaseRouter, UltraEfficientRouter, AdvancedRoutingLayer, DynamicRoutingLayer,
+                BaseRouter,
+                UltraEfficientRouter,
+                AdvancedRoutingLayer,
+                DynamicRoutingLayer,
             )
+
             return (BaseRouter, UltraEfficientRouter, AdvancedRoutingLayer, DynamicRoutingLayer)
         except Exception:
             return tuple()
@@ -66,9 +72,7 @@ class ExpertUsageTracker:
             model: PyTorch model containing MoE layers
         """
         self.model = model
-        self.usage_stats: Dict[str, Dict[int, ExpertStats]] = defaultdict(
-            lambda: defaultdict(ExpertStats)
-        )
+        self.usage_stats: Dict[str, Dict[int, ExpertStats]] = defaultdict(lambda: defaultdict(ExpertStats))
         self.total_tokens = 0
         self.hooks = []
         self._register_hooks()
@@ -106,12 +110,7 @@ class ExpertUsageTracker:
                 stats.hits += float(hits_per_expert[expert_id])
                 stats.weighted_sum += float(weight_per_expert[expert_id])
 
-    def _process_sparse_topk(
-            self,
-            name: str,
-            topk_vals: torch.Tensor,
-            topk_indices: torch.Tensor
-    ) -> None:
+    def _process_sparse_topk(self, name: str, topk_vals: torch.Tensor, topk_indices: torch.Tensor) -> None:
         """
         Process sparse Top-K router outputs
 
@@ -290,8 +289,10 @@ class ExpertUsageTracker:
                 share_pct = (stats.hits / total_hits * 100) if total_hits > 0 else 0
                 status = self._calculate_status(share_pct, ideal_share)
 
-                LOGGER.info(f"{expert_id:<6} | {share_pct:>9.2f}% | {stats.avg_weight:>11.4f} | "
-                      f"{int(stats.hits):>11,} | {status}")
+                LOGGER.info(
+                    f"{expert_id:<6} | {share_pct:>9.2f}% | {stats.avg_weight:>11.4f} | "
+                    f"{int(stats.hits):>11,} | {status}"
+                )
 
                 layer_data[expert_id] = share_pct
                 all_experts.add(expert_id)
@@ -315,10 +316,7 @@ class ExpertUsageTracker:
         self._plot_visualizations(layers, all_experts, data_matrix)
 
     def _plot_visualizations(
-            self,
-            layers: List[str],
-            all_experts: Set[int],
-            data_matrix: List[Dict[int, float]]
+        self, layers: List[str], all_experts: Set[int], data_matrix: List[Dict[int, float]]
     ) -> None:
         """
         Generate and save visualization plots
@@ -363,9 +361,9 @@ class ExpertUsageTracker:
                 yticklabels=layers,
                 vmin=0,
                 vmax=100,
-                cbar_kws={'label': 'Selection %'}
+                cbar_kws={"label": "Selection %"},
             )
-            plt.title("Expert Usage Heatmap (Selection %)", fontsize=14, fontweight='bold')
+            plt.title("Expert Usage Heatmap (Selection %)", fontsize=14, fontweight="bold")
             plt.xlabel("Expert ID", fontsize=12)
             plt.ylabel("MoE Layer", fontsize=12)
             plt.tight_layout()
@@ -380,45 +378,26 @@ class ExpertUsageTracker:
         try:
             plt.figure(figsize=(12, 6))
             avg_usage = np.mean(matrix, axis=0)
-            bars = plt.bar(
-                range(num_experts),
-                avg_usage,
-                color='skyblue',
-                edgecolor='navy',
-                alpha=0.7
-            )
+            bars = plt.bar(range(num_experts), avg_usage, color="skyblue", edgecolor="navy", alpha=0.7)
 
             # Add value labels on bars
             for bar in bars:
                 height = bar.get_height()
                 plt.text(
-                    bar.get_x() + bar.get_width() / 2.,
-                    height,
-                    f'{height:.1f}%',
-                    ha='center',
-                    va='bottom',
-                    fontsize=9
+                    bar.get_x() + bar.get_width() / 2.0, height, f"{height:.1f}%", ha="center", va="bottom", fontsize=9
                 )
 
             # Add ideal balance reference line
             ideal_line = 100 / num_experts
             plt.axhline(
-                y=ideal_line,
-                color='r',
-                linestyle='--',
-                linewidth=2,
-                label=f'Ideal Balance ({ideal_line:.1f}%)'
+                y=ideal_line, color="r", linestyle="--", linewidth=2, label=f"Ideal Balance ({ideal_line:.1f}%)"
             )
 
             plt.xlabel("Expert ID", fontsize=12)
             plt.ylabel("Avg Selection %", fontsize=12)
-            plt.title(
-                "Global Expert Usage Distribution (Averaged across layers)",
-                fontsize=14,
-                fontweight='bold'
-            )
+            plt.title("Global Expert Usage Distribution (Averaged across layers)", fontsize=14, fontweight="bold")
             plt.legend(fontsize=10)
-            plt.grid(axis='y', alpha=0.3)
+            plt.grid(axis="y", alpha=0.3)
             plt.tight_layout()
             save_path_bar = "expert_usage_bar.png"
             plt.savefig(save_path_bar, dpi=150)
@@ -436,12 +415,7 @@ class ExpertUsageTracker:
         self.remove_hooks()
 
 
-def diagnose_model(
-        model_path: str,
-        dataset: str = 'coco8.yaml',
-        batch_size: int = 1,
-        verbose: bool = False
-) -> None:
+def diagnose_model(model_path: str, dataset: str = "coco8.yaml", batch_size: int = 1, verbose: bool = False) -> None:
     """
     Diagnose MoE model expert usage patterns
 
@@ -469,13 +443,7 @@ def diagnose_model(
     with ExpertUsageTracker(model.model) as tracker:
         LOGGER.info(f"\n🔄 Running validation (batch_size={batch_size})...")
         try:
-            model.val(
-                data=dataset,
-                split='val',
-                batch=batch_size,
-                verbose=verbose,
-                device='cpu'
-            )
+            model.val(data=dataset, split="val", batch=batch_size, verbose=verbose, device="cpu")
             LOGGER.info("✅ Validation completed")
         except Exception as e:
             LOGGER.info(f"❌ Validation failed: {e}")
@@ -487,29 +455,12 @@ def diagnose_model(
 def main():
     """Main entry point for CLI"""
     parser = argparse.ArgumentParser(
-        description="Analyze MoE Expert Usage in YOLO Models",
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter
+        description="Analyze MoE Expert Usage in YOLO Models", formatter_class=argparse.ArgumentDefaultsHelpFormatter
     )
-    parser.add_argument(
-        "model_path",
-        help="Path to .pt model file (required)"
-    )
-    parser.add_argument(
-        "--dataset",
-        default="coco8.yaml",
-        help="Dataset configuration file"
-    )
-    parser.add_argument(
-        "--batch-size",
-        type=int,
-        default=1,
-        help="Batch size for validation"
-    )
-    parser.add_argument(
-        "--verbose",
-        action="store_true",
-        help="Show verbose output during validation"
-    )
+    parser.add_argument("model_path", help="Path to .pt model file (required)")
+    parser.add_argument("--dataset", default="coco8.yaml", help="Dataset configuration file")
+    parser.add_argument("--batch-size", type=int, default=1, help="Batch size for validation")
+    parser.add_argument("--verbose", action="store_true", help="Show verbose output during validation")
 
     args = parser.parse_args()
     diagnose_model(args.model_path, args.dataset, args.batch_size, args.verbose)
@@ -553,9 +504,9 @@ class RoutingCollapseDetector:
         diagnosis = {}
         for name, module in model.named_modules():
             # Only check modules that are MoE and have routing
-            if not hasattr(module, 'num_experts'):
+            if not hasattr(module, "num_experts"):
                 continue
-            if not hasattr(module, 'routing') and not hasattr(module, 'router'):
+            if not hasattr(module, "routing") and not hasattr(module, "router"):
                 continue
 
             num_experts = module.num_experts
@@ -570,11 +521,11 @@ class RoutingCollapseDetector:
             dead = [i for i, u in enumerate(usage) if u < self.dead_threshold]
 
             diagnosis[name] = {
-                'usage': usage,
-                'collapsed': collapsed,
-                'dead_experts': dead,
-                'max_usage': max_u,
-                'min_usage': min_u,
+                "usage": usage,
+                "collapsed": collapsed,
+                "dead_experts": dead,
+                "max_usage": max_u,
+                "min_usage": min_u,
             }
 
             if collapsed:
@@ -585,11 +536,11 @@ class RoutingCollapseDetector:
 
     def _get_expert_usage(self, module, num_experts: int):
         """Extract expert usage ratios from a MoE module's internal stats."""
-        snapshot = getattr(module, 'last_routing_snapshot', None)
+        snapshot = getattr(module, "last_routing_snapshot", None)
         if isinstance(snapshot, dict):
-            usage = snapshot.get('expert_usage')
+            usage = snapshot.get("expert_usage")
             if usage is None:
-                usage = snapshot.get('mean_router_probs')
+                usage = snapshot.get("mean_router_probs")
             if isinstance(usage, torch.Tensor) and usage.numel() >= num_experts:
                 values = usage.detach().float().cpu().reshape(-1)[:num_experts]
                 total = values.sum().item()
@@ -597,7 +548,7 @@ class RoutingCollapseDetector:
                     return [(values[i].item() / total) for i in range(num_experts)]
 
         # ES_MOE stores expert_usage_counts
-        if hasattr(module, 'expert_usage_counts') and module.expert_usage_counts.numel() > 0:
+        if hasattr(module, "expert_usage_counts") and module.expert_usage_counts.numel() > 0:
             total = module.expert_usage_counts.sum().item()
             if total > 0:
                 return [module.expert_usage_counts[i].item() / total for i in range(num_experts)]
@@ -613,23 +564,29 @@ class RoutingCollapseDetector:
         """
         actions = []
         for name, info in diagnosis.items():
-            if info['collapsed']:
-                actions.append({
-                    'action': 'increase_balance_loss',
-                    'params': {'factor': 2.0},
-                    'reason': f"{name}: max_usage={info['max_usage']:.2f} > {self.collapse_threshold}"
-                })
-                actions.append({
-                    'action': 'increase_noise',
-                    'params': {'noise_std': 1.0},
-                    'reason': f"{name}: routing collapsed, adding exploration noise"
-                })
-            if info['dead_experts']:
-                actions.append({
-                    'action': 'reinit_dead_experts',
-                    'params': {'expert_indices': info['dead_experts']},
-                    'reason': f"{name}: dead experts {info['dead_experts']}, min_usage={info['min_usage']:.4f}"
-                })
+            if info["collapsed"]:
+                actions.append(
+                    {
+                        "action": "increase_balance_loss",
+                        "params": {"factor": 2.0},
+                        "reason": f"{name}: max_usage={info['max_usage']:.2f} > {self.collapse_threshold}",
+                    }
+                )
+                actions.append(
+                    {
+                        "action": "increase_noise",
+                        "params": {"noise_std": 1.0},
+                        "reason": f"{name}: routing collapsed, adding exploration noise",
+                    }
+                )
+            if info["dead_experts"]:
+                actions.append(
+                    {
+                        "action": "reinit_dead_experts",
+                        "params": {"expert_indices": info["dead_experts"]},
+                        "reason": f"{name}: dead experts {info['dead_experts']}, min_usage={info['min_usage']:.4f}",
+                    }
+                )
         return actions
 
     def apply_recovery(self, model: torch.nn.Module, diagnosis: dict) -> int:
@@ -642,13 +599,13 @@ class RoutingCollapseDetector:
         applied = 0
 
         for act in actions:
-            if act['action'] == 'increase_noise':
+            if act["action"] == "increase_noise":
                 # Increase noise_std on collapsed routing layers
                 for name, module in model.named_modules():
-                    if name in diagnosis and diagnosis[name]['collapsed']:
-                        if hasattr(module, 'routing') and hasattr(module.routing, 'noise_std'):
+                    if name in diagnosis and diagnosis[name]["collapsed"]:
+                        if hasattr(module, "routing") and hasattr(module.routing, "noise_std"):
                             old_noise = module.routing.noise_std
-                            module.routing.noise_std = max(old_noise, act['params']['noise_std'])
+                            module.routing.noise_std = max(old_noise, act["params"]["noise_std"])
                             applied += 1
             # Other actions (increase_balance_loss, reinit_dead_experts) are
             # applied via config changes in the trainer, not here directly.

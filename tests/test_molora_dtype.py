@@ -7,10 +7,13 @@ import torch.nn as nn
 from ultralytics.nn.peft.molora.layer import MoLoRAExpert
 
 
-@pytest.mark.parametrize("base_layer, input_shape", [
-    (nn.Conv2d(3, 8, 3, padding=1), (2, 3, 8, 8)),
-    (nn.Linear(16, 4), (2, 16)),
-])
+@pytest.mark.parametrize(
+    "base_layer, input_shape",
+    [
+        (nn.Conv2d(3, 8, 3, padding=1), (2, 3, 8, 8)),
+        (nn.Linear(16, 4), (2, 16)),
+    ],
+)
 def test_molora_expert_matches_adapter_dtype(base_layer, input_shape):
     """Low-rank execution should support half parameters without dtype errors."""
     expert = MoLoRAExpert(base_layer, r=2, alpha=4).half()

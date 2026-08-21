@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Generate HTML report + plots for v0_12 vs v0_13 vs v0_14 vs v0_15 VOC comparison."""
+
 import csv
 import os
 import base64
@@ -48,8 +49,11 @@ def load():
         except (ValueError, TypeError):
             pass
         data[ver] = {
-            "epochs": ep, "mAP50": m50, "mAP50_95": m95,
-            "box_loss": bl, "cls_loss": cl,
+            "epochs": ep,
+            "mAP50": m50,
+            "mAP50_95": m95,
+            "box_loss": bl,
+            "cls_loss": cl,
             "precision": pr[-1] if pr else 0,
             "recall": rc[-1] if rc else 0,
             "last_mAP50": m50[-1] if m50 else 0,
@@ -62,8 +66,10 @@ def load():
 
 def plots(data):
     import matplotlib
+
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
+
     out = {}
     max_ep = max(max(d["epochs"]) for d in data.values() if d["epochs"])
 
@@ -71,8 +77,15 @@ def plots(data):
     fig, ax = plt.subplots(figsize=(10, 6))
     for ver, d in data.items():
         if d["epochs"]:
-            ax.plot(d["epochs"], d["mAP50"], label=f'{ver} ({VERSIONS[ver]["desc"]})',
-                    color=VERSIONS[ver]["color"], lw=2, marker='o', ms=3)
+            ax.plot(
+                d["epochs"],
+                d["mAP50"],
+                label=f"{ver} ({VERSIONS[ver]['desc']})",
+                color=VERSIONS[ver]["color"],
+                lw=2,
+                marker="o",
+                ms=3,
+            )
     ax.set_xlabel("Epoch", fontsize=12)
     ax.set_ylabel("mAP@50", fontsize=12)
     ax.set_title("mAP@50 Convergence", fontsize=14)
@@ -89,8 +102,15 @@ def plots(data):
     fig, ax = plt.subplots(figsize=(10, 6))
     for ver, d in data.items():
         if d["epochs"]:
-            ax.plot(d["epochs"], d["mAP50_95"], label=f'{ver} ({VERSIONS[ver]["desc"]})',
-                    color=VERSIONS[ver]["color"], lw=2, marker='o', ms=3)
+            ax.plot(
+                d["epochs"],
+                d["mAP50_95"],
+                label=f"{ver} ({VERSIONS[ver]['desc']})",
+                color=VERSIONS[ver]["color"],
+                lw=2,
+                marker="o",
+                ms=3,
+            )
     ax.set_xlabel("Epoch", fontsize=12)
     ax.set_ylabel("mAP@50-95", fontsize=12)
     ax.set_title("mAP@50-95 Convergence", fontsize=14)
@@ -107,8 +127,7 @@ def plots(data):
     fig, ax = plt.subplots(figsize=(10, 6))
     for ver, d in data.items():
         if d["epochs"]:
-            ax.plot(d["epochs"], d["box_loss"], label=ver,
-                    color=VERSIONS[ver]["color"], lw=2, alpha=0.8)
+            ax.plot(d["epochs"], d["box_loss"], label=ver, color=VERSIONS[ver]["color"], lw=2, alpha=0.8)
     ax.set_xlabel("Epoch", fontsize=12)
     ax.set_ylabel("Train Box Loss", fontsize=12)
     ax.set_title("Box Loss Convergence", fontsize=14)
@@ -128,36 +147,36 @@ def plots(data):
     colors = [VERSIONS[v]["color"] for v in vers]
 
     vals = [data[v]["last_mAP50"] for v in vers]
-    axes[0].bar(x, vals, color=colors, alpha=0.8, edgecolor='black', lw=0.5)
+    axes[0].bar(x, vals, color=colors, alpha=0.8, edgecolor="black", lw=0.5)
     axes[0].set_xticks(list(x))
     axes[0].set_xticklabels(vers, fontsize=11)
     axes[0].set_ylabel("mAP@50", fontsize=12)
     axes[0].set_title("Final mAP@50", fontsize=13)
     for i, v in enumerate(vals):
-        axes[0].text(i, v + max(vals) * 0.01, f'{v:.5f}', ha='center', va='bottom', fontsize=9)
+        axes[0].text(i, v + max(vals) * 0.01, f"{v:.5f}", ha="center", va="bottom", fontsize=9)
 
     vals = [data[v]["last_mAP50_95"] for v in vers]
-    axes[1].bar(x, vals, color=colors, alpha=0.8, edgecolor='black', lw=0.5)
+    axes[1].bar(x, vals, color=colors, alpha=0.8, edgecolor="black", lw=0.5)
     axes[1].set_xticks(list(x))
     axes[1].set_xticklabels(vers, fontsize=11)
     axes[1].set_ylabel("mAP@50-95", fontsize=12)
     axes[1].set_title("Final mAP@50-95", fontsize=13)
     for i, v in enumerate(vals):
-        axes[1].text(i, v + max(vals) * 0.01, f'{v:.5f}', ha='center', va='bottom', fontsize=9)
+        axes[1].text(i, v + max(vals) * 0.01, f"{v:.5f}", ha="center", va="bottom", fontsize=9)
 
     vals = [data[v].get("params_M", 0) for v in vers]
-    axes[2].bar(x, vals, color=colors, alpha=0.8, edgecolor='black', lw=0.5)
+    axes[2].bar(x, vals, color=colors, alpha=0.8, edgecolor="black", lw=0.5)
     axes[2].set_xticks(list(x))
     axes[2].set_xticklabels(vers, fontsize=11)
     axes[2].set_ylabel("Parameters (M)", fontsize=12)
     axes[2].set_title("Model Size", fontsize=13)
     for i, v in enumerate(vals):
-        axes[2].text(i, v + max(vals) * 0.01, f'{v:.3f}M', ha='center', va='bottom', fontsize=9)
+        axes[2].text(i, v + max(vals) * 0.01, f"{v:.3f}M", ha="center", va="bottom", fontsize=9)
 
     plt.suptitle("v0_12 vs v0_13 vs v0_14 vs v0_15 - Final Metrics", fontsize=15, y=1.02)
     plt.tight_layout()
     p = RUNS / "plot_bar_comparison.png"
-    fig.savefig(p, dpi=150, bbox_inches='tight')
+    fig.savefig(p, dpi=150, bbox_inches="tight")
     plt.close(fig)
     out["bar"] = str(p)
     return out
@@ -167,6 +186,7 @@ def html(data, plot_paths):
     def b64(p):
         with open(p, "rb") as f:
             return base64.b64encode(f.read()).decode()
+
     imgs = {k: b64(v) for k, v in plot_paths.items()}
 
     rows = ""
@@ -183,15 +203,15 @@ def html(data, plot_paths):
         rows += f"""<tr>
             <td class="version">{ver}</td>
             <td>{VERSIONS[ver]["desc"]}</td>
-            <td>{d['last_mAP50']:.5f}</td>
+            <td>{d["last_mAP50"]:.5f}</td>
             <td>{dm50}</td>
-            <td>{d['last_mAP50_95']:.5f}</td>
+            <td>{d["last_mAP50_95"]:.5f}</td>
             <td>{dm95}</td>
-            <td>{d['precision']:.5f}</td>
-            <td>{d['recall']:.5f}</td>
-            <td>{d['params_M']:.3f}M</td>
+            <td>{d["precision"]:.5f}</td>
+            <td>{d["recall"]:.5f}</td>
+            <td>{d["params_M"]:.3f}M</td>
             <td>{dp}</td>
-            <td>{d['wall_time_hours']:.2f}h</td>
+            <td>{d["wall_time_hours"]:.2f}h</td>
         </tr>"""
 
     h = f"""<!DOCTYPE html>
@@ -267,19 +287,19 @@ def html(data, plot_paths):
 </table>
 
 <h2>Convergence Plots</h2>
-<div class="plot"><h3>mAP@50 Convergence</h3><img src="data:image/png;base64,{imgs['map50']}" alt="mAP50"></div>
-<div class="plot"><h3>mAP@50-95 Convergence</h3><img src="data:image/png;base64,{imgs['map50_95']}" alt="mAP50-95"></div>
-<div class="plot"><h3>Box Loss Convergence</h3><img src="data:image/png;base64,{imgs['box_loss']}" alt="Box Loss"></div>
-<div class="plot"><h3>Final Metrics Bar Comparison</h3><img src="data:image/png;base64,{imgs['bar']}" alt="Bar"></div>
+<div class="plot"><h3>mAP@50 Convergence</h3><img src="data:image/png;base64,{imgs["map50"]}" alt="mAP50"></div>
+<div class="plot"><h3>mAP@50-95 Convergence</h3><img src="data:image/png;base64,{imgs["map50_95"]}" alt="mAP50-95"></div>
+<div class="plot"><h3>Box Loss Convergence</h3><img src="data:image/png;base64,{imgs["box_loss"]}" alt="Box Loss"></div>
+<div class="plot"><h3>Final Metrics Bar Comparison</h3><img src="data:image/png;base64,{imgs["bar"]}" alt="Bar"></div>
 
 <div class="conclusion">
 <h3>Conclusion</h3>
-<p>v0_12 (OptimalHybridGateMoE) remains the best-performing architecture with mAP@50={data['v0_12']['last_mAP50']:.5f} and mAP@50-95={data['v0_12']['last_mAP50_95']:.5f}.</p>
+<p>v0_12 (OptimalHybridGateMoE) remains the best-performing architecture with mAP@50={data["v0_12"]["last_mAP50"]:.5f} and mAP@50-95={data["v0_12"]["last_mAP50_95"]:.5f}.</p>
 <p>None of the three new MoE variants (v0_13/14/15) surpassed the baseline at ~3M parameter scale on the VOC subset. Key findings:</p>
 <ul>
-    <li><strong>v0_13 (MultiHeadRouter):</strong> Closest competitor ({data['v0_13']['last_mAP50']:.5f} mAP@50), only -0.00239 below baseline. Multi-head routing shows marginal promise but adds complexity without clear gains.</li>
-    <li><strong>v0_14 (DiversifiedExpert):</strong> Heterogeneous kernels ({data['v0_14']['last_mAP50']:.5f} mAP@50, -0.00754). Diverse kernel sizes did not help; may need larger model to exploit receptive field diversity.</li>
-    <li><strong>v0_15 (GatedFusion):</strong> Significantly degraded ({data['v0_15']['last_mAP50']:.5f} mAP@50, -0.08393). Cross-path gated fusion + stochastic depth destabilized training at this scale.</li>
+    <li><strong>v0_13 (MultiHeadRouter):</strong> Closest competitor ({data["v0_13"]["last_mAP50"]:.5f} mAP@50), only -0.00239 below baseline. Multi-head routing shows marginal promise but adds complexity without clear gains.</li>
+    <li><strong>v0_14 (DiversifiedExpert):</strong> Heterogeneous kernels ({data["v0_14"]["last_mAP50"]:.5f} mAP@50, -0.00754). Diverse kernel sizes did not help; may need larger model to exploit receptive field diversity.</li>
+    <li><strong>v0_15 (GatedFusion):</strong> Significantly degraded ({data["v0_15"]["last_mAP50"]:.5f} mAP@50, -0.08393). Cross-path gated fusion + stochastic depth destabilized training at this scale.</li>
 </ul>
 <p><strong>Recommendation:</strong> Retain v0_12 as the production architecture. More complex MoE variants require larger parameter budgets (&gt;5M) to realize their theoretical advantages.</p>
 </div>
@@ -297,12 +317,14 @@ def main():
         print("No results found!")
         return
     print(f"Loaded: {list(data.keys())}")
-    print(f"\n{'='*80}")
+    print(f"\n{'=' * 80}")
     print(f"{'Version':<10} {'mAP50':>10} {'mAP50-95':>10} {'Params':>10} {'Time':>8}")
     print("-" * 80)
     for ver, d in data.items():
-        print(f"{ver:<10} {d['last_mAP50']:>10.5f} {d['last_mAP50_95']:>10.5f} "
-              f"{d['params_M']:>9.3f}M {d['wall_time_hours']:>7.2f}h")
+        print(
+            f"{ver:<10} {d['last_mAP50']:>10.5f} {d['last_mAP50_95']:>10.5f} "
+            f"{d['params_M']:>9.3f}M {d['wall_time_hours']:>7.2f}h"
+        )
     ps = plots(data)
     print(f"\nPlots: {list(ps.keys())}")
     hp = html(data, ps)

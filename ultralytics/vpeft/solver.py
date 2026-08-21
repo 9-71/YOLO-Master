@@ -639,9 +639,7 @@ class DifferentiableOptimizationSolver(ConstraintSolver):
                 ]
             else:
                 xi_for_constraints = [variant] * n
-            soft_violations = constraints.evaluate_soft(
-                graph, pi_hat, r_cont, xi_for_constraints, differentiable=True
-            )
+            soft_violations = constraints.evaluate_soft(graph, pi_hat, r_cont, xi_for_constraints, differentiable=True)
             total_penalty = penalty
             for key in soft_keys:
                 if key == "C_budget":

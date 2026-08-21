@@ -137,7 +137,13 @@ def run_moe_diagnose(request: dict[str, Any]) -> dict[str, Any]:
             "MoE diagnose dry run prepared",
             "module",
             "diagnose_model",
-            params={"model_path": model_path, "dataset": dataset, "batch_size": batch_size, "verbose": verbose, "output_dir": str(output_dir)},
+            params={
+                "model_path": model_path,
+                "dataset": dataset,
+                "batch_size": batch_size,
+                "verbose": verbose,
+                "output_dir": str(output_dir),
+            },
             extra={
                 "moe_diagnose": {
                     "expert_usage": {},
@@ -206,8 +212,12 @@ def run_moe_prune(request: dict[str, Any]) -> dict[str, Any]:
         request["skill"],
         "ok" if ok else "failed",
         "moe prune finished" if ok else "moe prune failed",
-        moe_prune=parse_moe_prune_stdout(stdout, original_model=model_path, pruned_model=output_path, threshold=threshold),
-        artifacts=[{"kind": "checkpoint", "path": str(Path(output_path).resolve())}] if Path(output_path).exists() else [],
+        moe_prune=parse_moe_prune_stdout(
+            stdout, original_model=model_path, pruned_model=output_path, threshold=threshold
+        ),
+        artifacts=[{"kind": "checkpoint", "path": str(Path(output_path).resolve())}]
+        if Path(output_path).exists()
+        else [],
         logs={"stdout": stdout, "stderr": stderr},
     )
     payload["manifest"] = str(write_manifest(request, payload))

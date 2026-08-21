@@ -93,7 +93,9 @@ def main() -> int:
             plt.text(x, y, f"{row['threshold']}/{row['recovery']}", fontsize=8)
         plt.plot([as_float(r, "latency_ms") for r in front], [as_float(r, "mAP50-95") for r in front], linewidth=2)
         sweet = max(front, key=lambda r: (as_float(r, "mAP50-95") or 0.0) / max(as_float(r, "latency_ms") or 1.0, 1e-6))
-        plt.scatter([as_float(sweet, "latency_ms")], [as_float(sweet, "mAP50-95")], s=120, marker="*", label="sweet spot")
+        plt.scatter(
+            [as_float(sweet, "latency_ms")], [as_float(sweet, "mAP50-95")], s=120, marker="*", label="sweet spot"
+        )
         plt.xlabel("Latency (ms)")
         plt.ylabel("mAP50-95")
         plt.grid(True, alpha=0.3)

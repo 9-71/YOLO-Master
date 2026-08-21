@@ -4,6 +4,7 @@ YOLO-PEFT Full Ablation Experiment — Unified Interface Specification
 ================================================================================
 本文件定义全量消融实验的统一数据结构规范，所有子脚本必须遵循。
 """
+
 from dataclasses import dataclass, field, asdict
 from typing import Dict, Any, List, Optional
 
@@ -11,32 +12,35 @@ from typing import Dict, Any, List, Optional
 @dataclass
 class DatasetConfig:
     """数据集配置规范。"""
-    name: str                          # 数据集标识名
-    yaml: str                          # ultralytics 数据 YAML 路径
-    num_classes: int                   # 类别数
-    train_images: int                  # 训练图数（用于参考）
-    val_images: int                    # 验证图数
-    description: str = ""                # 人类可读描述
+
+    name: str  # 数据集标识名
+    yaml: str  # ultralytics 数据 YAML 路径
+    num_classes: int  # 类别数
+    train_images: int  # 训练图数（用于参考）
+    val_images: int  # 验证图数
+    description: str = ""  # 人类可读描述
     download_cmd: Optional[str] = None  # 自动下载命令（若需要）
-    domain: Optional[str] = None       # 用于持续学习的域标签
+    domain: Optional[str] = None  # 用于持续学习的域标签
 
 
 @dataclass
 class VariantConfig:
     """PEFT 变体配置规范。"""
-    name: str                          # 变体标识名
-    peft_type: str                     # "full" / "peft" / "molora" / "molora_aware" / "molora_calib"
-    description: str = ""              # 人类可读描述
-    train_kwargs: Dict[str, Any] = field(default_factory=dict)   # 传给 model.train() 的额外参数
+
+    name: str  # 变体标识名
+    peft_type: str  # "full" / "peft" / "molora" / "molora_aware" / "molora_calib"
+    description: str = ""  # 人类可读描述
+    train_kwargs: Dict[str, Any] = field(default_factory=dict)  # 传给 model.train() 的额外参数
     molora_config: Dict[str, Any] = field(default_factory=dict)  # MoLoRA 专属配置
-    epochs: int = 50                  # 该变体的训练 epoch 数
-    batch: int = 8                     # 该变体的 batch size
-    imgsz: int = 640                   # 该变体的输入分辨率
+    epochs: int = 50  # 该变体的训练 epoch 数
+    batch: int = 8  # 该变体的 batch size
+    imgsz: int = 640  # 该变体的输入分辨率
 
 
 @dataclass
 class ExperimentResult:
     """单实验结果规范。所有子脚本必须按此结构写入 JSON。"""
+
     dataset: str
     variant: str
     seed: int
@@ -49,11 +53,11 @@ class ExperimentResult:
     final_metrics: Dict[str, float] = field(default_factory=dict)
     adapter_sig: Dict[str, Any] = field(default_factory=dict)
     molora_diagnostics: Dict[str, Any] = field(default_factory=dict)
-    latency_ms: Optional[float] = None       # 推理延迟（若测量）
-    latency_backend: Optional[str] = None     # 延迟测量后端
-    map_small: Optional[float] = None       # mAP for small objects
-    map_medium: Optional[float] = None      # mAP for medium objects
-    map_large: Optional[float] = None       # mAP for large objects
+    latency_ms: Optional[float] = None  # 推理延迟（若测量）
+    latency_backend: Optional[str] = None  # 延迟测量后端
+    map_small: Optional[float] = None  # mAP for small objects
+    map_medium: Optional[float] = None  # mAP for medium objects
+    map_large: Optional[float] = None  # mAP for large objects
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -219,9 +223,15 @@ FULL_ABLATION_VARIANTS: List[VariantConfig] = [
         peft_type="molora",
         description="MoLoRA (4 experts, top-2, r=8, linear router)",
         molora_config={
-            "r": 8, "alpha": 16, "num_experts": 4, "top_k": 2,
-            "router_type": "linear", "dropout": 0.05,
-            "use_rslora": True, "balance_loss_coef": 0.01, "z_loss_coef": 0.001,
+            "r": 8,
+            "alpha": 16,
+            "num_experts": 4,
+            "top_k": 2,
+            "router_type": "linear",
+            "dropout": 0.05,
+            "use_rslora": True,
+            "balance_loss_coef": 0.01,
+            "z_loss_coef": 0.001,
         },
         epochs=50,
         batch=16,
@@ -233,9 +243,15 @@ FULL_ABLATION_VARIANTS: List[VariantConfig] = [
         peft_type="molora",
         description="MoLoRA (4 experts, top-2, r=8, spatial router)",
         molora_config={
-            "r": 8, "alpha": 16, "num_experts": 4, "top_k": 2,
-            "router_type": "spatial", "dropout": 0.05,
-            "use_rslora": True, "balance_loss_coef": 0.01, "z_loss_coef": 0.001,
+            "r": 8,
+            "alpha": 16,
+            "num_experts": 4,
+            "top_k": 2,
+            "router_type": "spatial",
+            "dropout": 0.05,
+            "use_rslora": True,
+            "balance_loss_coef": 0.01,
+            "z_loss_coef": 0.001,
         },
         epochs=50,
         batch=16,
@@ -247,9 +263,15 @@ FULL_ABLATION_VARIANTS: List[VariantConfig] = [
         peft_type="molora",
         description="MoLoRA (4 experts, top-2, r=8, hybrid router)",
         molora_config={
-            "r": 8, "alpha": 16, "num_experts": 4, "top_k": 2,
-            "router_type": "hybrid", "dropout": 0.05,
-            "use_rslora": True, "balance_loss_coef": 0.01, "z_loss_coef": 0.001,
+            "r": 8,
+            "alpha": 16,
+            "num_experts": 4,
+            "top_k": 2,
+            "router_type": "hybrid",
+            "dropout": 0.05,
+            "use_rslora": True,
+            "balance_loss_coef": 0.01,
+            "z_loss_coef": 0.001,
         },
         epochs=50,
         batch=16,
@@ -261,11 +283,19 @@ FULL_ABLATION_VARIANTS: List[VariantConfig] = [
         peft_type="molora_aware",
         description="MoLoRA + MoE-aware (frequency-based per-expert rank)",
         molora_config={
-            "r": 8, "alpha": 16, "num_experts": 4, "top_k": 2,
-            "router_type": "linear", "dropout": 0.05,
-            "use_rslora": True, "balance_loss_coef": 0.01, "z_loss_coef": 0.001,
-            "per_expert_rank": True, "rank_allocator_mode": "frequency",
-            "rank_budget_total": 32, "rank_min": 2,
+            "r": 8,
+            "alpha": 16,
+            "num_experts": 4,
+            "top_k": 2,
+            "router_type": "linear",
+            "dropout": 0.05,
+            "use_rslora": True,
+            "balance_loss_coef": 0.01,
+            "z_loss_coef": 0.001,
+            "per_expert_rank": True,
+            "rank_allocator_mode": "frequency",
+            "rank_budget_total": 32,
+            "rank_min": 2,
         },
         epochs=50,
         batch=16,
@@ -277,10 +307,17 @@ FULL_ABLATION_VARIANTS: List[VariantConfig] = [
         peft_type="molora_calib",
         description="MoLoRA + Router Calibration (ΔW_r, calib_rank=4)",
         molora_config={
-            "r": 8, "alpha": 16, "num_experts": 4, "top_k": 2,
-            "router_type": "linear", "dropout": 0.05,
-            "use_rslora": True, "balance_loss_coef": 0.01, "z_loss_coef": 0.001,
-            "router_calibration": True, "router_calib_rank": 4,
+            "r": 8,
+            "alpha": 16,
+            "num_experts": 4,
+            "top_k": 2,
+            "router_type": "linear",
+            "dropout": 0.05,
+            "use_rslora": True,
+            "balance_loss_coef": 0.01,
+            "z_loss_coef": 0.001,
+            "router_calibration": True,
+            "router_calib_rank": 4,
         },
         epochs=50,
         batch=16,
@@ -292,25 +329,77 @@ FULL_ABLATION_VARIANTS: List[VariantConfig] = [
 # ── 快速消融变体（COCO128 冒烟测试） ──
 QUICK_ABLATION_VARIANTS: List[VariantConfig] = [
     VariantConfig(name="full", peft_type="full", epochs=3, batch=8, imgsz=320),
-    VariantConfig(name="lora_r8", peft_type="peft", epochs=3, batch=8, imgsz=320,
-                  train_kwargs={"lora_type": "lora", "lora_r": 8, "lora_alpha": 16,
-                               "lora_backend": "peft", "lora_dropout": 0.05}),
-    VariantConfig(name="molora_4e2k", peft_type="molora", epochs=3, batch=8, imgsz=320,
-                  molora_config={"r": 8, "alpha": 16, "num_experts": 4, "top_k": 2,
-                                 "router_type": "linear", "dropout": 0.05,
-                                 "use_rslora": True, "balance_loss_coef": 0.01, "z_loss_coef": 0.001}),
+    VariantConfig(
+        name="lora_r8",
+        peft_type="peft",
+        epochs=3,
+        batch=8,
+        imgsz=320,
+        train_kwargs={"lora_type": "lora", "lora_r": 8, "lora_alpha": 16, "lora_backend": "peft", "lora_dropout": 0.05},
+    ),
+    VariantConfig(
+        name="molora_4e2k",
+        peft_type="molora",
+        epochs=3,
+        batch=8,
+        imgsz=320,
+        molora_config={
+            "r": 8,
+            "alpha": 16,
+            "num_experts": 4,
+            "top_k": 2,
+            "router_type": "linear",
+            "dropout": 0.05,
+            "use_rslora": True,
+            "balance_loss_coef": 0.01,
+            "z_loss_coef": 0.001,
+        },
+    ),
 ]
 
 
 # ── 多分辨率消融变体 ──
 MULTIRES_VARIANTS: List[VariantConfig] = [
-    VariantConfig(name="lora_r16", peft_type="peft", epochs=50, batch=16, imgsz=320,
-                  train_kwargs={"lora_type": "lora", "lora_r": 16, "lora_alpha": 32,
-                               "lora_backend": "peft", "lora_dropout": 0.05}),
-    VariantConfig(name="lora_r16", peft_type="peft", epochs=50, batch=16, imgsz=640,
-                  train_kwargs={"lora_type": "lora", "lora_r": 16, "lora_alpha": 32,
-                               "lora_backend": "peft", "lora_dropout": 0.05}),
-    VariantConfig(name="lora_r16", peft_type="peft", epochs=50, batch=8, imgsz=1280,
-                  train_kwargs={"lora_type": "lora", "lora_r": 16, "lora_alpha": 32,
-                               "lora_backend": "peft", "lora_dropout": 0.05}),
+    VariantConfig(
+        name="lora_r16",
+        peft_type="peft",
+        epochs=50,
+        batch=16,
+        imgsz=320,
+        train_kwargs={
+            "lora_type": "lora",
+            "lora_r": 16,
+            "lora_alpha": 32,
+            "lora_backend": "peft",
+            "lora_dropout": 0.05,
+        },
+    ),
+    VariantConfig(
+        name="lora_r16",
+        peft_type="peft",
+        epochs=50,
+        batch=16,
+        imgsz=640,
+        train_kwargs={
+            "lora_type": "lora",
+            "lora_r": 16,
+            "lora_alpha": 32,
+            "lora_backend": "peft",
+            "lora_dropout": 0.05,
+        },
+    ),
+    VariantConfig(
+        name="lora_r16",
+        peft_type="peft",
+        epochs=50,
+        batch=8,
+        imgsz=1280,
+        train_kwargs={
+            "lora_type": "lora",
+            "lora_r": 16,
+            "lora_alpha": 32,
+            "lora_backend": "peft",
+            "lora_dropout": 0.05,
+        },
+    ),
 ]

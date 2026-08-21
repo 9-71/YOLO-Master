@@ -11,6 +11,7 @@ from datetime import datetime
 
 # Add project root to path if needed
 import os
+
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from ultralytics.utils.lora.planner import ArchitectureFingerprint, PEFTPlanner
@@ -69,7 +70,9 @@ def main():
 
     # 4. Call PEFTPlanner.plan() with LoRAConfig
     config = LoRAConfig(r=16, alpha=32, peft_type="lora", planner_enabled=True)
-    log(f"\nLoRAConfig: r={config.r}, alpha={config.alpha}, peft_type={config.peft_type}, planner_enabled={config.planner_enabled}")
+    log(
+        f"\nLoRAConfig: r={config.r}, alpha={config.alpha}, peft_type={config.peft_type}, planner_enabled={config.planner_enabled}"
+    )
 
     planner = PEFTPlanner()
     decision = planner.plan(detection_model, config)
@@ -199,6 +202,7 @@ def main():
             log("\nRetrying with device='cpu'...")
             try:
                 from ultralytics import YOLO
+
                 model = YOLO(weight_path)
                 results = model.train(
                     data="coco128.yaml",
@@ -223,6 +227,7 @@ def main():
         log("Model was REFUSEd. Running Full-SFT smoke test instead...")
         try:
             from ultralytics import YOLO
+
             model = YOLO(weight_path)
             log(f"Loaded fresh model: {type(model).__name__}")
 
@@ -254,6 +259,7 @@ def main():
             log("\nRetrying Full-SFT with device='cpu'...")
             try:
                 from ultralytics import YOLO
+
                 model = YOLO(weight_path)
                 results = model.train(
                     data="coco128.yaml",
@@ -283,8 +289,10 @@ def main():
     separator()
     log(f"Model:                {weight_path}")
     log(f"Architecture Family:  {ArchitectureFingerprint._detect_architecture_family(inner_model)}")
-    log(f"Fingerprint:            φ_attn={fingerprint.phi_attn:.4f}, φ_text={fingerprint.phi_text:.4f}, "
-        f"φ_dw={fingerprint.phi_dw:.4f}, φ_group={fingerprint.phi_group:.4f}, φ_linear={fingerprint.phi_linear:.4f}")
+    log(
+        f"Fingerprint:            φ_attn={fingerprint.phi_attn:.4f}, φ_text={fingerprint.phi_text:.4f}, "
+        f"φ_dw={fingerprint.phi_dw:.4f}, φ_group={fingerprint.phi_group:.4f}, φ_linear={fingerprint.phi_linear:.4f}"
+    )
     log(f"Planner Decision:     {decision.status}")
     if decision.refusal_reason:
         log(f"Refusal Reason:       {decision.refusal_reason}")
@@ -309,8 +317,7 @@ def main():
 
     # Save report to file
     report_path = os.path.join(
-        os.path.dirname(os.path.abspath(__file__)),
-        "experiment_report_RT-DETR-l Planner+training validation.txt"
+        os.path.dirname(os.path.abspath(__file__)), "experiment_report_RT-DETR-l Planner+training validation.txt"
     )
     with open(report_path, "w", encoding="utf-8") as f:
         f.write("\n".join(REPORT_LINES))

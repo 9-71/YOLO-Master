@@ -36,6 +36,7 @@ from ultralytics.utils.patches import torch_load  # noqa: E402
 # Helpers
 # =============================================================================
 
+
 def _load_model(path: Path):
     """Load a .pt checkpoint and return the DetectionModel (or raw nn.Module)."""
     ckpt = torch_load(path, map_location="cpu", weights_only=False)
@@ -59,6 +60,7 @@ RTDETR_L_PT = YOLO_MASTER_ROOT / "rtdetr-l.pt"
 # 1. YOLO11s fingerprint + ACCEPT
 # =============================================================================
 
+
 class TestYOLO11sFingerprintAccept:
     """Test YOLO11s with LoRA → expected ACCEPT per paper (φ_attn < 0.05)."""
 
@@ -81,18 +83,16 @@ class TestYOLO11sFingerprintAccept:
         with torch.no_grad():
             decision = planner.plan(model, config)
         assert decision.status == "ACCEPT", (
-            f"YOLO11s + LoRA expected ACCEPT, got {decision.status}. "
-            f"phi_attn may exceed paper threshold."
+            f"YOLO11s + LoRA expected ACCEPT, got {decision.status}. phi_attn may exceed paper threshold."
         )
         assert decision.predicted_delta is not None
-        assert decision.predicted_delta > 0, (
-            f"predicted_delta={decision.predicted_delta:.4f} should be > 0"
-        )
+        assert decision.predicted_delta > 0, f"predicted_delta={decision.predicted_delta:.4f} should be > 0"
 
 
 # =============================================================================
 # 2. YOLO12s fingerprint + ADAPT (DoRA → LoRA downgrade)
 # =============================================================================
+
 
 class TestYOLO12sFingerprintAdapt:
     """Test YOLO12s with DoRA → expected ADAPT (downgrade to LoRA) per paper."""
@@ -112,9 +112,7 @@ class TestYOLO12sFingerprintAdapt:
     def test_dora_adapt(self):
         model = _load_model(YOLO12S_PT)
         planner = PEFTPlanner()
-        config = LoRAConfig(
-            r=16, alpha=32, peft_type="lora", use_dora=True, planner_enabled=True
-        )
+        config = LoRAConfig(r=16, alpha=32, peft_type="lora", use_dora=True, planner_enabled=True)
         with torch.no_grad():
             decision = planner.plan(model, config)
         # YOLO12s actual phi_attn is ~0.067 (below Guardrail A threshold 0.3),
@@ -122,14 +120,10 @@ class TestYOLO12sFingerprintAdapt:
         # adapted to LoRA. Either ACCEPT or ADAPT is valid depending on
         # the actual architecture's phi_attn.
         assert decision.status in ("ACCEPT", "ADAPT"), (
-            f"YOLO12s + DoRA expected ACCEPT or ADAPT, got {decision.status}. "
-            f"phi_attn may be outside [0.05, 0.7)."
+            f"YOLO12s + DoRA expected ACCEPT or ADAPT, got {decision.status}. phi_attn may be outside [0.05, 0.7)."
         )
         if decision.status == "ADAPT":
-            assert (
-                decision.recommended_variant == "lora"
-                or decision.safety_overrides.get("use_dora") is False
-            ), (
+            assert decision.recommended_variant == "lora" or decision.safety_overrides.get("use_dora") is False, (
                 f"ADAPT decision should recommend LoRA downgrade, "
                 f"got variant={decision.recommended_variant}, overrides={decision.safety_overrides}"
             )
@@ -138,6 +132,7 @@ class TestYOLO12sFingerprintAdapt:
 # =============================================================================
 # 3. YOLO12s with LoRA → ACCEPT
 # =============================================================================
+
 
 class TestYOLO12sLoRAAccept:
     """Test YOLO12s with plain LoRA → expected ACCEPT per paper."""
@@ -154,9 +149,7 @@ class TestYOLO12sLoRAAccept:
             f"YOLO12s + LoRA expected ACCEPT or ADAPT, got {decision.status}."
         )
         assert decision.predicted_delta is not None
-        assert decision.predicted_delta > 0, (
-            f"predicted_delta={decision.predicted_delta:.4f} should be > 0"
-        )
+        assert decision.predicted_delta > 0, f"predicted_delta={decision.predicted_delta:.4f} should be > 0"
         if decision.status == "ADAPT":
             assert decision.recommended_rank == 8, "Rank should be capped to 8 for attention-rich YOLO12"
             assert decision.safety_overrides.get("include_attention") is True, "Attention should be enabled"
@@ -165,6 +158,7 @@ class TestYOLO12sLoRAAccept:
 # =============================================================================
 # 4. RT-DETR-l fingerprint + REFUSE
 # =============================================================================
+
 
 class TestRTDETRLFingerprintRefuse:
     """Test RT-DETR-l with LoRA → expected REFUSE per paper (φ_attn > 0.7).
@@ -183,10 +177,7 @@ class TestRTDETRLFingerprintRefuse:
         family = ArchitectureFingerprint._detect_architecture_family(inner)
         # Actual phi_attn may be low (~0.10) due to backbone conv dilution,
         # but family detection should identify it as "rtdetr".
-        assert family == "rtdetr", (
-            f"RT-DETR-l family={family}, expected 'rtdetr'. "
-            f"phi_attn={fp.phi_attn:.4f}"
-        )
+        assert family == "rtdetr", f"RT-DETR-l family={family}, expected 'rtdetr'. phi_attn={fp.phi_attn:.4f}"
 
     @pytest.mark.skipif(not RTDETR_L_PT.exists(), reason="rtdetr-l.pt not found")
     def test_lora_refuse(self):
@@ -211,6 +202,7 @@ class TestRTDETRLFingerprintRefuse:
 # 5. detect_targets on real models
 # =============================================================================
 
+
 class TestDetectTargetsRealModels:
     """Test architecture-conditioned target detection on real checkpoints."""
 
@@ -221,17 +213,13 @@ class TestDetectTargetsRealModels:
         targets = planner.detect_targets(model)
         assert len(targets) > 0, "YOLO11s should have at least some target layers"
         for t in targets:
-            assert "attn" not in t.lower(), (
-                f"YOLO11s target {t} contains 'attn' but phi_attn is expected < 0.05"
-            )
+            assert "attn" not in t.lower(), f"YOLO11s target {t} contains 'attn' but phi_attn is expected < 0.05"
         # All targets should be Conv2d or Linear
         inner = _get_inner_model(model)
         modules_dict = dict(inner.named_modules())
         for t in targets:
             m = modules_dict.get(t)
-            assert isinstance(m, (nn.Conv2d, nn.Linear)), (
-                f"Target {t} is not Conv2d or Linear: {type(m)}"
-            )
+            assert isinstance(m, (nn.Conv2d, nn.Linear)), f"Target {t} is not Conv2d or Linear: {type(m)}"
 
     @pytest.mark.skipif(not YOLO12S_PT.exists(), reason="yolo12s.pt not found")
     def test_yolo12s_safe_attention_excludes_risky(self):
@@ -252,16 +240,14 @@ class TestDetectTargetsRealModels:
         risky_patterns = (".attn.qkv", ".attn.proj", ".attn.pe")
         for t in targets:
             for pat in risky_patterns:
-                assert pat not in t, (
-                    f"YOLO12s target {t} should exclude risky area-attention layer {pat}"
-                )
+                assert pat not in t, f"YOLO12s target {t} should exclude risky area-attention layer {pat}"
         # If attention layers are present, they should be "safe" ones only
         attn_targets = [t for t in targets if "attn" in t.lower()]
         if attn_targets:
             for t in attn_targets:
-                assert any(
-                    safe in t.lower() for safe in ("out_proj", "value_proj", "output_proj")
-                ), f"YOLO12s attention target {t} may not be in the safe set"
+                assert any(safe in t.lower() for safe in ("out_proj", "value_proj", "output_proj")), (
+                    f"YOLO12s attention target {t} may not be in the safe set"
+                )
 
     @pytest.mark.skipif(not RTDETR_L_PT.exists(), reason="rtdetr-l.pt not found")
     def test_rtdetr_empty_or_few_targets(self):
@@ -275,6 +261,5 @@ class TestDetectTargetsRealModels:
         # (not just phi_attn > 0.7), so targets should always be empty.
         assert family == "rtdetr", f"Expected rtdetr family, got {family}"
         assert len(targets) == 0, (
-            f"RT-DETR-l (family={family}, φ_attn={fp.phi_attn:.4f}) "
-            f"should yield empty targets, got {len(targets)}"
+            f"RT-DETR-l (family={family}, φ_attn={fp.phi_attn:.4f}) should yield empty targets, got {len(targets)}"
         )

@@ -63,14 +63,22 @@ def _mps_bilinear_sample(input, grid):
     c_idx = torch.arange(C, device=device).view(1, C, 1, 1).expand(N, C, H_out, W_out)
 
     # 7. 采样 + mask
-    v00 = input[n_idx, c_idx, y0_s.unsqueeze(1).expand(N, C, H_out, W_out),
-               x0_s.unsqueeze(1).expand(N, C, H_out, W_out)] * m00
-    v01 = input[n_idx, c_idx, y1_s.unsqueeze(1).expand(N, C, H_out, W_out),
-               x0_s.unsqueeze(1).expand(N, C, H_out, W_out)] * m01
-    v10 = input[n_idx, c_idx, y0_s.unsqueeze(1).expand(N, C, H_out, W_out),
-               x1_s.unsqueeze(1).expand(N, C, H_out, W_out)] * m10
-    v11 = input[n_idx, c_idx, y1_s.unsqueeze(1).expand(N, C, H_out, W_out),
-               x1_s.unsqueeze(1).expand(N, C, H_out, W_out)] * m11
+    v00 = (
+        input[n_idx, c_idx, y0_s.unsqueeze(1).expand(N, C, H_out, W_out), x0_s.unsqueeze(1).expand(N, C, H_out, W_out)]
+        * m00
+    )
+    v01 = (
+        input[n_idx, c_idx, y1_s.unsqueeze(1).expand(N, C, H_out, W_out), x0_s.unsqueeze(1).expand(N, C, H_out, W_out)]
+        * m01
+    )
+    v10 = (
+        input[n_idx, c_idx, y0_s.unsqueeze(1).expand(N, C, H_out, W_out), x1_s.unsqueeze(1).expand(N, C, H_out, W_out)]
+        * m10
+    )
+    v11 = (
+        input[n_idx, c_idx, y1_s.unsqueeze(1).expand(N, C, H_out, W_out), x1_s.unsqueeze(1).expand(N, C, H_out, W_out)]
+        * m11
+    )
 
     # 8. 双线性插值
     wx0 = 1.0 - dx.unsqueeze(1)
@@ -92,6 +100,8 @@ def _grid_sample(input, grid, mode="bilinear", padding_mode="zeros", align_corne
     if input.device.type == "mps":
         return _mps_bilinear_sample(input, grid)
     return F.grid_sample(input, grid, mode=mode, padding_mode=padding_mode, align_corners=align_corners)
+
+
 # ---------------------------------------------------------------------------
 
 
@@ -110,8 +120,7 @@ def robust_deepcopy(obj, memo):
 
     def is_readonly_property(cls, name):
         return any(
-            isinstance(base.__dict__.get(name), property) and base.__dict__[name].fset is None
-            for base in cls.__mro__
+            isinstance(base.__dict__.get(name), property) and base.__dict__[name].fset is None for base in cls.__mro__
         )
 
     def detached_zero(value):

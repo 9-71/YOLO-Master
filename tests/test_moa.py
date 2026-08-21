@@ -154,6 +154,7 @@ def test_flash_attn_supports_sdpa_without_scale_keyword(monkeypatch):
     original_sdpa = getattr(F, "scaled_dot_product_attention", None)
 
     if original_sdpa is None:
+
         def original_sdpa(q, k, v):
             return (q @ k.transpose(-2, -1) / q.shape[-1] ** 0.5).softmax(dim=-1) @ v
 
@@ -279,18 +280,19 @@ def test_moa_model_configs_parse():
 
 # ── 1. NeckMoAFusion cross-scale size mismatch (extended) ─────────────────
 
+
 def test_neck_moa_fusion_non_strict_scale_many_cases():
     """NeckMoAFusion forward stability with diverse non-2× downsampling ratios."""
     torch.manual_seed(0)
     cases = [
         # (hi_H, hi_W, lo_H, lo_W)
-        (15, 15, 7, 7),     # ~2.14× ratio
-        (13, 13, 5, 5),     # ~2.6× ratio
-        (10, 10, 3, 3),     # ~3.33× ratio
-        (17, 17, 9, 9),     # ~1.89× ratio
-        (7, 7, 3, 3),       # ~2.33× ratio
-        (20, 15, 10, 7),    # non-square, different H/W ratios
-        (9, 16, 4, 8),      # non-square, exact 2× per dim
+        (15, 15, 7, 7),  # ~2.14× ratio
+        (13, 13, 5, 5),  # ~2.6× ratio
+        (10, 10, 3, 3),  # ~3.33× ratio
+        (17, 17, 9, 9),  # ~1.89× ratio
+        (7, 7, 3, 3),  # ~2.33× ratio
+        (20, 15, 10, 7),  # non-square, different H/W ratios
+        (9, 16, 4, 8),  # non-square, exact 2× per dim
     ]
     for hi_h, hi_w, lo_h, lo_w in cases:
         module = NeckMoAFusion(64, 128, 64, num_heads=4).train()
@@ -337,6 +339,7 @@ def test_neck_moa_fusion_channel_mismatch_projection():
 
 
 # ── 2. MoABlock temperature annealing & numerical stability ────────────────
+
 
 def test_moa_router_extreme_temperature_numerical_stability():
     """Router softmax remains numerically stable at temperature extremes."""
@@ -391,6 +394,7 @@ def test_moa_router_return_logits():
 
 # ── 3. Attention head non-divisible dim & heads (extended) ─────────────────
 
+
 def test_regional_attn_head_non_divisible_dim_and_heads():
     """_RegionalAttnHead handles dim not divisible by num_heads."""
     torch.manual_seed(0)
@@ -440,7 +444,7 @@ def test_window_flash_attn_matches_spatial_reference():
     torch.manual_seed(7)
     B, nh, H, W, hd, win = 2, 2, 4, 6, 3, 2
     q, k, v = (torch.randn(B, nh, H * W, hd) for _ in range(3))
-    scale = hd ** -0.5
+    scale = hd**-0.5
 
     actual = _window_flash_attn(q, k, v, scale, win, H, W)
     expected = torch.empty_like(actual.reshape(B, nh, H, W, hd))
@@ -498,6 +502,7 @@ def test_attention_heads_all_variants_non_divisible():
 
 # ── 4. C2fMoA aux_loss double-counting (extended) ─────────────────────────
 
+
 def test_c2fmoa_covered_modules_mechanism():
     """C2fMoA.publish_aux_loss passes covered_modules to prevent double-counting.
 
@@ -508,18 +513,15 @@ def test_c2fmoa_covered_modules_mechanism():
     n_blocks = 2
     module = C2fMoA(64, 64, n=n_blocks, num_heads=6).train()
     from ultralytics.nn.modules.routing_protocol import collect_aux_loss, begin_aux_step
+
     # Use a fresh step so only this forward pass is counted
     step = begin_aux_step(42)
     module(torch.randn(2, 64, 8, 8))
 
     # collect with diagnostics — match the step used in forward
-    total, diag = collect_aux_loss(
-        module, include_kinds=("moa",), return_diagnostics=True, step=step
-    )
+    total, diag = collect_aux_loss(module, include_kinds=("moa",), return_diagnostics=True, step=step)
     # The MoABlock children are skipped because C2fMoA's covered_modules covers them
-    assert diag["duplicate_skipped"] == n_blocks, (
-        f"Expected {n_blocks} children skipped, got {diag}"
-    )
+    assert diag["duplicate_skipped"] == n_blocks, f"Expected {n_blocks} children skipped, got {diag}"
     # Total should equal C2fMoA.last_aux_loss (children already included in it)
     assert torch.allclose(total, module.last_aux_loss)
 
@@ -541,6 +543,7 @@ def test_c2fmoa_eval_mode_zero_aux_loss():
 
 
 # ── 5. MoABlock advanced paths ─────────────────────────────────────────────
+
 
 def test_moa_block_no_shortcut():
     """MoABlock with shortcut=False: pure feed-forward transform, no residual."""
@@ -611,6 +614,7 @@ def test_moa_block_different_mlp_ratios():
 
 # ── 6. Global attention head advanced paths ────────────────────────────────
 
+
 def test_global_head_linear_attn_large_spatial():
     """_GlobalAttnHead uses linear attention for N > 512 tokens."""
     torch.manual_seed(0)
@@ -664,6 +668,7 @@ def test_global_head_exact_attn_small_spatial():
 
 # ── 7. Flash attention edge cases ──────────────────────────────────────────
 
+
 def test_flash_attn_fallback_no_sdpa(monkeypatch):
     """_flash_attn falls back to manual SDPA when F.scaled_dot_product_attention is absent."""
     monkeypatch.delattr(F, "scaled_dot_product_attention", raising=False)
@@ -687,9 +692,7 @@ def test_flash_attn_sdpa_without_scale_typeerror(monkeypatch):
             raise TypeError("unexpected keyword")
         return original_sdpa(q, k, v)
 
-    monkeypatch.setattr(
-        "ultralytics.nn.modules.moa.moa.F.scaled_dot_product_attention", buggy_sdpa
-    )
+    monkeypatch.setattr("ultralytics.nn.modules.moa.moa.F.scaled_dot_product_attention", buggy_sdpa)
     q = torch.randn(1, 2, 4, 4)
     k = torch.randn(1, 2, 4, 4)
     v = torch.randn(1, 2, 4, 4)
@@ -730,23 +733,24 @@ def test_window_flash_attn_edge_cases():
     torch.manual_seed(0)
     B, nh, hd = 1, 2, 16
     for H, W, win in [
-        (8, 8, 7),       # standard
-        (15, 15, 7),     # non-divisible by window
-        (7, 7, 7),       # exact fit
-        (4, 4, 7),       # window > spatial (clamped)
-        (16, 8, 4),      # non-square
-        (1, 16, 4),      # H=1 edge case
+        (8, 8, 7),  # standard
+        (15, 15, 7),  # non-divisible by window
+        (7, 7, 7),  # exact fit
+        (4, 4, 7),  # window > spatial (clamped)
+        (16, 8, 4),  # non-square
+        (1, 16, 4),  # H=1 edge case
     ]:
         N = H * W
         q = torch.randn(B, nh, N, hd)
         k = torch.randn(B, nh, N, hd)
         v = torch.randn(B, nh, N, hd)
-        out = _window_flash_attn(q, k, v, scale=hd ** -0.5, window_size=win, height=H, width=W)
+        out = _window_flash_attn(q, k, v, scale=hd**-0.5, window_size=win, height=H, width=W)
         assert out.shape == (B, nh, N, hd), f"Shape mismatch at H={H},W={W},win={win}"
         assert torch.isfinite(out).all(), f"NaN at H={H},W={W},win={win}"
 
 
 # ── 8. _fp_min utility ────────────────────────────────────────────────────
+
 
 def test_fp_min_across_dtypes():
     """_fp_min returns dtype-aware minimum values."""
@@ -758,6 +762,7 @@ def test_fp_min_across_dtypes():
 
 
 # ── 9. Aux loss DDP path ──────────────────────────────────────────────────
+
 
 def test_moa_router_aux_loss_no_nan_from_biased_logits():
     """_moa_router_aux_loss returns finite values even with extreme router bias."""
@@ -780,6 +785,7 @@ def test_moa_router_aux_loss_finite_guard_triggers():
 
 
 # ── 10. RoutedModule protocol completeness ────────────────────────────────
+
 
 def test_moa_block_routed_module_protocol():
     """MoABlock implements full RoutedModule protocol."""
@@ -838,6 +844,7 @@ def test_publish_aux_loss_in_eval_mode():
 
 # ── 11. C2fMoA advanced edge cases ────────────────────────────────────────
 
+
 def test_c2fmoa_multiple_expansion_ratios():
     """C2fMoA with different expansion ratios e."""
     torch.manual_seed(0)
@@ -875,6 +882,7 @@ def test_c2fmoa_inference_mode_no_aux_loss_grad():
 
 # ── 12. anneal_moa_temperature edge cases ─────────────────────────────────
 
+
 def test_anneal_moa_temperature_respects_min_temp():
     """anneal_moa_temperature does not go below min_temp."""
     module = C2fMoA(64, 64, n=2, num_heads=6)
@@ -897,6 +905,7 @@ def test_anneal_moa_temperature_skips_non_moa_modules():
 
 
 # ── 13. collect_moa_aux_loss edge cases ───────────────────────────────────
+
 
 def test_collect_moa_aux_loss_multiple_module_types():
     """collect_moa_aux_loss collects from mixed C2fMoA + NeckMoAFusion."""
@@ -922,6 +931,7 @@ def test_collect_moa_aux_loss_with_none_model():
 
 # ── 14. Global head QR fallback ───────────────────────────────────────────
 
+
 def test_global_head_rf_matrix_deterministic():
     """Global head RF matrix is deterministic across instantiations."""
     torch.manual_seed(0)
@@ -938,6 +948,7 @@ def test_global_head_rf_matrix_different_seeds():
 
 
 # ── 15. Numerical stability of output across spatial sizes ─────────────────
+
 
 def test_moa_block_diverse_spatial_sizes():
     """MoABlock forward is stable across a range of spatial sizes."""

@@ -188,9 +188,19 @@ def build_matrix(models: list[ModelSpec], args: argparse.Namespace) -> list[Expe
                     "batch": args.batch,
                 }
                 prefix = f"{model.name}__{dataset_name}__s{seed}"
-                matrix.append(ExperimentSpec(experiment_id=f"{prefix}__full", variant="full", rank=0, placement="full", **common))
+                matrix.append(
+                    ExperimentSpec(experiment_id=f"{prefix}__full", variant="full", rank=0, placement="full", **common)
+                )
                 if args.smoke:
-                    matrix.append(ExperimentSpec(experiment_id=f"{prefix}__lora_r4__{placements[0]}", variant="lora", rank=4, placement=placements[0], **common))
+                    matrix.append(
+                        ExperimentSpec(
+                            experiment_id=f"{prefix}__lora_r4__{placements[0]}",
+                            variant="lora",
+                            rank=4,
+                            placement=placements[0],
+                            **common,
+                        )
+                    )
                     continue
                 for variant in RANK_VARIANTS:
                     for rank in ranks:
@@ -206,7 +216,15 @@ def build_matrix(models: list[ModelSpec], args: argparse.Namespace) -> list[Expe
                             )
                 for variant in RANKLESS_VARIANTS:
                     for placement in placements:
-                        matrix.append(ExperimentSpec(experiment_id=f"{prefix}__{variant}__{placement}", variant=variant, rank=1, placement=placement, **common))
+                        matrix.append(
+                            ExperimentSpec(
+                                experiment_id=f"{prefix}__{variant}__{placement}",
+                                variant=variant,
+                                rank=1,
+                                placement=placement,
+                                **common,
+                            )
+                        )
     return matrix
 
 
@@ -475,7 +493,9 @@ def run_experiment(spec: ExperimentSpec, args: argparse.Namespace) -> dict[str, 
         record.update(callback_state)
         if record.get("device") != "mps":
             raise RuntimeError(f"Training did not execute on MPS: {record.get('device')}")
-        metrics = callback_state.get("final_metrics") or callback_state.get("online_metrics") or extract_metrics(results)
+        metrics = (
+            callback_state.get("final_metrics") or callback_state.get("online_metrics") or extract_metrics(results)
+        )
         if "metrics/mAP50-95(B)" not in metrics:
             raise RuntimeError(f"Final mAP50-95 metric is missing or non-finite: {metrics}")
         record["metrics"] = metrics
@@ -649,7 +669,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--model", action="append", dest="models", help="NAME=/absolute/path.pt; repeatable")
     parser.add_argument("--data", type=Path, help="Single dataset override (legacy compatibility)")
     parser.add_argument(
-        "--dataset", action="append", dest="datasets", metavar="NAME=PATH",
+        "--dataset",
+        action="append",
+        dest="datasets",
+        metavar="NAME=PATH",
         help="Named dataset; repeatable. Defaults to VOC and complete COCO2017.",
     )
     parser.add_argument("--epochs", type=int, default=300)
@@ -659,7 +682,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--seed", type=int, help="Single seed override (legacy compatibility)")
     parser.add_argument("--seeds", type=int, nargs="+", default=[0, 1, 2])
     parser.add_argument(
-        "--ranks", type=int, nargs="+", default=[16],
+        "--ranks",
+        type=int,
+        nargs="+",
+        default=[16],
         help="Core ranks for the formal matrix (default: r=16; pass 4 8 16 for a rank sweep)",
     )
     parser.add_argument("--device", default="mps")
@@ -706,8 +732,8 @@ def parse_args() -> argparse.Namespace:
     args.results = (args.results or args.project / "runs.json").expanduser().resolve()
     args.lovo_output = (args.lovo_output or args.project / "lovo_coco128_mps.json").expanduser().resolve()
     args.coefficients_output = (
-        args.coefficients_output or args.project / "planner_coefficients_coco128_mps.json"
-    ).expanduser().resolve()
+        (args.coefficients_output or args.project / "planner_coefficients_coco128_mps.json").expanduser().resolve()
+    )
     args.report_output = (args.report_output or args.project / "calibration_report.json").expanduser().resolve()
     args.dataset_specs = []
     for value in args.datasets or []:

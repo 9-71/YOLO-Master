@@ -4,6 +4,7 @@ Tests that all MoE modules with data-dependent control flow export correctly
 to ONNX without losing experts. The dense path computes all experts and uses
 torch.gather for Top-K selection, which is fully traceable.
 """
+
 import io
 import inspect
 import torch
@@ -12,11 +13,13 @@ from ultralytics.utils.torch_utils import TORCH_1_13
 
 # ── Test helpers ────────────────────────────────────────────────────────
 
+
 def _legacy_onnx_export_kwargs():
     kwargs = {"opset_version": 18 if TORCH_1_13 else 12, "do_constant_folding": False}
     if "dynamo" in inspect.signature(torch.onnx.export).parameters:
         kwargs["dynamo"] = False
     return kwargs
+
 
 def _count_conv_nodes(model_proto, conv_nodes_seen):
     """Count unique Conv nodes in an ONNX model proto."""
@@ -59,6 +62,7 @@ def _export_and_count_experts(module, num_experts, input_shape, module_name):
     buf.seek(0)
     try:
         import onnx
+
         model = onnx.load_from_string(buf.getvalue())
         graph = model.graph
     except ImportError:
@@ -73,6 +77,7 @@ def _export_and_count_experts(module, num_experts, input_shape, module_name):
     try:
         import onnxruntime as ort
         import numpy as np
+
         sess = ort.InferenceSession(buf.getvalue())
         onnx_out = sess.run(["output"], {"input": dummy.numpy()})[0]
         torch_out = ref_out.numpy()
@@ -86,9 +91,11 @@ def _export_and_count_experts(module, num_experts, input_shape, module_name):
 
 # ── Tests ───────────────────────────────────────────────────────────────
 
+
 def test_optimized_moe():
     """Test OptimizedMOE — had `if mask.any()` in expert loop."""
     from ultralytics.nn.modules.moe.modules import OptimizedMOE
+
     print("\n=== OptimizedMOE ===")
     module = OptimizedMOE(32, 32, num_experts=4, top_k=2)
     _export_and_count_experts(module, 4, (1, 32, 16, 16), "OptimizedMOE")
@@ -97,6 +104,7 @@ def test_optimized_moe():
 def test_optimized_moe_improved():
     """Test OptimizedMOEImproved — had `if mask.any()` in expert loop."""
     from ultralytics.nn.modules.moe.modules import OptimizedMOEImproved
+
     print("\n=== OptimizedMOEImproved ===")
     module = OptimizedMOEImproved(32, 32, num_experts=4, top_k=2)
     _export_and_count_experts(module, 4, (1, 32, 16, 16), "OptimizedMOEImproved")
@@ -105,6 +113,7 @@ def test_optimized_moe_improved():
 def test_batched_expert_computation():
     """Test BatchedExpertComputation via HyperSplitMoE."""
     from ultralytics.nn.modules.moe.modules import HyperSplitMoE
+
     print("\n=== HyperSplitMoE (uses BatchedExpertComputation) ===")
     module = HyperSplitMoE(32, 32, num_experts=4, top_k=2)
     _export_and_count_experts(module, 4, (1, 32, 16, 16), "HyperSplitMoE")
@@ -113,6 +122,7 @@ def test_batched_expert_computation():
 def test_shared_inverted_expert_group():
     """Test SharedInvertedExpertGroup via AdaptiveGateMoE."""
     from ultralytics.nn.modules.moe.modules import AdaptiveGateMoE
+
     print("\n=== AdaptiveGateMoE (uses SharedInvertedExpertGroup) ===")
     module = AdaptiveGateMoE(32, 32, num_experts=4, top_k=2)
     _export_and_count_experts(module, 4, (1, 32, 16, 16), "AdaptiveGateMoE")
@@ -121,6 +131,7 @@ def test_shared_inverted_expert_group():
 def test_es_moe():
     """Test ES_MOE — already had ONNX export guard (dense forward)."""
     from ultralytics.nn.modules.moe.modules import ES_MOE
+
     print("\n=== ES_MOE (pre-existing ONNX guard) ===")
     module = ES_MOE(32, 32, num_experts=4, top_k=2, use_sparse_inference=True)
     _export_and_count_experts(module, 4, (1, 32, 16, 16), "ES_MOE")
@@ -129,6 +140,7 @@ def test_es_moe():
 def test_fused_expert_group_already_safe():
     """Test FusedExpertGroup-based MoE — already ONNX-safe (torch.gather)."""
     from ultralytics.nn.modules.moe.modules import HyperFusedMoE
+
     print("\n=== HyperFusedMoE (FusedExpertGroup — already safe) ===")
     module = HyperFusedMoE(32, 32, num_experts=4, top_k=2)
     _export_and_count_experts(module, 4, (1, 32, 16, 16), "HyperFusedMoE")
@@ -137,6 +149,7 @@ def test_fused_expert_group_already_safe():
 def test_output_consistency():
     """Verify ONNX output matches PyTorch output for OptimizedMOE."""
     from ultralytics.nn.modules.moe.modules import OptimizedMOE
+
     print("\n=== Output Consistency (OptimizedMOE) ===")
     module = OptimizedMOE(32, 32, num_experts=4, top_k=2)
     module.eval()
@@ -159,6 +172,7 @@ def test_output_consistency():
     try:
         import onnxruntime as ort
         import numpy as np
+
         sess = ort.InferenceSession(buf.getvalue())
         onnx_out = sess.run(["y"], {"x": dummy.numpy()})[0]
         max_diff = np.abs(onnx_out - torch_out.numpy()).max()
@@ -192,6 +206,7 @@ if __name__ == "__main__":
         except Exception as e:
             print(f"  ✗ FAILED: {e}")
             import traceback
+
             traceback.print_exc()
             failed += 1
 

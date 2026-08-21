@@ -59,7 +59,9 @@ def _int_value(value: Any, default: int = 0) -> int:
         return default
 
 
-def split_stage_config(config: Any) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any], str | None]:
+def split_stage_config(
+    config: Any,
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], dict[str, Any], str | None]:
     if config is None:
         return {}, {}, {}, {}, None
     if not isinstance(config, dict):
@@ -101,7 +103,11 @@ def pipeline_preview(request: dict[str, Any], params: dict[str, Any]) -> list[di
         _, stage_params, _, _, skill_override = split_stage_config(stage_config(params, stage))
         skill = skill_override or STAGE_SKILLS.get(stage, f"yolo.pipeline.{stage}")
         if stage == "train":
-            skill = skill_override or stage_params.pop("skill", None) or ("yolo.lora.train" if _int_value(stage_params.get("lora_r")) > 0 else "yolo.train")
+            skill = (
+                skill_override
+                or stage_params.pop("skill", None)
+                or ("yolo.lora.train" if _int_value(stage_params.get("lora_r")) > 0 else "yolo.train")
+            )
         preview.append({"stage": stage, "skill": skill, "params": json_safe(stage_params)})
     return preview
 
@@ -201,7 +207,11 @@ def run_experiment_pipeline(request: dict[str, Any], deps: PipelineDeps) -> dict
         stage_inputs, stage_params, stage_policy, artifacts_override, skill_override = split_stage_config(raw_config)
         skill = skill_override or STAGE_SKILLS.get(stage)
         if stage == "train":
-            skill = skill_override or stage_params.pop("skill", None) or ("yolo.lora.train" if _int_value(stage_params.get("lora_r")) > 0 else "yolo.train")
+            skill = (
+                skill_override
+                or stage_params.pop("skill", None)
+                or ("yolo.lora.train" if _int_value(stage_params.get("lora_r")) > 0 else "yolo.train")
+            )
         if not skill:
             raise ValueError(f"Unsupported pipeline stage: {stage}")
         append_progress_event(progress_path, {"event": "stage_start", "stage": stage, "skill": skill})
@@ -222,7 +232,9 @@ def run_experiment_pipeline(request: dict[str, Any], deps: PipelineDeps) -> dict
         artifacts.extend(payload.get("artifacts", []) or [])
         if payload.get("status") not in {"ok", "partial", "running"}:
             failed_stage = stage
-            append_progress_event(progress_path, {"event": "stage_failed", "stage": stage, "status": payload.get("status")})
+            append_progress_event(
+                progress_path, {"event": "stage_failed", "stage": stage, "status": payload.get("status")}
+            )
             events += 1
             break
         if stage == "train":

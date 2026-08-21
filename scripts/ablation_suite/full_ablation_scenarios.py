@@ -28,6 +28,7 @@ YOLO-Master Full Ablation Scenarios — Scene Dataset Extension
     - 控制台逐数据集 / 逐变体进度 + 最终汇总表
 ================================================================================
 """
+
 from __future__ import annotations
 
 import argparse
@@ -60,6 +61,7 @@ import torch.nn as nn
 
 # 关闭 ultralytics 的 wandb 上报
 from ultralytics.utils import SETTINGS
+
 SETTINGS["wandb"] = False
 
 from ultralytics import YOLO
@@ -81,9 +83,8 @@ from ultralytics.utils.lora.config import LoRAConfig
 
 # 确认加载的是当前仓库的 ultralytics (避免 pip 安装的版本干扰)
 import ultralytics
-assert str(REPO_ROOT) in ultralytics.__file__, (
-    f"加载的不是当前仓库的 ultralytics！got {ultralytics.__file__}"
-)
+
+assert str(REPO_ROOT) in ultralytics.__file__, f"加载的不是当前仓库的 ultralytics！got {ultralytics.__file__}"
 
 # 从统一规范导入数据结构
 from full_ablation_spec import (
@@ -155,6 +156,7 @@ CONTINUOUS_LEARNING_SEQUENCE: List[str] = [
 # 2. 工具函数
 # ═══════════════════════════════════════════════════════════════════════════════
 
+
 def count_params(m: nn.Module) -> Tuple[int, int]:
     """统计模型总参数量与可训练参数量。"""
     total = sum(p.numel() for p in m.parameters())
@@ -224,15 +226,9 @@ def extract_final_metrics(results) -> Dict[str, float]:
         return final_metrics
 
     if hasattr(results, "results_dict") and results.results_dict:
-        final_metrics = {
-            k: float(v) for k, v in results.results_dict.items()
-            if isinstance(v, (int, float))
-        }
+        final_metrics = {k: float(v) for k, v in results.results_dict.items() if isinstance(v, (int, float))}
     elif hasattr(results, "metrics") and results.metrics:
-        final_metrics = {
-            k: float(v) for k, v in results.metrics.items()
-            if isinstance(v, (int, float))
-        }
+        final_metrics = {k: float(v) for k, v in results.metrics.items() if isinstance(v, (int, float))}
 
     return final_metrics
 
@@ -260,15 +256,21 @@ def extract_map_per_scale(results) -> Tuple[Optional[float], Optional[float], Op
     if hasattr(results, "metrics") and results.metrics:
         metrics = results.metrics
         if m_s is None:
-            m_s = float(metrics.get("mAP_s", metrics.get("map_s", metrics.get("metrics/mAP50-95(B)_small", float("nan")))))
+            m_s = float(
+                metrics.get("mAP_s", metrics.get("map_s", metrics.get("metrics/mAP50-95(B)_small", float("nan"))))
+            )
             if m_s != m_s:  # nan check
                 m_s = None
         if m_m is None:
-            m_m = float(metrics.get("mAP_m", metrics.get("map_m", metrics.get("metrics/mAP50-95(B)_medium", float("nan")))))
+            m_m = float(
+                metrics.get("mAP_m", metrics.get("map_m", metrics.get("metrics/mAP50-95(B)_medium", float("nan"))))
+            )
             if m_m != m_m:
                 m_m = None
         if m_l is None:
-            m_l = float(metrics.get("mAP_l", metrics.get("map_l", metrics.get("metrics/mAP50-95(B)_large", float("nan")))))
+            m_l = float(
+                metrics.get("mAP_l", metrics.get("map_l", metrics.get("metrics/mAP50-95(B)_large", float("nan"))))
+            )
             if m_l != m_l:
                 m_l = None
 
@@ -278,6 +280,7 @@ def extract_map_per_scale(results) -> Tuple[Optional[float], Optional[float], Op
 # ═══════════════════════════════════════════════════════════════════════════════
 # 3. PEFT 应用器
 # ═══════════════════════════════════════════════════════════════════════════════
+
 
 def apply_peft_via_train_args(model: YOLO, kwargs: Dict[str, Any]) -> YOLO:
     """
@@ -423,6 +426,7 @@ def apply_molora_router_calibration(model: YOLO, config: Dict[str, Any]) -> YOLO
 # 4. 单变体执行逻辑
 # ═══════════════════════════════════════════════════════════════════════════════
 
+
 def run_variant(
     dataset_cfg: DatasetConfig,
     variant_cfg: VariantConfig,
@@ -436,9 +440,9 @@ def run_variant(
     apply_peft 控制是否在本轮应用 PEFT（持续学习序列中仅在首个域应用）。
     返回: (ExperimentResult, 模型 state_dict 或 None)
     """
-    print(f"\n{'='*78}")
-    print(f"=== Dataset: {dataset_cfg.name.upper()} | Variant: {variant_cfg.name.upper()} {'='*35}")
-    print(f"{'='*78}")
+    print(f"\n{'=' * 78}")
+    print(f"=== Dataset: {dataset_cfg.name.upper()} | Variant: {variant_cfg.name.upper()} {'=' * 35}")
+    print(f"{'=' * 78}")
     print(f"Description: {dataset_cfg.description}")
     print(f"Domain     : {dataset_cfg.domain}")
     print(f"PEFT type  : {variant_cfg.peft_type}")
@@ -466,7 +470,7 @@ def run_variant(
             model = YOLO(MODEL_PATH)
 
         base_total, base_train = count_params(model.model)
-        print(f"[Pre-train]  total={base_total:,}  trainable={base_train:,}  ({base_train/base_total*100:.2f}%)")
+        print(f"[Pre-train]  total={base_total:,}  trainable={base_train:,}  ({base_train / base_total * 100:.2f}%)")
 
         # ── 4.2 应用 PEFT（仅在 apply_peft=True 时执行） ──
         if apply_peft:
@@ -491,12 +495,14 @@ def run_variant(
         sig = detect_adapter_signature(model.model)
         molora_diag = collect_molora_diagnostics(model.model)
 
-        print(f"[Post-wrap]  total={post_total:,}  trainable={post_train:,}  ({post_train/post_total*100:.2f}%)")
+        print(f"[Post-wrap]  total={post_total:,}  trainable={post_train:,}  ({post_train / post_total * 100:.2f}%)")
         print(f"[Adapter]    {sig}")
         if molora_diag.get("molora_enabled"):
-            print(f"[MoLoRA]     enabled={molora_diag['molora_enabled']}, "
-                  f"router_calib={molora_diag['router_calib_present']}, "
-                  f"ranks={molora_diag['per_expert_ranks']}")
+            print(
+                f"[MoLoRA]     enabled={molora_diag['molora_enabled']}, "
+                f"router_calib={molora_diag['router_calib_present']}, "
+                f"ranks={molora_diag['per_expert_ranks']}"
+            )
 
         # ── 4.4 构建训练参数 ──
         train_kwargs = {
@@ -594,10 +600,9 @@ def run_continuous_learning(
             print(f"[WARN] 数据集 '{ds_name}' 在注册表中未找到，已跳过。")
             continue
 
-        apply_peft = (idx == 0)  # 仅在第一个域应用 PEFT
+        apply_peft = idx == 0  # 仅在第一个域应用 PEFT
         result, state = run_variant(
-            ds_cfg, variant_cfg, seed=seed,
-            previous_model_state=previous_state, apply_peft=apply_peft
+            ds_cfg, variant_cfg, seed=seed, previous_model_state=previous_state, apply_peft=apply_peft
         )
         results.append(result)
 
@@ -614,6 +619,7 @@ def run_continuous_learning(
 # ═══════════════════════════════════════════════════════════════════════════════
 # 5. 主流程
 # ═══════════════════════════════════════════════════════════════════════════════
+
 
 def print_header(args: argparse.Namespace):
     """打印实验环境信息。"""
@@ -672,9 +678,7 @@ def print_summary_table(all_results: List[ExperimentResult]):
 
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="YOLO-Master Full Ablation Scenarios — Scene Dataset Extension"
-    )
+    parser = argparse.ArgumentParser(description="YOLO-Master Full Ablation Scenarios — Scene Dataset Extension")
     parser.add_argument("--seed", type=int, default=42, help="Random seed")
     parser.add_argument("--epochs", type=int, default=None, help="Override epochs for all variants")
     parser.add_argument("--batch", type=int, default=None, help="Override batch size for all variants")
@@ -749,9 +753,7 @@ def main():
                 # full 微调不适合简单 state_dict 继承，跳过或单独运行
                 print(f"[CL-Skip] {var_cfg.name} 为 full 微调，不纳入持续学习序列。")
                 continue
-            cl_results = run_continuous_learning(
-                CONTINUOUS_LEARNING_SEQUENCE, var_cfg, seed=args.seed
-            )
+            cl_results = run_continuous_learning(CONTINUOUS_LEARNING_SEQUENCE, var_cfg, seed=args.seed)
             all_results.extend(cl_results)
             try:
                 RESULTS_JSON.write_text(
@@ -764,7 +766,7 @@ def main():
     # ── 最终汇总 ──
     print_summary_table(all_results)
 
-    print(f"\n{'='*78}")
+    print(f"\n{'=' * 78}")
     print(f"全部 {len(all_results)} 条实验记录运行完毕。")
     print(f"详细结果 JSON: {RESULTS_JSON}")
     print(f"训练日志目录: {PROJECT_DIR}")

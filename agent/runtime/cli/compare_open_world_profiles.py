@@ -100,7 +100,10 @@ def aggregate_profile(items: list[dict[str, Any]]) -> dict[str, Any]:
                 open_world_counts[str(label)] = open_world_counts.get(str(label), 0) + 1
     return {
         "images": len(items),
-        "status_counts": dict((status, sum(1 for item in items if item.get("status") == status)) for status in sorted({item.get("status") for item in items})),
+        "status_counts": dict(
+            (status, sum(1 for item in items if item.get("status") == status))
+            for status in sorted({item.get("status") for item in items})
+        ),
         "open_world_label_counts": open_world_counts,
         "reasoning_only_label_counts": reasoning_only_counts,
         "filtered_reason_counts": filtered_reason_counts,
@@ -128,8 +131,7 @@ def build_report(rows: list[dict[str, Any]], args: argparse.Namespace) -> dict[s
             }
         )
     verified_open_world_list = {
-        image: merge_verified_open_world_candidates(entries)
-        for image, entries in verified_by_image.items()
+        image: merge_verified_open_world_candidates(entries) for image, entries in verified_by_image.items()
     }
     return {
         "name": "qwen-open-world-profiles",
@@ -180,7 +182,9 @@ def render_markdown(report: dict[str, Any]) -> str:
     if report.get("verified_open_world_list"):
         lines.extend(["## Verified", ""])
         for image, items in report.get("verified_open_world_list", {}).items():
-            labels = ", ".join((item.get("canonical_open_label") or item.get("open_label") or "-") for item in items) or "-"
+            labels = (
+                ", ".join((item.get("canonical_open_label") or item.get("open_label") or "-") for item in items) or "-"
+            )
             lines.append(f"- `{image}`: {labels}")
         lines.append("")
     return "\n".join(lines)
@@ -201,7 +205,12 @@ def main() -> int:
     args.md_out.parent.mkdir(parents=True, exist_ok=True)
     args.json_out.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     args.md_out.write_text(render_markdown(report), encoding="utf-8")
-    print(json.dumps({"status": "ok", "json_out": str(args.json_out.resolve()), "md_out": str(args.md_out.resolve())}, ensure_ascii=False))
+    print(
+        json.dumps(
+            {"status": "ok", "json_out": str(args.json_out.resolve()), "md_out": str(args.md_out.resolve())},
+            ensure_ascii=False,
+        )
+    )
     return 0
 
 

@@ -9,6 +9,7 @@ Generates:
 Usage:
     python scripts/ablation_moe_peft_e3_expert_load_viz.py
 """
+
 import os
 import sys
 from pathlib import Path
@@ -27,6 +28,7 @@ import json
 import torch
 import torch.nn as nn
 from ultralytics.utils import SETTINGS
+
 SETTINGS["wandb"] = False
 
 from ultralytics import YOLO
@@ -72,6 +74,7 @@ def apply_moe_aware_to_model(model, config):
     target_modules = getattr(config, "target_modules", None)
     if target_modules is None or not target_modules:
         from ultralytics.nn.peft.molora import MoLoRAConfigBuilder
+
         target_modules = MoLoRAConfigBuilder.auto_detect_targets(
             model, r=config.r, include_moe=True, only_backbone=False
         )
@@ -95,6 +98,7 @@ def apply_moe_aware_to_model(model, config):
     model.molora_config = config
     model.molora_enabled = True
     from ultralytics.nn.peft.molora.utils import mark_only_molora_as_trainable
+
     mark_only_molora_as_trainable(model)
     return wrapped
 
@@ -116,13 +120,15 @@ def collect_routing_stats(model, data_yaml, imgsz, batch, device):
     for name, m in model.named_modules():
         if isinstance(m, MoLoRAMoEAwareLayer) and m._last_routing_stats is not None:
             stats = m._last_routing_stats
-            all_stats.append({
-                "layer": name,
-                "expert_usage": stats["expert_usage"].cpu().tolist(),
-                "effective_k": stats["effective_k"],
-                "calibration_applied": stats.get("calibration_applied", False),
-                "expert_ranks": stats.get("expert_ranks"),
-            })
+            all_stats.append(
+                {
+                    "layer": name,
+                    "expert_usage": stats["expert_usage"].cpu().tolist(),
+                    "effective_k": stats["effective_k"],
+                    "calibration_applied": stats.get("calibration_applied", False),
+                    "expert_ranks": stats.get("expert_ranks"),
+                }
+            )
     return all_stats
 
 
@@ -136,16 +142,32 @@ def main():
 
     configs = {
         "uniform": MoLoRAMoEAwareConfig(
-            r=8, alpha=16, num_experts=NUM_EXPERTS, top_k=2,
-            router_type="linear", per_expert_rank=True,
-            rank_allocator_mode="uniform", rank_budget_total=BUDGET, rank_min=MIN_RANK,
-            balance_loss_coef=0.01, z_loss_coef=0.001, use_rslora=True,
+            r=8,
+            alpha=16,
+            num_experts=NUM_EXPERTS,
+            top_k=2,
+            router_type="linear",
+            per_expert_rank=True,
+            rank_allocator_mode="uniform",
+            rank_budget_total=BUDGET,
+            rank_min=MIN_RANK,
+            balance_loss_coef=0.01,
+            z_loss_coef=0.001,
+            use_rslora=True,
         ),
         "frequency": MoLoRAMoEAwareConfig(
-            r=8, alpha=16, num_experts=NUM_EXPERTS, top_k=2,
-            router_type="linear", per_expert_rank=True,
-            rank_allocator_mode="frequency", rank_budget_total=BUDGET, rank_min=MIN_RANK,
-            balance_loss_coef=0.01, z_loss_coef=0.001, use_rslora=True,
+            r=8,
+            alpha=16,
+            num_experts=NUM_EXPERTS,
+            top_k=2,
+            router_type="linear",
+            per_expert_rank=True,
+            rank_allocator_mode="frequency",
+            rank_budget_total=BUDGET,
+            rank_min=MIN_RANK,
+            balance_loss_coef=0.01,
+            z_loss_coef=0.001,
+            use_rslora=True,
         ),
     }
 
@@ -169,7 +191,7 @@ def main():
 
     summary = {}
     for variant_name, cfg in configs.items():
-        print(f"\n{'='*60}\nVariant: {variant_name}\n{'='*60}")
+        print(f"\n{'=' * 60}\nVariant: {variant_name}\n{'=' * 60}")
         model = YOLO(MODEL_PATH).model
         apply_moe_aware_to_model(model, cfg)
 
@@ -210,6 +232,7 @@ def main():
     # Try matplotlib visualization if available
     try:
         import matplotlib
+
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
 
@@ -223,8 +246,16 @@ def main():
             ax.set_title(f"{variant_name}: Avg Expert Usage")
             ax.set_ylabel("Frequency")
             ax.set_ylim(0, max(data["avg_usage"]) * 1.3)
-            ax.text(0.5, 0.95, f"Gini={data['gini']:.3f}", transform=ax.transAxes,
-                    ha="center", va="top", fontsize=10, bbox=dict(boxstyle="round", facecolor="wheat", alpha=0.5))
+            ax.text(
+                0.5,
+                0.95,
+                f"Gini={data['gini']:.3f}",
+                transform=ax.transAxes,
+                ha="center",
+                va="top",
+                fontsize=10,
+                bbox=dict(boxstyle="round", facecolor="wheat", alpha=0.5),
+            )
 
             # Rank plot
             ax = axes[1]

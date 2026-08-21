@@ -159,7 +159,12 @@ def delta_weight_spectrum(model: Any, *, max_layers: int = 12, topk: int = 8) ->
 
 def run_lora_diagnose(request: dict[str, Any], deps: LoraDiagnoseDeps) -> dict[str, Any]:
     params = dict(request["params"])
-    adapter_path = request["inputs"].get("path") or request["inputs"].get("adapter") or params.get("path") or params.get("adapter_path")
+    adapter_path = (
+        request["inputs"].get("path")
+        or request["inputs"].get("adapter")
+        or params.get("path")
+        or params.get("adapter_path")
+    )
     svd_sample_ratio = float(params.get("svd_sample_ratio", 0.2))
     svd_max_layers = int(params.get("svd_max_layers", 20))
     spectrum_max_layers = int(params.get("spectrum_max_layers", 12))

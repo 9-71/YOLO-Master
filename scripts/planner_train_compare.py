@@ -21,9 +21,9 @@ from ultralytics import YOLO
 def run_experiment(model_name: str, epochs: int, planner_enabled: bool, variant: str, rank: int):
     """Run a single training experiment."""
     label = "ON" if planner_enabled else "OFF"
-    print(f"\n{'='*60}")
+    print(f"\n{'=' * 60}")
     print(f"  Experiment: {model_name} | Planner {label} | {variant} r={rank}")
-    print(f"{'='*60}")
+    print(f"{'=' * 60}")
 
     t0 = time.time()
     model = YOLO(model_name)
@@ -39,7 +39,7 @@ def run_experiment(model_name: str, epochs: int, planner_enabled: bool, variant:
         device="mps",
         verbose=False,
         project="runs/planner_train_compare",
-        name=f"{model_name.replace('.pt','')}_planner_{label}_{variant}_r{rank}_{datetime.now().strftime('%H%M%S')}",
+        name=f"{model_name.replace('.pt', '')}_planner_{label}_{variant}_r{rank}_{datetime.now().strftime('%H%M%S')}",
     )
 
     elapsed = time.time() - t0
@@ -70,7 +70,7 @@ def run_experiment(model_name: str, epochs: int, planner_enabled: bool, variant:
         "recall": rec,
         "timestamp": datetime.now().isoformat(),
     }
-    print(f"  mAP50={m50:.4f}, mAP50-95={m5095:.4f}, time={elapsed/60:.1f}min")
+    print(f"  mAP50={m50:.4f}, mAP50-95={m5095:.4f}, time={elapsed / 60:.1f}min")
     return results
 
 
@@ -85,7 +85,9 @@ def main():
     output_dir = Path("runs/planner_train_compare")
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    report_file = output_dir / f"compare_{args.model.replace('.pt','')}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+    report_file = (
+        output_dir / f"compare_{args.model.replace('.pt', '')}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+    )
 
     # Run OFF then ON
     off_results = run_experiment(args.model, args.epochs, False, args.variant, args.rank)
@@ -103,9 +105,9 @@ def main():
     with open(report_file, "w") as f:
         json.dump(report, f, indent=2)
 
-    print(f"\n{'='*60}")
+    print(f"\n{'=' * 60}")
     print("  Comparison Summary")
-    print(f"{'='*60}")
+    print(f"{'=' * 60}")
     print(f"  OFF mAP50:     {off_results['mAP50']:.4f}")
     print(f"  ON  mAP50:     {on_results['mAP50']:.4f}")
     print(f"  Δ mAP50:       {report['delta_mAP50']:+.4f}")

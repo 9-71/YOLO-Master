@@ -88,9 +88,7 @@ def test_moe_module_receives_cli_values_and_audit_records_sources():
 
 def test_yaml_only_cli_only_and_resume_like_resolution_are_deterministic():
     """Repeated resolution from equivalent args produces identical results."""
-    yaml_model = DetectionModel(
-        "ultralytics/cfg/models/master/v0_10/det/yolo-master-moa-mot-n.yaml", verbose=False
-    )
+    yaml_model = DetectionModel("ultralytics/cfg/models/master/v0_10/det/yolo-master-moa-mot-n.yaml", verbose=False)
     args = _args()
     first = resolve_mixture_config(args, yaml_model).to_dict()
     resumed = resolve_mixture_config(SimpleNamespace(**vars(args)), yaml_model).to_dict()

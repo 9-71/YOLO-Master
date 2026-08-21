@@ -214,7 +214,9 @@ def aggregate(rows: list[dict[str, str | float]]) -> list[dict[str, str | float]
     for row in rows:
         groups[(str(row["density"]), str(row["scale"]), str(row["shape"]), str(row["occlusion"]))].append(row)
     out = []
-    metric_keys = [f"{name}_mean_weight" for name in EXPERT_NAMES] + [f"{name}_top1_token_frac" for name in EXPERT_NAMES]
+    metric_keys = [f"{name}_mean_weight" for name in EXPERT_NAMES] + [
+        f"{name}_top1_token_frac" for name in EXPERT_NAMES
+    ]
     for key, group in sorted(groups.items()):
         item: dict[str, str | float] = {
             "density": key[0],
@@ -251,7 +253,11 @@ def parse_args() -> argparse.Namespace:
 def main() -> int:
     args = parse_args()
     device = torch_device(args.device)
-    images = image_paths_from_source(args.source, args.limit) if args.source else image_paths_from_data(args.data, args.split, args.limit)
+    images = (
+        image_paths_from_source(args.source, args.limit)
+        if args.source
+        else image_paths_from_data(args.data, args.split, args.limit)
+    )
     if not images:
         raise SystemExit("no images found")
 
@@ -261,7 +267,9 @@ def main() -> int:
     hooks = []
     for name, module in model.named_modules():
         if isinstance(module, MoTBlock):
-            hooks.append(module.router.register_forward_hook(lambda _m, _i, out, n=name: captures.append((n, out[0].detach()))))
+            hooks.append(
+                module.router.register_forward_hook(lambda _m, _i, out, n=name: captures.append((n, out[0].detach())))
+            )
     if not hooks:
         raise SystemExit(f"no MoTBlock modules found in {args.model}")
 

@@ -1,4 +1,5 @@
 """MoLoRA utilities: parameter stats, merge/unmerge, init, domain allocation."""
+
 import math
 from typing import Dict, List, Tuple
 
@@ -6,10 +7,10 @@ import torch
 import torch.nn as nn
 
 
-
 # ---------------------------------------------------------------------------
 # rsLoRA scaling
 # ---------------------------------------------------------------------------
+
 
 def _molora_scales(r: int, alpha: int, use_rslora: bool = True) -> float:
     """Return the LoRA scaling factor.
@@ -25,6 +26,7 @@ def _molora_scales(r: int, alpha: int, use_rslora: bool = True) -> float:
 # ---------------------------------------------------------------------------
 # Expert initialization
 # ---------------------------------------------------------------------------
+
 
 def init_lora_expert_a(weight: nn.Parameter, init_type: str = "default") -> None:
     """Initialize LoRA A (down-projection) weight.
@@ -67,6 +69,7 @@ def init_lora_expert_b(weight: nn.Parameter, init_type: str = "default") -> None
 # Module shape introspection
 # ---------------------------------------------------------------------------
 
+
 def get_conv_shape(module: nn.Conv2d) -> Tuple[int, int, int, int, Tuple[int, int], int, int]:
     """Return (in_channels, out_channels, kernel_size_h, kernel_size_w, padding, stride, groups)."""
     k = module.kernel_size
@@ -98,9 +101,8 @@ def is_linear(module: nn.Module) -> bool:
 # Domain allocation for continual learning
 # ---------------------------------------------------------------------------
 
-def allocate_domain_experts(
-    num_experts: int, domains: List[str]
-) -> Dict[str, List[int]]:
+
+def allocate_domain_experts(num_experts: int, domains: List[str]) -> Dict[str, List[int]]:
     """Allocate expert indices evenly across domains.
 
     Args:
@@ -128,6 +130,7 @@ def allocate_domain_experts(
 # Parameter freezing / trainability
 # ---------------------------------------------------------------------------
 
+
 def mark_only_molora_as_trainable(model: nn.Module) -> None:
     """Freeze all parameters except MoLoRA adapter parameters.
 
@@ -137,8 +140,10 @@ def mark_only_molora_as_trainable(model: nn.Module) -> None:
     """
     # Lazy import to avoid circular dependency (layer.py / moe_aware.py import utils.py)
     from ultralytics.nn.peft.molora.layer import MoLoRALayer
+
     try:
         from ultralytics.nn.peft.molora.moe_aware import MoLoRAMoEAwareLayer
+
         molora_types = (MoLoRALayer, MoLoRAMoEAwareLayer)
     except ImportError:
         molora_types = (MoLoRALayer,)
@@ -161,9 +166,7 @@ def count_parameters(model: nn.Module) -> Dict[str, int]:
     total = sum(p.numel() for p in model.parameters())
     trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
     molora = sum(
-        p.numel()
-        for n, p in model.named_parameters()
-        if any(k in n for k in ("lora_A", "lora_B", "router", "molora"))
+        p.numel() for n, p in model.named_parameters() if any(k in n for k in ("lora_A", "lora_B", "router", "molora"))
     )
     return {
         "total": total,
@@ -178,6 +181,7 @@ def count_parameters(model: nn.Module) -> Dict[str, int]:
 # ---------------------------------------------------------------------------
 # Merge / Unmerge helpers
 # ---------------------------------------------------------------------------
+
 
 def _conv_expert_delta(lora_a: nn.Conv2d, lora_b: nn.Conv2d, scale: float) -> torch.Tensor:
     """Full-rank delta [out_c, in_c, kH, kW] equivalent to lora_B(lora_A(x)) * scale.

@@ -93,8 +93,7 @@ def test_yolo26_mixture_train_inference_and_graph_contract(variant):
         routed = [
             module
             for module in model.modules()
-            if module.__class__.__name__
-            in {"A2C2fMoE", "C2fMoA", "C2fMoT", "MoLoRALayer"}
+            if module.__class__.__name__ in {"A2C2fMoE", "C2fMoA", "C2fMoT", "MoLoRALayer"}
         ]
         assert routed
         assert any(

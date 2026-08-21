@@ -260,7 +260,9 @@ def train_one(args: argparse.Namespace, spec: VersionSpec, data_yaml: Path, proj
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--versions", nargs="+", default=DEFAULT_VERSIONS, help="Versions to run, e.g. v0_1 v0_2 ...")
-    parser.add_argument("--data", type=Path, default=default_data_yaml(), help="Dataset YAML. Defaults to local coco128.")
+    parser.add_argument(
+        "--data", type=Path, default=default_data_yaml(), help="Dataset YAML. Defaults to local coco128."
+    )
     parser.add_argument("--project", type=Path, default=ROOT / "runs/moe_coco128_compare")
     parser.add_argument("--name-prefix", default="", help="Prefix for run directories, e.g. smoke_")
     parser.add_argument("--epochs", type=int, default=30)
@@ -276,10 +278,18 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--plots", action="store_true")
     parser.add_argument("--exist-ok", action="store_true")
     parser.add_argument("--skip-existing", action="store_true")
-    parser.add_argument("--resume-existing", action="store_true", help="Resume from each run's weights/last.pt when present.")
-    parser.add_argument("--extra-epochs", type=int, help="Additional epochs to run from existing results; implies --resume-existing.")
-    parser.add_argument("--init-from-project", type=Path, help="Initialize each version from another project's <version>/weights/*.pt.")
-    parser.add_argument("--init-weight", default="last", choices=("last", "best"), help="Weight file to use with --init-from-project.")
+    parser.add_argument(
+        "--resume-existing", action="store_true", help="Resume from each run's weights/last.pt when present."
+    )
+    parser.add_argument(
+        "--extra-epochs", type=int, help="Additional epochs to run from existing results; implies --resume-existing."
+    )
+    parser.add_argument(
+        "--init-from-project", type=Path, help="Initialize each version from another project's <version>/weights/*.pt."
+    )
+    parser.add_argument(
+        "--init-weight", default="last", choices=("last", "best"), help="Weight file to use with --init-from-project."
+    )
     parser.add_argument("--stop-on-failure", action="store_true")
     parser.add_argument("--dry-run", action="store_true", help="Print resolved configs and exit.")
     parser.add_argument("--check-build", action="store_true", help="Instantiate all selected DetectionModels and exit.")

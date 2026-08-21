@@ -28,7 +28,10 @@ from runtime.evaluation.metrics import (
     detection_label_counts,
     overall_multimodal_evaluation_status,
 )
-from runtime.multimodal.fusion import build_multimodal_fusion_preview as fusion_build_multimodal_fusion_preview, merge_verdicts
+from runtime.multimodal.fusion import (
+    build_multimodal_fusion_preview as fusion_build_multimodal_fusion_preview,
+    merge_verdicts,
+)
 from runtime.multimodal.runtime import (
     attach_multimodal_verdict,
     build_multimodal_evaluation_prompt,
@@ -101,7 +104,10 @@ def run_multimodal_infer(request: dict[str, Any], deps: MultimodalDeps) -> dict[
     effective_request["params"] = yolo_params
     effective_request["inputs"]["source"] = source
 
-    method = str(multimodal_params.get("method") or ("thinking-with-image" if thinking_with_image else "detector-text-reflection"))
+    method = str(
+        multimodal_params.get("method")
+        or ("thinking-with-image" if thinking_with_image else "detector-text-reflection")
+    )
     if is_dry_run(request):
         return plan_response(
             effective_request,
@@ -110,7 +116,12 @@ def run_multimodal_infer(request: dict[str, Any], deps: MultimodalDeps) -> dict[
             "yolo.multimodal.infer",
             params={
                 "stages": [
-                    {"name": "yolo_predict", "executor": "python_api", "target": "YOLO(...).predict", "params": yolo_params},
+                    {
+                        "name": "yolo_predict",
+                        "executor": "python_api",
+                        "target": "YOLO(...).predict",
+                        "params": yolo_params,
+                    },
                     {
                         "name": "vlm_reasoning",
                         "executor": "openai.compatible",
@@ -163,7 +174,9 @@ def run_multimodal_infer(request: dict[str, Any], deps: MultimodalDeps) -> dict[
                     "open_world_assist_profile": multimodal_params.get("open_world_assist_profile"),
                     "open_world_filters": {
                         "taxonomy_min_score": multimodal_params.get("open_world_taxonomy_min_score"),
-                        "taxonomy_require_exact_for_generic": multimodal_params.get("open_world_taxonomy_require_exact_for_generic"),
+                        "taxonomy_require_exact_for_generic": multimodal_params.get(
+                            "open_world_taxonomy_require_exact_for_generic"
+                        ),
                         "filter_unmatched_taxonomy": multimodal_params.get("open_world_filter_unmatched_taxonomy"),
                         "filter_generic_labels": multimodal_params.get("open_world_filter_generic_labels"),
                     },
@@ -342,7 +355,11 @@ def run_multimodal_infer(request: dict[str, Any], deps: MultimodalDeps) -> dict[
         llm_result = attach_multimodal_verdict(llm_result)
 
     vlm_verdict = vlm_result.get("verdict", {}) if isinstance(vlm_result.get("verdict"), dict) else {}
-    llm_verdict = llm_result.get("verdict", {}) if isinstance(llm_result, dict) and isinstance(llm_result.get("verdict"), dict) else {}
+    llm_verdict = (
+        llm_result.get("verdict", {})
+        if isinstance(llm_result, dict) and isinstance(llm_result.get("verdict"), dict)
+        else {}
+    )
     fusion_verdict = merge_verdicts(vlm_verdict, llm_verdict)
     fusion_preview = fusion_build_multimodal_fusion_preview(
         detections=detections,
@@ -361,7 +378,10 @@ def run_multimodal_infer(request: dict[str, Any], deps: MultimodalDeps) -> dict[
     )
     if fusion_preview.get("enabled"):
         fusion_path = ensure_manifest_dir(request) / "fusion-preview.json"
-        fusion_path.write_text(json.dumps(json_safe({"image": image_ref, "fusion": fusion_preview}), ensure_ascii=False, indent=2), encoding="utf-8")
+        fusion_path.write_text(
+            json.dumps(json_safe({"image": image_ref, "fusion": fusion_preview}), ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
         fusion_preview["artifact"] = str(fusion_path.resolve())
         fusion_artifacts.append({"kind": "fusion_preview", "path": str(fusion_path.resolve())})
 
@@ -390,12 +410,18 @@ def run_multimodal_infer(request: dict[str, Any], deps: MultimodalDeps) -> dict[
             "open_world_assist_profile": multimodal_params.get("open_world_assist_profile"),
             "open_world_filters": {
                 "taxonomy_min_score": multimodal_params.get("open_world_taxonomy_min_score"),
-                "taxonomy_require_exact_for_generic": multimodal_params.get("open_world_taxonomy_require_exact_for_generic"),
+                "taxonomy_require_exact_for_generic": multimodal_params.get(
+                    "open_world_taxonomy_require_exact_for_generic"
+                ),
                 "filter_unmatched_taxonomy": multimodal_params.get("open_world_filter_unmatched_taxonomy"),
                 "filter_generic_labels": multimodal_params.get("open_world_filter_generic_labels"),
             },
             "use_marked_image": use_marked_image,
-            "visual_search": {"mode": visual_search_mode, "passes": visual_search_passes, "artifacts": visual_artifacts},
+            "visual_search": {
+                "mode": visual_search_mode,
+                "passes": visual_search_passes,
+                "artifacts": visual_artifacts,
+            },
             "provider": {
                 "name": provider_cfg["provider"],
                 "base_url": provider_cfg["base_url"],
@@ -468,7 +494,9 @@ def run_multimodal_evaluate(request: dict[str, Any], deps: MultimodalDeps) -> di
     if request["inputs"].get("source") is not None:
         effective_request["inputs"]["source"] = request["inputs"]["source"]
 
-    images, dataset_info, names = collect_multimodal_evaluation_images(request, evaluate_params, yolo_params, multimodal_params)
+    images, dataset_info, names = collect_multimodal_evaluation_images(
+        request, evaluate_params, yolo_params, multimodal_params
+    )
     effective_request["inputs"]["source"] = str(images[0].parent)
     environment = collect_environment_report(effective_request, selected_device=chosen_device)
 
@@ -505,7 +533,10 @@ def run_multimodal_evaluate(request: dict[str, Any], deps: MultimodalDeps) -> di
                     "api_mode": provider_cfg["api_mode"],
                     "api_key_env": provider_cfg["api_key_env"],
                     "api_key_present": provider_cfg["api_key_present"],
-                    "method": str(multimodal_params.get("method") or ("thinking-with-image" if thinking_with_image else "detector-text-reflection")),
+                    "method": str(
+                        multimodal_params.get("method")
+                        or ("thinking-with-image" if thinking_with_image else "detector-text-reflection")
+                    ),
                     "thinking_with_image": thinking_with_image,
                     "structured_output": structured_output,
                     "prompt_template": prompt_template,
@@ -516,7 +547,9 @@ def run_multimodal_evaluate(request: dict[str, Any], deps: MultimodalDeps) -> di
                     "fusion_mode": fusion_mode,
                     "open_world_filters": {
                         "taxonomy_min_score": multimodal_params.get("open_world_taxonomy_min_score"),
-                        "taxonomy_require_exact_for_generic": multimodal_params.get("open_world_taxonomy_require_exact_for_generic"),
+                        "taxonomy_require_exact_for_generic": multimodal_params.get(
+                            "open_world_taxonomy_require_exact_for_generic"
+                        ),
                         "filter_unmatched_taxonomy": multimodal_params.get("open_world_filter_unmatched_taxonomy"),
                         "filter_generic_labels": multimodal_params.get("open_world_filter_generic_labels"),
                     },
@@ -529,7 +562,10 @@ def run_multimodal_evaluate(request: dict[str, Any], deps: MultimodalDeps) -> di
     selected_device = chosen_device
     items: list[dict[str, Any]] = []
     save_dir = None
-    method = str(multimodal_params.get("method") or ("thinking-with-image" if thinking_with_image else "detector-text-reflection"))
+    method = str(
+        multimodal_params.get("method")
+        or ("thinking-with-image" if thinking_with_image else "detector-text-reflection")
+    )
     llm_enabled = bool(provider_cfg.get("llm_model") or multimodal_params.get("enable_llm_refine"))
 
     for index, image_path in enumerate(images):
@@ -550,7 +586,11 @@ def run_multimodal_evaluate(request: dict[str, Any], deps: MultimodalDeps) -> di
         try:
             yolo_prediction = model.predict(source=str(image_path), **yolo_params)
         except Exception as exc:
-            if device_selection["source"] == "auto" and selected_device not in (None, "cpu") and request.get("runtime", {}).get("allow_device_fallback", True):
+            if (
+                device_selection["source"] == "auto"
+                and selected_device not in (None, "cpu")
+                and request.get("runtime", {}).get("allow_device_fallback", True)
+            ):
                 retry_params = replace_cli_device(yolo_params, "cpu")
                 effective_request["params"] = retry_params
                 try:
@@ -575,7 +615,9 @@ def run_multimodal_evaluate(request: dict[str, Any], deps: MultimodalDeps) -> di
             else:
                 raise
 
-        detections = summarize_results_for_reasoning(yolo_prediction, max_items=1, max_boxes=int(multimodal_params.get("max_reasoning_boxes", 20)))
+        detections = summarize_results_for_reasoning(
+            yolo_prediction, max_items=1, max_boxes=int(multimodal_params.get("max_reasoning_boxes", 20))
+        )
         detection_summary = detections[0] if detections else {"path": str(image_path), "speed": {}, "detections": []}
         image_ref = visual_image_source_for_openai(str(image_path), detections, resolved_path=resolved_path)
         image_meta: dict[str, Any] = {
@@ -716,7 +758,11 @@ def run_multimodal_evaluate(request: dict[str, Any], deps: MultimodalDeps) -> di
             llm_result = attach_multimodal_verdict(llm_result)
 
         vlm_verdict = vlm_result.get("verdict", {}) if isinstance(vlm_result.get("verdict"), dict) else {}
-        llm_verdict = llm_result.get("verdict", {}) if isinstance(llm_result, dict) and isinstance(llm_result.get("verdict"), dict) else {}
+        llm_verdict = (
+            llm_result.get("verdict", {})
+            if isinstance(llm_result, dict) and isinstance(llm_result.get("verdict"), dict)
+            else {}
+        )
         merged_verdict = merge_verdicts(vlm_verdict, llm_verdict)
         fusion_preview = fusion_build_multimodal_fusion_preview(
             detections=detections,
@@ -760,7 +806,9 @@ def run_multimodal_evaluate(request: dict[str, Any], deps: MultimodalDeps) -> di
                     "open_world_assist_profile": multimodal_params.get("open_world_assist_profile"),
                     "open_world_filters": {
                         "taxonomy_min_score": multimodal_params.get("open_world_taxonomy_min_score"),
-                        "taxonomy_require_exact_for_generic": multimodal_params.get("open_world_taxonomy_require_exact_for_generic"),
+                        "taxonomy_require_exact_for_generic": multimodal_params.get(
+                            "open_world_taxonomy_require_exact_for_generic"
+                        ),
                         "filter_unmatched_taxonomy": multimodal_params.get("open_world_filter_unmatched_taxonomy"),
                         "filter_generic_labels": multimodal_params.get("open_world_filter_generic_labels"),
                     },
@@ -775,7 +823,11 @@ def run_multimodal_evaluate(request: dict[str, Any], deps: MultimodalDeps) -> di
                         "api_key_present": provider_cfg["api_key_present"],
                     },
                     "image": image_meta,
-                    "visual_search": {"mode": visual_search_mode, "passes": visual_search_passes, "artifacts": item_visual_artifacts},
+                    "visual_search": {
+                        "mode": visual_search_mode,
+                        "passes": visual_search_passes,
+                        "artifacts": item_visual_artifacts,
+                    },
                     "prompt": image_prompt,
                     "vlm": vlm_result,
                     "llm_refine": llm_result or {"status": "skipped"},
@@ -812,7 +864,9 @@ def run_multimodal_evaluate(request: dict[str, Any], deps: MultimodalDeps) -> di
     else:
         baseline = {"status": "skipped"}
 
-    final_selection_source = "recovery" if selected_device != chosen_device and selected_device == "cpu" else device_selection["source"]
+    final_selection_source = (
+        "recovery" if selected_device != chosen_device and selected_device == "cpu" else device_selection["source"]
+    )
     environment = collect_environment_report(
         effective_request,
         selected_device=selected_device,
@@ -842,7 +896,9 @@ def run_multimodal_evaluate(request: dict[str, Any], deps: MultimodalDeps) -> di
             "open_world_assist_profile": multimodal_params.get("open_world_assist_profile"),
             "open_world_filters": {
                 "taxonomy_min_score": multimodal_params.get("open_world_taxonomy_min_score"),
-                "taxonomy_require_exact_for_generic": multimodal_params.get("open_world_taxonomy_require_exact_for_generic"),
+                "taxonomy_require_exact_for_generic": multimodal_params.get(
+                    "open_world_taxonomy_require_exact_for_generic"
+                ),
                 "filter_unmatched_taxonomy": multimodal_params.get("open_world_filter_unmatched_taxonomy"),
                 "filter_generic_labels": multimodal_params.get("open_world_filter_generic_labels"),
             },
@@ -873,9 +929,7 @@ def run_multimodal_evaluate(request: dict[str, Any], deps: MultimodalDeps) -> di
         record
         for item in items
         for record in (
-            item.get("multimodal", {})
-            .get("fusion", {})
-            .get("coco_predictions_preview", [])
+            item.get("multimodal", {}).get("fusion", {}).get("coco_predictions_preview", [])
             if isinstance(item.get("multimodal", {}).get("fusion", {}), dict)
             else []
         )
@@ -896,11 +950,15 @@ def run_multimodal_evaluate(request: dict[str, Any], deps: MultimodalDeps) -> di
     report_path.write_text(json.dumps(json_safe(report), ensure_ascii=False, indent=2), encoding="utf-8")
     artifacts = [{"kind": "json", "path": str(report_path.resolve())}]
     open_world_report_path = report_dir / "open-world-comparison-report.json"
-    open_world_report_path.write_text(json.dumps(json_safe(open_world_report), ensure_ascii=False, indent=2), encoding="utf-8")
+    open_world_report_path.write_text(
+        json.dumps(json_safe(open_world_report), ensure_ascii=False, indent=2), encoding="utf-8"
+    )
     artifacts.append({"kind": "open_world_comparison_report", "path": str(open_world_report_path.resolve())})
     if fusion_coco_records:
         fusion_path = report_dir / "fusion-preview-coco-predictions.json"
-        fusion_path.write_text(json.dumps(json_safe(fusion_coco_records), ensure_ascii=False, indent=2), encoding="utf-8")
+        fusion_path.write_text(
+            json.dumps(json_safe(fusion_coco_records), ensure_ascii=False, indent=2), encoding="utf-8"
+        )
         artifacts.append({"kind": "fusion_coco_predictions_preview", "path": str(fusion_path.resolve())})
     if metric_preview.get("status") == "ok":
         metric_path = report_dir / "fusion-metric-preview.json"
@@ -908,7 +966,9 @@ def run_multimodal_evaluate(request: dict[str, Any], deps: MultimodalDeps) -> di
         artifacts.append({"kind": "fusion_metric_preview", "path": str(metric_path.resolve())})
     if metric_guardrail.get("records"):
         guarded_path = report_dir / "metric-guarded-coco-predictions.json"
-        guarded_path.write_text(json.dumps(json_safe(metric_guardrail["records"]), ensure_ascii=False, indent=2), encoding="utf-8")
+        guarded_path.write_text(
+            json.dumps(json_safe(metric_guardrail["records"]), ensure_ascii=False, indent=2), encoding="utf-8"
+        )
         artifacts.append({"kind": "metric_guarded_coco_predictions", "path": str(guarded_path.resolve())})
     if save_dir:
         artifacts.append({"kind": "directory", "path": str(Path(save_dir).resolve())})
@@ -917,7 +977,12 @@ def run_multimodal_evaluate(request: dict[str, Any], deps: MultimodalDeps) -> di
         request["skill"],
         overall_status,
         f"multimodal evaluation finished on {len(items)} images",
-        job={"mode": "sync", "save_dir": json_safe(save_dir), "executor": "python_api+openai", "device": selected_device},
+        job={
+            "mode": "sync",
+            "save_dir": json_safe(save_dir),
+            "executor": "python_api+openai",
+            "device": selected_device,
+        },
         results=items,
         evaluation=aggregate,
         environment=environment,

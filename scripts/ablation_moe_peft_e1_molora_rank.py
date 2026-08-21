@@ -9,6 +9,7 @@ Same total parameter budget is enforced by setting rank_budget_total = num_exper
 Usage:
     python scripts/ablation_moe_peft_e1_molora_rank.py
 """
+
 import os
 import sys
 import json
@@ -26,6 +27,7 @@ os.environ.setdefault("YOLO_VERBOSE", "false")
 
 import torch
 from ultralytics.utils import SETTINGS
+
 SETTINGS["wandb"] = False
 
 from ultralytics import YOLO
@@ -61,6 +63,7 @@ def apply_moe_aware_to_model(model, config):
     target_modules = getattr(config, "target_modules", None)
     if target_modules is None or not target_modules:
         from ultralytics.nn.peft.molora import MoLoRAConfigBuilder
+
         target_modules = MoLoRAConfigBuilder.auto_detect_targets(
             model, r=config.r, include_moe=True, only_backbone=False
         )
@@ -86,12 +89,13 @@ def apply_moe_aware_to_model(model, config):
     model.molora_enabled = True
     # Freeze non-MoLoRA
     from ultralytics.nn.peft.molora.utils import mark_only_molora_as_trainable
+
     mark_only_molora_as_trainable(model)
     return wrapped
 
 
 def run_variant(name: str, config: MoLoRAMoEAwareConfig):
-    print(f"\n{'='*70}\n=== Variant: {name.upper()} {'='*40}\n{'='*70}")
+    print(f"\n{'=' * 70}\n=== Variant: {name.upper()} {'=' * 40}\n{'=' * 70}")
 
     t0 = time.time()
     model = YOLO(MODEL_PATH)
@@ -216,9 +220,11 @@ def main():
     print("-" * 100)
     for r in all_records:
         m = r["final_metrics"].get("metrics/mAP50-95(B)", float("nan"))
-        print(f"{r['name']:<12} {'Y' if r['ok'] else 'N':<3} "
-              f"{r['params_trainable']:>11,} {r['trainable_pct']:>7.3f} "
-              f"{r['rank_info']:>20} {m if isinstance(m, float) else '':>10}")
+        print(
+            f"{r['name']:<12} {'Y' if r['ok'] else 'N':<3} "
+            f"{r['params_trainable']:>11,} {r['trainable_pct']:>7.3f} "
+            f"{r['rank_info']:>20} {m if isinstance(m, float) else '':>10}"
+        )
     print("=" * 100)
     print(f"\n详细结果: {RESULTS_JSON}")
 

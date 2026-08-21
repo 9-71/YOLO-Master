@@ -249,15 +249,14 @@ def safe_load_with_verify(
     report = verify_moe_weights(model, ckpt_sd, verbose=verbose)
 
     if strict and report.has_issues():
-        raise RuntimeError(
-            f"Strict MoE weight verification failed:\n{report.summary()}"
-        )
+        raise RuntimeError(f"Strict MoE weight verification failed:\n{report.summary()}")
 
     # Perform actual load (using the model's own load method if available)
     if hasattr(model, "load"):
         model.load(ckpt_model, verbose=verbose)
     else:
         from ultralytics.utils.torch_utils import intersect_dicts
+
         csd = intersect_dicts(ckpt_sd, model.state_dict())
         model.load_state_dict(csd, strict=False)
 
@@ -265,8 +264,7 @@ def safe_load_with_verify(
     post_report = verify_moe_weights(model, ckpt_sd, verbose=False)
     if verbose and post_report.uninitialized_moe_params:
         logger.warning(
-            f"Post-load check: {len(post_report.uninitialized_moe_params)} "
-            f"MoE params still uninitialized after loading"
+            f"Post-load check: {len(post_report.uninitialized_moe_params)} MoE params still uninitialized after loading"
         )
 
     return report

@@ -84,15 +84,23 @@ def validate_export_roundtrip(
         raw = buffer.getvalue()
         onnx.checker.check_model(onnx.load_from_string(raw))
         session = ort.InferenceSession(raw, providers=["CPUExecutionProvider"])
-        actual = [torch.from_numpy(value) for value in session.run(None, {name: value.numpy() for name, value in zip(input_names, input_tuple)})]
+        actual = [
+            torch.from_numpy(value)
+            for value in session.run(None, {name: value.numpy() for name, value in zip(input_names, input_tuple)})
+        ]
         artifact_bytes = len(raw)
     else:
         raise ValueError(f"Unsupported roundtrip format: {fmt}")
 
     if len(actual) != len(eager):
         raise RuntimeError(f"Export output count mismatch: eager={len(eager)}, exported={len(actual)}")
-    errors = [float((expected.float() - observed.float()).abs().max().item()) for expected, observed in zip(eager, actual)]
-    passed = all(torch.allclose(expected, observed.to(expected.dtype), atol=atol, rtol=rtol) for expected, observed in zip(eager, actual))
+    errors = [
+        float((expected.float() - observed.float()).abs().max().item()) for expected, observed in zip(eager, actual)
+    ]
+    passed = all(
+        torch.allclose(expected, observed.to(expected.dtype), atol=atol, rtol=rtol)
+        for expected, observed in zip(eager, actual)
+    )
     result = ExportRoundtripResult(fmt, artifact_bytes, len(eager), max(errors, default=0.0), atol, rtol, passed)
     if not passed:
         raise RuntimeError(f"{fmt} roundtrip numerical mismatch: max_abs_error={result.max_abs_error:.6g}")

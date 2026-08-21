@@ -31,6 +31,7 @@ from ultralytics.utils.lora.planner import (
 # Helpers
 # =============================================================================
 
+
 class AAttn(nn.Module):
     """Dummy attention module (AAttn-style, no submodules).
 
@@ -124,6 +125,7 @@ def test_apply_lora_fallback_preserves_adapt_decision_metadata():
 # =============================================================================
 # Mock Models — deterministically build architecture fingerprints
 # =============================================================================
+
 
 def _make_yolo11s_like():
     """YOLO11s-like: no attention, no text-fusion (φ_attn=0, φ_text=0)."""
@@ -247,6 +249,7 @@ def _make_yolo_world_like():
 # TestArchitectureFingerprint
 # =============================================================================
 
+
 class TestArchitectureFingerprint:
     """Test architecture fingerprint computation."""
 
@@ -335,6 +338,7 @@ class TestArchitectureFingerprint:
 # TestPEFTVariantProfile
 # =============================================================================
 
+
 class TestPEFTVariantProfile:
     """Test calibrated variant profiles from Table 1."""
 
@@ -380,6 +384,7 @@ class TestPEFTVariantProfile:
 # TestPEFTPlannerFit
 # =============================================================================
 
+
 class TestPEFTPlannerFit:
     """Test regression fitting against paper Table 1 data."""
 
@@ -418,8 +423,8 @@ class TestPEFTPlannerFit:
         planner.fit(self._PAPER_HISTORY)
         assert len(planner._coeffs) == 12  # v3: 12-dimensional
         # Coefficients should be physically reasonable
-        assert planner._coeffs[0] > 0.0   # intercept positive
-        assert planner._coeffs[4] > 0.0   # xi coefficient positive (HRA > LoRA)
+        assert planner._coeffs[0] > 0.0  # intercept positive
+        assert planner._coeffs[4] > 0.0  # xi coefficient positive (HRA > LoRA)
         # Predictions on training data should be accurate
         fp11 = ArchitectureFingerprint(0.0, 0.0, 0.0)
         fp12 = ArchitectureFingerprint(0.45, 0.0, 0.0)
@@ -465,6 +470,7 @@ class TestPEFTPlannerFit:
 # =============================================================================
 # TestPEFTPlannerPlan
 # =============================================================================
+
 
 class TestPEFTPlannerPlan:
     """Test placement decisions against paper scenarios (Table 1, Fig. 4)."""
@@ -653,6 +659,7 @@ class TestPEFTPlannerPlan:
 # TestPEFTPlannerDetectTargets
 # =============================================================================
 
+
 class TestPEFTPlannerDetectTargets:
     """Test architecture-conditioned target detection."""
 
@@ -751,6 +758,7 @@ class TestPEFTPlannerDetectTargets:
 # TestPlacementDecision
 # =============================================================================
 
+
 class TestPlacementDecision:
     """Test PlacementDecision dataclass validation."""
 
@@ -772,6 +780,7 @@ class TestPlacementDecision:
 # =============================================================================
 # TestIsPlannerEnabled
 # =============================================================================
+
 
 class TestIsPlannerEnabled:
     """Test is_planner_enabled helper."""
@@ -806,6 +815,7 @@ class TestIsPlannerEnabled:
 # TestRegressionMetrics (sanity-check against paper Table 2)
 # =============================================================================
 
+
 class TestRegressionMetrics:
     """Verify that the calibrated model achieves R² close to the paper value."""
 
@@ -834,6 +844,7 @@ class TestRegressionMetrics:
             y_pred.append(pred)
 
         import numpy as np
+
         y_arr = np.array(y)
         y_pred_arr = np.array(y_pred)
         ss_res = np.sum((y_arr - y_pred_arr) ** 2)
@@ -847,6 +858,7 @@ class TestRegressionMetrics:
 # =============================================================================
 # TestLOVOEngine
 # =============================================================================
+
 
 class TestLOVOEngine:
     """Test LOVO data collection and validation engine."""
@@ -880,9 +892,7 @@ class TestLOVOEngine:
         assert collector.to_ranks() == [8] * 10
 
     def test_collector_preserves_rank(self, tmp_path):
-        collector = LOVODataCollector([
-            LOVODataPoint(ArchitectureFingerprint(0.0, 0.0, 0.0), "lora", 0.0710, rank=16)
-        ])
+        collector = LOVODataCollector([LOVODataPoint(ArchitectureFingerprint(0.0, 0.0, 0.0), "lora", 0.0710, rank=16)])
         path = tmp_path / "ranked_lovo_data.json"
         collector.save(path)
         loaded = LOVODataCollector.load(path)
@@ -922,15 +932,9 @@ class TestLOVOEngine:
         # the non-linear phi_attn² pattern. With only 1 catastrophic point
         # in training, the regression cannot distinguish it from noise.
         points = list(self._PAPER_HISTORY)
-        points.append(
-            LOVODataPoint(ArchitectureFingerprint(0.85, 0.0, 0.0), "lora", -0.600, model_name="RT-DETR-l")
-        )
-        points.append(
-            LOVODataPoint(ArchitectureFingerprint(0.80, 0.0, 0.0), "lora", -0.450, model_name="RT-DETR-m")
-        )
-        points.append(
-            LOVODataPoint(ArchitectureFingerprint(0.45, 0.0, 0.0), "dora", -0.055, model_name="YOLO12s")
-        )
+        points.append(LOVODataPoint(ArchitectureFingerprint(0.85, 0.0, 0.0), "lora", -0.600, model_name="RT-DETR-l"))
+        points.append(LOVODataPoint(ArchitectureFingerprint(0.80, 0.0, 0.0), "lora", -0.450, model_name="RT-DETR-m"))
+        points.append(LOVODataPoint(ArchitectureFingerprint(0.45, 0.0, 0.0), "dora", -0.055, model_name="YOLO12s"))
         collector = LOVODataCollector(points)
 
         # Full-fit evaluation (not LOVO) — the regression should learn the

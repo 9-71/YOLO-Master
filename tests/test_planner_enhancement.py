@@ -31,6 +31,7 @@ from ultralytics.utils.lora.planner import (
 # DecisionAudit
 # ============================================================================
 
+
 class TestDecisionAudit:
     """Test the structured audit record."""
 
@@ -93,6 +94,7 @@ class TestDecisionAudit:
 # ArchitectureFingerprint caching
 # ============================================================================
 
+
 class TestFingerprintCache:
     """Test the WeakKeyDictionary cache."""
 
@@ -109,6 +111,7 @@ class TestFingerprintCache:
 
     def test_cache_auto_invalidation_on_gc(self):
         """WeakKeyDictionary drops entries when the model is GC'd."""
+
         class _Model(nn.Module):
             def __init__(self):
                 super().__init__()
@@ -125,6 +128,7 @@ class TestFingerprintCache:
         del model
         # Force gc so WeakKeyDictionary can clean up
         import gc
+
         gc.collect()
 
         assert len(_fingerprint_cache) == before
@@ -144,6 +148,7 @@ class TestFingerprintCache:
 
     def test_cache_no_leak_across_different_instances(self):
         """Different model instances should not share cached fingerprints."""
+
         class _Model(nn.Module):
             def __init__(self, n):
                 super().__init__()
@@ -159,6 +164,7 @@ class TestFingerprintCache:
 # ============================================================================
 # _unwrap_model
 # ============================================================================
+
 
 class TestUnwrapModel:
     """Test DDP / DataParallel / torch.compile unwrapping."""
@@ -202,6 +208,7 @@ class TestUnwrapModel:
 # PlacementDecision.to_dict
 # ============================================================================
 
+
 class TestPlacementDecisionDict:
     def test_accept_to_dict(self):
         d = PlacementDecision(status="ACCEPT", predicted_delta=0.05)
@@ -240,6 +247,7 @@ class TestPlacementDecisionDict:
 # Empty model handling
 # ============================================================================
 
+
 class TestEmptyModel:
     """Test that models with no Conv2d / Linear return zero fingerprint."""
 
@@ -270,6 +278,7 @@ class TestEmptyModel:
 # ============================================================================
 # PEFTPlanner audit integration
 # ============================================================================
+
 
 class TestPlannerAuditIntegration:
     """Test that plan() emits audit records."""
@@ -332,9 +341,7 @@ class TestPlannerAuditIntegration:
         planner = PEFTPlanner(audit_dir=tmp_path)
         config = LoRAConfig(peft_type="dora", r=16)
         decision = planner.plan(_YOLO12(), config)
-        assert decision.status == "ADAPT", (
-            f"Expected ADAPT (DoRA→LoRA downgrade), got {decision.status}"
-        )
+        assert decision.status == "ADAPT", f"Expected ADAPT (DoRA→LoRA downgrade), got {decision.status}"
 
         files = list(tmp_path.glob("*.json"))
         assert len(files) == 1

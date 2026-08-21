@@ -127,7 +127,9 @@ def run_sahi_compare(request: dict[str, Any]) -> dict[str, Any]:
             start = time.perf_counter()
             boxes, scores, classes, meta = legacy_sahi.predict_standard(str(image_path), conf_thres=conf)
             item["full_sahi"] = {
-                "latency_sec": round(float(meta.get("inference_time", time.perf_counter() - start)), 6) if isinstance(meta, dict) else round(time.perf_counter() - start, 6),
+                "latency_sec": round(float(meta.get("inference_time", time.perf_counter() - start)), 6)
+                if isinstance(meta, dict)
+                else round(time.perf_counter() - start, 6),
                 "boxes": len(boxes),
                 "slices": len(meta.get("slices", [])) if isinstance(meta, dict) else None,
                 "classes": json_safe([int(value) for value in classes]) if classes is not None else [],
@@ -160,7 +162,9 @@ def run_sahi_compare(request: dict[str, Any]) -> dict[str, Any]:
         evaluation={
             "images": len(items),
             "avg_standard_latency_sec": round(sum(item["standard"]["latency_sec"] for item in items) / len(items), 6),
-            "avg_sparse_sahi_latency_sec": round(sum(item["sparse_sahi"]["latency_sec"] for item in items) / len(items), 6),
+            "avg_sparse_sahi_latency_sec": round(
+                sum(item["sparse_sahi"]["latency_sec"] for item in items) / len(items), 6
+            ),
         },
         artifacts=[{"kind": "directory", "path": str(output_dir.resolve())}],
         next_actions=["yolo.predict", "yolo.val"],

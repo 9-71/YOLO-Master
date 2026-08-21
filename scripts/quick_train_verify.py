@@ -10,6 +10,7 @@ Validates the full MoE-aware PEFT training loop:
 Usage:
     python scripts/quick_train_verify.py
 """
+
 import os
 import sys
 import json
@@ -27,6 +28,7 @@ os.environ.setdefault("YOLO_VERBOSE", "false")
 
 import torch
 from ultralytics.utils import SETTINGS
+
 SETTINGS["wandb"] = False
 
 from ultralytics import YOLO
@@ -58,6 +60,7 @@ def apply_moe_aware_to_model(model, config):
     target_modules = getattr(config, "target_modules", None)
     if target_modules is None or not target_modules:
         from ultralytics.nn.peft.molora import MoLoRAConfigBuilder
+
         target_modules = MoLoRAConfigBuilder.auto_detect_targets(
             model, r=config.r, include_moe=True, only_backbone=False
         )
@@ -79,12 +82,13 @@ def apply_moe_aware_to_model(model, config):
     model.molora_config = config
     model.molora_enabled = True
     from ultralytics.nn.peft.molora.utils import mark_only_molora_as_trainable
+
     mark_only_molora_as_trainable(model)
     return wrapped
 
 
 def run_training(name: str, config: MoLoRAMoEAwareConfig):
-    print(f"\n{'='*70}\n=== Quick Verify: {name.upper()} {'='*40}\n{'='*70}")
+    print(f"\n{'=' * 70}\n=== Quick Verify: {name.upper()} {'=' * 40}\n{'=' * 70}")
     print(f"Device: {DEVICE} | Epochs: {EPOCHS} | Batch: {BATCH} | Data: {DATA_YAML}")
 
     t0 = time.time()
@@ -96,20 +100,16 @@ def run_training(name: str, config: MoLoRAMoEAwareConfig):
     print(f"[MoE-aware] Wrapped {wrapped} layers")
 
     post_total, post_train = count_params(model.model)
-    print(f"[Post-wrap] total={post_total:,} trainable={post_train:,} ({post_train/post_total*100:.2f}%)")
+    print(f"[Post-wrap] total={post_total:,} trainable={post_train:,} ({post_train / post_total * 100:.2f}%)")
 
     # Verify calibration presence
     has_calib = any(
-        hasattr(m, "router_calibration") and m.router_calibration is not None
-        for m in model.model.modules()
+        hasattr(m, "router_calibration") and m.router_calibration is not None for m in model.model.modules()
     )
     print(f"[Calibration] Present={has_calib}")
 
     # Verify per-expert ranks
-    has_per_rank = any(
-        hasattr(m, "_expert_ranks") and m._expert_ranks is not None
-        for m in model.model.modules()
-    )
+    has_per_rank = any(hasattr(m, "_expert_ranks") and m._expert_ranks is not None for m in model.model.modules())
     print(f"[Per-expert rank] Present={has_per_rank}")
     if has_per_rank:
         for name, m in model.model.named_modules():
@@ -142,6 +142,7 @@ def run_training(name: str, config: MoLoRAMoEAwareConfig):
         results = None
         print(f"[ERROR] {err}")
         import traceback
+
         traceback.print_exc()
 
     elapsed = time.time() - t0
@@ -167,9 +168,9 @@ def run_training(name: str, config: MoLoRAMoEAwareConfig):
 
 
 def main():
-    print(f"{'='*70}")
+    print(f"{'=' * 70}")
     print("MoE-aware PEFT Quick Training Verification")
-    print(f"{'='*70}")
+    print(f"{'=' * 70}")
 
     config = MoLoRAMoEAwareConfig(
         r=8,
@@ -194,9 +195,9 @@ def main():
     print(f"\n[Saved] Results: {RESULTS_JSON}")
 
     # Summary
-    print(f"\n{'='*70}")
+    print(f"\n{'=' * 70}")
     print("VERIFICATION SUMMARY")
-    print(f"{'='*70}")
+    print(f"{'=' * 70}")
     status = "✅ PASSED" if record["ok"] else "❌ FAILED"
     print(f"Status: {status}")
     print(f"Elapsed: {record['elapsed_sec']:.1f}s")
@@ -209,7 +210,7 @@ def main():
         print(f"mAP50-95: {map_val:.4f}")
     else:
         print("mAP50-95: N/A (check training output above)")
-    print(f"{'='*70}")
+    print(f"{'=' * 70}")
 
     if not record["ok"]:
         sys.exit(1)

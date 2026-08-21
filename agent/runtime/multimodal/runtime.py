@@ -99,9 +99,19 @@ def openai_config(params: dict[str, Any]) -> dict[str, Any]:
         "api_key_env": api_key_env,
         "api_key_present": _env_present(api_key_env),
         "base_url": base_url,
-        "api_mode": params.get("openai_api_mode") or os.environ.get("OPENAI_API_MODE") or defaults.get("api_mode") or "auto",
-        "vlm_model": params.get("vlm_model") or os.environ.get("OPENAI_VLM_MODEL") or os.environ.get("OPENAI_MODEL") or defaults.get("vlm_model") or "gpt-4.1-mini",
-        "llm_model": params.get("llm_model") or os.environ.get("OPENAI_LLM_MODEL") or os.environ.get("OPENAI_MODEL") or defaults.get("llm_model"),
+        "api_mode": params.get("openai_api_mode")
+        or os.environ.get("OPENAI_API_MODE")
+        or defaults.get("api_mode")
+        or "auto",
+        "vlm_model": params.get("vlm_model")
+        or os.environ.get("OPENAI_VLM_MODEL")
+        or os.environ.get("OPENAI_MODEL")
+        or defaults.get("vlm_model")
+        or "gpt-4.1-mini",
+        "llm_model": params.get("llm_model")
+        or os.environ.get("OPENAI_LLM_MODEL")
+        or os.environ.get("OPENAI_MODEL")
+        or defaults.get("llm_model"),
     }
 
 
@@ -187,7 +197,9 @@ def build_thinking_with_image_prompt(
             "especially caption, global_classification, vlm_detections, vlm_segmentation, visual_search, yolo_cross_check, fusion_hints, uncertainty, and recommended_next_actions."
         )
         if prompt_template_name(prompt_template) == "vlm_open_world_detection":
-            template_output_instruction += " Keep open-world labels when visible, and add COCO mapping fields only when grounded."
+            template_output_instruction += (
+                " Keep open-world labels when visible, and add COCO mapping fields only when grounded."
+            )
         return render_prompt_template(
             template,
             {
@@ -258,7 +270,9 @@ def build_multimodal_evaluation_prompt(
         "Focus on detector agreement, obvious false positives, likely missed objects, duplicates, and uncertainty."
     )
     if include_ground_truth:
-        prompt += "\n\nGround-truth labels for post-hoc comparison:\n" + json.dumps(ground_truth, ensure_ascii=False, indent=2)
+        prompt += "\n\nGround-truth labels for post-hoc comparison:\n" + json.dumps(
+            ground_truth, ensure_ascii=False, indent=2
+        )
     return prompt
 
 
@@ -375,7 +389,16 @@ def extract_openai_chat_text(payload: dict[str, Any]) -> str:
 
 def classify_openai_http_status(detail: str) -> str:
     text = detail.lower()
-    blocked_markers = ("access denied", "arrearage", "insufficient_quota", "quota", "billing", "permission", "unauthorized", "forbidden")
+    blocked_markers = (
+        "access denied",
+        "arrearage",
+        "insufficient_quota",
+        "quota",
+        "billing",
+        "permission",
+        "unauthorized",
+        "forbidden",
+    )
     return "blocked" if any(marker in text for marker in blocked_markers) else "failed"
 
 
@@ -392,9 +415,16 @@ def call_openai_responses(
     max_output_tokens: int = 800,
     temperature: float | None = None,
 ) -> dict[str, Any]:
-    api_key = os.environ.get(api_key_env) or (os.environ.get("OPENAI_API_KEY") if api_key_env != "OPENAI_API_KEY" else None)
+    api_key = os.environ.get(api_key_env) or (
+        os.environ.get("OPENAI_API_KEY") if api_key_env != "OPENAI_API_KEY" else None
+    )
     if not api_key:
-        return {"status": "blocked", "provider": provider, "summary": f"{api_key_env} is not set; multimodal reasoning was skipped.", "api_key_env": api_key_env}
+        return {
+            "status": "blocked",
+            "provider": provider,
+            "summary": f"{api_key_env} is not set; multimodal reasoning was skipped.",
+            "api_key_env": api_key_env,
+        }
     base_url = (base_url or os.environ.get("OPENAI_BASE_URL") or "https://api.openai.com/v1").rstrip("/")
     content: list[dict[str, Any]] = [{"type": "input_text", "text": user_text}]
     if image_url:
@@ -424,7 +454,12 @@ def call_openai_responses(
             "error": {"type": "HTTPError", "code": exc.code, "body": detail},
         }
     except Exception as exc:
-        return {"status": "failed", "provider": provider, "summary": "OpenAI Responses API request failed", "error": {"type": type(exc).__name__, "message": str(exc)}}
+        return {
+            "status": "failed",
+            "provider": provider,
+            "summary": "OpenAI Responses API request failed",
+            "error": {"type": type(exc).__name__, "message": str(exc)},
+        }
     return {
         "status": "ok",
         "provider": provider,
@@ -448,7 +483,9 @@ def call_openai_chat_completions(
     max_output_tokens: int = 800,
     temperature: float | None = None,
 ) -> dict[str, Any]:
-    api_key = os.environ.get(api_key_env) or (os.environ.get("OPENAI_API_KEY") if api_key_env != "OPENAI_API_KEY" else None)
+    api_key = os.environ.get(api_key_env) or (
+        os.environ.get("OPENAI_API_KEY") if api_key_env != "OPENAI_API_KEY" else None
+    )
     if not api_key:
         return {
             "status": "blocked",
@@ -487,7 +524,13 @@ def call_openai_chat_completions(
             "error": {"type": "HTTPError", "code": exc.code, "body": detail},
         }
     except Exception as exc:
-        return {"status": "failed", "provider": provider, "api_mode": "chat.completions", "summary": "OpenAI-compatible Chat Completions API request failed", "error": {"type": type(exc).__name__, "message": str(exc)}}
+        return {
+            "status": "failed",
+            "provider": provider,
+            "api_mode": "chat.completions",
+            "summary": "OpenAI-compatible Chat Completions API request failed",
+            "error": {"type": type(exc).__name__, "message": str(exc)},
+        }
     return {
         "status": "ok",
         "provider": provider,
@@ -642,7 +685,11 @@ def extract_visual_search_regions(verdict: dict[str, Any]) -> list[dict[str, Any
                 "bbox_xyxy": [float(v) for v in bbox[:4]],
                 "purpose": str(region.get("purpose") or region.get("reason") or "inspect uncertain region"),
                 "priority": str(region.get("priority") or "medium"),
-                "linked_yolo_indices": [int(v) for v in region.get("linked_yolo_indices", []) if isinstance(v, (int, float, str)) and str(v).isdigit()],
+                "linked_yolo_indices": [
+                    int(v)
+                    for v in region.get("linked_yolo_indices", [])
+                    if isinstance(v, (int, float, str)) and str(v).isdigit()
+                ],
                 "raw": region,
             }
         )
@@ -707,7 +754,11 @@ def run_visual_search_crop_passes(
                 or multimodal_params.get("system_prompt")
                 or "You are a careful visual search assistant. Focus on the crop and return concise structured JSON."
             ),
-            image_url=encode_image_reference_for_openai(str(crop_path), resolved_path=resolved_path_fn, max_bytes=int(multimodal_params.get("max_image_bytes", 20_000_000)))["image_url"],
+            image_url=encode_image_reference_for_openai(
+                str(crop_path),
+                resolved_path=resolved_path_fn,
+                max_bytes=int(multimodal_params.get("max_image_bytes", 20_000_000)),
+            )["image_url"],
             image_detail=str(multimodal_params.get("image_detail", "auto")),
             base_url=provider_cfg["base_url"],
             provider=str(provider_cfg.get("provider", "openai")),
@@ -717,5 +768,11 @@ def run_visual_search_crop_passes(
             temperature=float(multimodal_params["temperature"]) if "temperature" in multimodal_params else None,
         )
         crop_result = attach_multimodal_verdict_fn(crop_result)
-        region_results.append({"region": {**region, "bbox_xyxy": bbox}, "crop": {"path": str(crop_path.resolve()), "bbox_xyxy": bbox}, "vlm": crop_result})
+        region_results.append(
+            {
+                "region": {**region, "bbox_xyxy": bbox},
+                "crop": {"path": str(crop_path.resolve()), "bbox_xyxy": bbox},
+                "vlm": crop_result,
+            }
+        )
     return region_results, artifacts

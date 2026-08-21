@@ -10,11 +10,13 @@ Usage (在你自己的终端直接跑):
     # 自定义:
     python scripts/bench_moe_mps.py --bs 4 --imgsz 640 --runs 50 --warmup 10
 """
+
 import argparse
 import time
 import warnings
 import os
 import sys
+
 warnings.filterwarnings("ignore")
 
 import torch
@@ -82,9 +84,9 @@ def bench(model, x, runs, warmup, device):
     core = ts[trim:-trim] if len(ts) > 2 * trim else ts
     return {
         "median_ms": ts[len(ts) // 2],
-        "mean_ms":   sum(core) / len(core),
-        "min_ms":    min(ts),
-        "p95_ms":    ts[int(len(ts) * 0.95)],
+        "mean_ms": sum(core) / len(core),
+        "min_ms": min(ts),
+        "p95_ms": ts[int(len(ts) * 0.95)],
     }
 
 
@@ -122,8 +124,10 @@ def main():
             n_p = sum(p.numel() for p in m.parameters()) / 1e6
             r = bench(m, x, args.runs, args.warmup, dev)
             fps = 1000.0 / r["median_ms"] * args.bs
-            print(f"{name:<30}{n_p:>11.3f}{r['median_ms']:>9.2f}{r['mean_ms']:>9.2f}"
-                  f"{r['min_ms']:>9.2f}{r['p95_ms']:>9.2f}{fps:>8.1f}")
+            print(
+                f"{name:<30}{n_p:>11.3f}{r['median_ms']:>9.2f}{r['mean_ms']:>9.2f}"
+                f"{r['min_ms']:>9.2f}{r['p95_ms']:>9.2f}{fps:>8.1f}"
+            )
             del m
             if dev.type == "mps":
                 torch.mps.empty_cache()
@@ -133,10 +137,12 @@ def main():
             print(f"{name:<30}  FAIL: {type(e).__name__}: {e}")
 
     print("-" * 90)
-    print("[hint] 若 MPS 比 CPU 慢，检查:\n"
-          "       1) 是否 imgsz 太小 / bs=1 (warm-up 之外的小 kernel 启动开销主导)\n"
-          "       2) export PYTORCH_ENABLE_MPS_FALLBACK=1 是否启用了过多 fallback 算子\n"
-          "       3) 是否有 MoE 内部用了 MPS 不支持的 op (会回落 CPU 反而拖慢)")
+    print(
+        "[hint] 若 MPS 比 CPU 慢，检查:\n"
+        "       1) 是否 imgsz 太小 / bs=1 (warm-up 之外的小 kernel 启动开销主导)\n"
+        "       2) export PYTORCH_ENABLE_MPS_FALLBACK=1 是否启用了过多 fallback 算子\n"
+        "       3) 是否有 MoE 内部用了 MPS 不支持的 op (会回落 CPU 反而拖慢)"
+    )
 
 
 if __name__ == "__main__":

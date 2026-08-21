@@ -37,23 +37,37 @@ class EdgeDeployProfile:
 BUILTIN_PROFILES: dict[str, EdgeDeployProfile] = {
     "default": EdgeDeployProfile(name="default"),
     "visdrone": EdgeDeployProfile(
-        name="visdrone", imgsz=960, conf=0.20, iou=0.55,
+        name="visdrone",
+        imgsz=960,
+        conf=0.20,
+        iou=0.55,
         metadata={"scenario": "drone aerial detection"},
     ),
     "sku110k": EdgeDeployProfile(
-        name="sku110k", imgsz=1280, conf=0.25, iou=0.60,
+        name="sku110k",
+        imgsz=1280,
+        conf=0.25,
+        iou=0.60,
         metadata={"scenario": "dense retail shelf detection"},
     ),
     "rpi": EdgeDeployProfile(
-        name="rpi", imgsz=320, half=False, int8=True,
+        name="rpi",
+        imgsz=320,
+        half=False,
+        int8=True,
         metadata={"scenario": "Raspberry Pi real-time"},
     ),
     "jetson": EdgeDeployProfile(
-        name="jetson", imgsz=640, half=True,
+        name="jetson",
+        imgsz=640,
+        half=True,
         metadata={"scenario": "Jetson Nano/Orin FP16"},
     ),
     "mobile": EdgeDeployProfile(
-        name="mobile", imgsz=416, int8=True, simplify=True,
+        name="mobile",
+        imgsz=416,
+        int8=True,
+        simplify=True,
         metadata={"scenario": "mobile NCNN/MNN"},
     ),
 }

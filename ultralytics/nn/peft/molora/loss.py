@@ -4,6 +4,7 @@ Reimplements GShard load-balancing, z-loss, and diversity loss so that
 MoLoRA can publish to the shared MOE_LOSS_REGISTRY with the same formula
 as the core MoE modules.
 """
+
 from typing import Optional, Dict, Union
 
 import torch
@@ -72,7 +73,7 @@ class MoLoRALoss(nn.Module):
         if logits.shape[1] != self.num_experts:
             logits = logits.reshape(router_logits.shape[0], self.num_experts)
         log_z = torch.logsumexp(logits, dim=1)
-        return torch.mean(log_z ** 2)
+        return torch.mean(log_z**2)
 
     def _diversity_loss(self, expert_outputs: torch.Tensor) -> torch.Tensor:
         """Penalize pairwise cosine similarity between expert outputs.
@@ -87,7 +88,7 @@ class MoLoRALoss(nn.Module):
         mask = 1.0 - torch.eye(E, device=sim.device)
         masked = sim * mask.unsqueeze(0)
         num_pairs = E * (E - 1)
-        return (masked ** 2).sum() / (B * num_pairs + 1e-8)
+        return (masked**2).sum() / (B * num_pairs + 1e-8)
 
     def forward(
         self,
@@ -131,6 +132,7 @@ class MoLoRALoss(nn.Module):
 # ---------------------------------------------------------------------------
 # Standalone helpers (for direct use in layer / model)
 # ---------------------------------------------------------------------------
+
 
 def compute_expert_usage(expert_indices: torch.Tensor, num_experts: int) -> torch.Tensor:
     """Return normalized expert usage histogram from discrete top-k indices."""

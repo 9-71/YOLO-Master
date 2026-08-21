@@ -13,11 +13,13 @@ Usage:
     python scripts/bench_moe_micro.py
     python scripts/bench_moe_micro.py --bs 4 --runs 50 --warmup 10
 """
+
 import argparse
 import os
 import sys
 import time
 import warnings
+
 warnings.filterwarnings("ignore")
 
 import torch
@@ -25,7 +27,7 @@ import torch
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
 
-from ultralytics.nn.modules.moe import (   # noqa: E402
+from ultralytics.nn.modules.moe import (  # noqa: E402
     UltraOptimizedMoE,
     HyperSplitMoE,
     HyperFusedMoE,
@@ -72,8 +74,8 @@ def bench(layer, x, runs, warmup, dev):
     ts.sort()
     return {
         "median": ts[len(ts) // 2],
-        "min":    min(ts),
-        "p95":    ts[int(len(ts) * 0.95)],
+        "min": min(ts),
+        "p95": ts[int(len(ts) * 0.95)],
         "params": sum(p.numel() for p in layer.parameters()),
     }
 
@@ -99,25 +101,25 @@ def make(klass, c, k_extra):
 
 # 与 v0.3 配置完全对齐的工作点
 WORK_POINTS = [
-    ("P3 (c=128, 80x80, ne=4)",  128,  80,  dict(num_experts=4,  top_k=2)),
-    ("P4 (c=128, 40x40, ne=8)",  128,  40,  dict(num_experts=8,  top_k=2)),
-    ("P5 (c=256, 20x20, ne=16)", 256,  20,  dict(num_experts=16, top_k=2)),
+    ("P3 (c=128, 80x80, ne=4)", 128, 80, dict(num_experts=4, top_k=2)),
+    ("P4 (c=128, 40x40, ne=8)", 128, 40, dict(num_experts=8, top_k=2)),
+    ("P5 (c=256, 20x20, ne=16)", 256, 20, dict(num_experts=16, top_k=2)),
 ]
 
 CANDIDATES = [
-    ("ModularRouter",   ModularRouterExpertMoE),
-    ("UltraOptimized",  UltraOptimizedMoE),
-    ("HyperSplit",      HyperSplitMoE),
-    ("HyperFused",      HyperFusedMoE),
-    ("HyperUltimate",   HyperUltimateMoE),
-    ("UltimateOpt",     UltimateOptimizedMoE),
-    ("AdaptiveGate",    AdaptiveGateMoE),
-    ("FusedAdaptive",   FusedAdaptiveGateMoE),
-    ("HybridAdaptive",  HybridAdaptiveGateMoE),
-    ("LowRankHybrid",   LowRankHybridAdaptiveGateMoE),
-    ("RefinedLowRank",  RefinedLowRankHybridAdaptiveGateMoE),
-    ("DetailAware",     DetailAwareLowRankHybridAdaptiveGateMoE),
-    ("VisualEnhanced",  VisualEnhancedAdaptiveGateMoE),
+    ("ModularRouter", ModularRouterExpertMoE),
+    ("UltraOptimized", UltraOptimizedMoE),
+    ("HyperSplit", HyperSplitMoE),
+    ("HyperFused", HyperFusedMoE),
+    ("HyperUltimate", HyperUltimateMoE),
+    ("UltimateOpt", UltimateOptimizedMoE),
+    ("AdaptiveGate", AdaptiveGateMoE),
+    ("FusedAdaptive", FusedAdaptiveGateMoE),
+    ("HybridAdaptive", HybridAdaptiveGateMoE),
+    ("LowRankHybrid", LowRankHybridAdaptiveGateMoE),
+    ("RefinedLowRank", RefinedLowRankHybridAdaptiveGateMoE),
+    ("DetailAware", DetailAwareLowRankHybridAdaptiveGateMoE),
+    ("VisualEnhanced", VisualEnhancedAdaptiveGateMoE),
 ]
 
 
@@ -131,8 +133,10 @@ def main():
     dev = pick_device()
     print(f"[micro-bench] device = {dev}, torch = {torch.__version__}")
     if dev.type == "mps":
-        print(f"[micro-bench] mps name = {torch.backends.mps.get_name()}, "
-              f"core count = {torch.backends.mps.get_core_count()}")
+        print(
+            f"[micro-bench] mps name = {torch.backends.mps.get_name()}, "
+            f"core count = {torch.backends.mps.get_core_count()}"
+        )
     print(f"[micro-bench] bs={args.bs} runs={args.runs} warmup={args.warmup}")
     print()
 
@@ -145,11 +149,12 @@ def main():
             try:
                 layer = make(cls, c, kx).to(dev)
                 r = bench(layer, x, args.runs, args.warmup, dev)
-                print(f"{name:<18}{r['params']/1e3:>11.1f}{r['median']:>12.3f}"
-                      f"{r['min']:>9.3f}{r['p95']:>9.3f}")
+                print(f"{name:<18}{r['params'] / 1e3:>11.1f}{r['median']:>12.3f}{r['min']:>9.3f}{r['p95']:>9.3f}")
                 del layer
-                if dev.type == "mps": torch.mps.empty_cache()
-                elif dev.type == "cuda": torch.cuda.empty_cache()
+                if dev.type == "mps":
+                    torch.mps.empty_cache()
+                elif dev.type == "cuda":
+                    torch.cuda.empty_cache()
             except Exception as e:
                 print(f"{name:<18}  FAIL: {type(e).__name__}: {e}")
         print()

@@ -72,7 +72,6 @@ def test_adaptive_balance_controller_accepts_dynamic_scheduler():
     assert ctrl.last_dynamic_schedule["balance_loss_coeff"] > 1.0
 
 
-
 def test_compute_gini_edge_cases():
     assert compute_gini(torch.tensor([])) == 0.0
     assert compute_gini(torch.zeros(4)) == 0.0
@@ -96,8 +95,6 @@ def test_dynamic_scheduler_state_dict_round_trip():
     assert restored.ema_gini == pytest.approx(scheduler.ema_gini)
     assert restored.config.target_gini == pytest.approx(0.3)
     assert restored.last_state is not None
-
-
 
 
 def test_map_saturation_no_plateau_keeps_scale_at_one():
@@ -215,6 +212,7 @@ def test_moeloss_map_saturation_scheduler_apply():
     )
     # Inject a fake scheduler with scale=0.5
     from ultralytics.nn.modules.moe.scheduler import MapSaturationScheduler, MapSaturationSchedulerConfig
+
     loss_fn.map_saturation_scheduler = MapSaturationScheduler(MapSaturationSchedulerConfig(enabled=True))
     loss_fn.map_saturation_scheduler.saturation_scale = 0.5
     loss_fn.map_saturation_scheduler.last_state = MapSaturationScheduleState(
@@ -241,6 +239,7 @@ def test_map_saturation_scheduler_disabled_passthrough_in_loss():
         balance_loss_coeff=2.0,
     )
     from ultralytics.nn.modules.moe.scheduler import MapSaturationScheduler, MapSaturationSchedulerConfig
+
     loss_fn.map_saturation_scheduler = MapSaturationScheduler(MapSaturationSchedulerConfig(enabled=False))
     loss_fn.map_saturation_scheduler.last_state = MapSaturationScheduleState(
         val_map=0.5, saturation_scale=1.0, plateau_detected=False

@@ -28,6 +28,7 @@ def cached(name: str, loader):
         MODULE_CACHE[name] = loader()
     return MODULE_CACHE[name]
 
+
 def get_ultralytics_module_info() -> dict[str, Any]:
     def _loader():
         spec = importlib.util.find_spec("ultralytics")
@@ -39,8 +40,12 @@ def get_ultralytics_module_info() -> dict[str, Any]:
         }
 
     return cached("ultralytics_module_info", _loader)
+
+
 def runtime_cache_enabled() -> bool:
     return os.environ.get("YOLO_MASTER_AGENT_RUNTIME_CACHE", "").lower() in {"1", "true", "yes"}
+
+
 def read_torch_runtime_cache() -> dict[str, Any] | None:
     if not runtime_cache_enabled() or not RUNTIME_CACHE_FILE.exists():
         return None
@@ -54,6 +59,8 @@ def read_torch_runtime_cache() -> dict[str, Any] | None:
         return None
     data = payload.get("torch")
     return data if isinstance(data, dict) else None
+
+
 def write_torch_runtime_cache(info: dict[str, Any]) -> None:
     if not runtime_cache_enabled():
         return
@@ -68,6 +75,8 @@ def write_torch_runtime_cache(info: dict[str, Any]) -> None:
         )
     except Exception:
         pass
+
+
 def get_torch_runtime() -> dict[str, Any]:
     def _loader():
         cached_info = read_torch_runtime_cache()
@@ -112,18 +121,26 @@ def get_torch_runtime() -> dict[str, Any]:
         return info
 
     return cached("torch_runtime", _loader)
+
+
 def read_repo_version() -> str:
     text = ULTRALYTICS_INIT.read_text(encoding="utf-8")
     match = re.search(r'__version__\s*=\s*"([^"]+)"', text)
     if not match:
         raise ValueError(f"Could not parse version from {ULTRALYTICS_INIT}")
     return match.group(1)
+
+
 def read_default_cfg() -> dict[str, Any]:
     import yaml
 
     return yaml.safe_load(DEFAULT_CFG_FILE.read_text(encoding="utf-8"))
+
+
 def mps_available() -> bool:
     return bool(get_torch_runtime()["mps"]["available"])
+
+
 def available_devices() -> list[str]:
     torch_info = get_torch_runtime()
     devices = ["cpu"]
@@ -132,6 +149,8 @@ def available_devices() -> list[str]:
     if torch_info["cuda"]["available"] and torch_info["cuda"]["device_count"] > 0:
         devices.insert(0, "cuda:0")
     return devices
+
+
 def default_auto_device(request: dict[str, Any]) -> str | None:
     runtime = request.get("runtime", {})
     if not runtime.get("auto_detect_device", True):
@@ -144,6 +163,8 @@ def default_auto_device(request: dict[str, Any]) -> str | None:
     if runtime.get("prefer_mps", True) and "mps" in devices:
         return "mps"
     return devices[0] if devices else None
+
+
 def resolve_device_selection(request: dict[str, Any], params: dict[str, Any]) -> dict[str, Any]:
     explicit = params.get("device")
     if explicit not in (None, "", "auto"):
@@ -154,8 +175,12 @@ def resolve_device_selection(request: dict[str, Any], params: dict[str, Any]) ->
         return {"device": str(runtime_device), "source": "runtime"}
     auto_device = default_auto_device(request)
     return {"device": auto_device, "source": "auto" if auto_device else None}
+
+
 def resolve_default_device(request: dict[str, Any], params: dict[str, Any]) -> str | None:
     return resolve_device_selection(request, params)["device"]
+
+
 def collect_environment_report(
     request: dict[str, Any],
     *,
@@ -211,6 +236,8 @@ def collect_environment_report(
         },
     }
     return report
+
+
 def doctor_recommendations(environment: dict[str, Any]) -> list[str]:
     recommendations: list[str] = []
     cli = environment.get("cli", {})
@@ -221,19 +248,29 @@ def doctor_recommendations(environment: dict[str, Any]) -> list[str]:
     if not cli.get("available"):
         recommendations.append("Run `python -m pip install -e .` to provision the local `yolo` CLI.")
     if not ultralytics.get("local_repo_active"):
-        recommendations.append("Refresh the editable install with `python -m pip install -e .` so imports resolve to this repo.")
+        recommendations.append(
+            "Refresh the editable install with `python -m pip install -e .` so imports resolve to this repo."
+        )
     if not torch_info.get("installed"):
-        recommendations.append("Install PyTorch in the current environment before running train, val, benchmark, or predict.")
+        recommendations.append(
+            "Install PyTorch in the current environment before running train, val, benchmark, or predict."
+        )
     if sys.platform == "darwin" and torch_info.get("mps", {}).get("available") and devices.get("selected") != "mps":
-        recommendations.append("This host supports MPS; leave `device` unset or set `runtime.prefer_mps=true` for Apple Silicon acceleration.")
+        recommendations.append(
+            "This host supports MPS; leave `device` unset or set `runtime.prefer_mps=true` for Apple Silicon acceleration."
+        )
     if devices.get("selected") == "cpu" and sys.platform == "darwin" and not torch_info.get("mps", {}).get("available"):
-        recommendations.append("MPS is unavailable, so heavy runs will stay on CPU until the PyTorch MPS runtime is available.")
+        recommendations.append(
+            "MPS is unavailable, so heavy runs will stay on CPU until the PyTorch MPS runtime is available."
+        )
 
     for label, state in (environment.get("references") or {}).items():
         if state.get("requested") not in (None, "") and not state.get("exists"):
             recommendations.append(f"Fix the `{label}` reference before launch: {state['requested']}")
 
     return recommendations
+
+
 def apply_runtime_defaults(
     request: dict[str, Any],
     params: dict[str, Any],

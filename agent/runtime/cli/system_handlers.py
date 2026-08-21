@@ -85,7 +85,10 @@ def run_system(request: dict[str, Any], deps: SystemDeps) -> dict[str, Any]:
             "settings.get": ["settings"],
             "settings.update": [
                 "settings",
-                *[kv_arg(k, v) for k, v in (params.get("updates") or {k: v for k, v in params.items() if k != "action"}).items()],
+                *[
+                    kv_arg(k, v)
+                    for k, v in (params.get("updates") or {k: v for k, v in params.items() if k != "action"}).items()
+                ],
             ],
             "settings.reset": ["settings", "reset"],
             "cfg.get": ["cfg"],
@@ -124,7 +127,16 @@ def run_system(request: dict[str, Any], deps: SystemDeps) -> dict[str, Any]:
             recommendations=recommendations,
         )
 
-    if action in {"help", "version", "checks", "settings.get", "settings.update", "settings.reset", "cfg.get", "cfg.copy"}:
+    if action in {
+        "help",
+        "version",
+        "checks",
+        "settings.get",
+        "settings.update",
+        "settings.reset",
+        "cfg.get",
+        "cfg.copy",
+    }:
         cli_args = {
             "help": ["help"],
             "version": ["version"],
@@ -132,7 +144,10 @@ def run_system(request: dict[str, Any], deps: SystemDeps) -> dict[str, Any]:
             "settings.get": ["settings"],
             "settings.update": [
                 "settings",
-                *[kv_arg(k, v) for k, v in (params.get("updates") or {k: v for k, v in params.items() if k != "action"}).items()],
+                *[
+                    kv_arg(k, v)
+                    for k, v in (params.get("updates") or {k: v for k, v in params.items() if k != "action"}).items()
+                ],
             ],
             "settings.reset": ["settings", "reset"],
             "cfg.get": ["cfg"],
@@ -165,7 +180,9 @@ def run_system(request: dict[str, Any], deps: SystemDeps) -> dict[str, Any]:
         if action == "version":
             match = re.search(r"\b\d+\.\d+\.\d+\b", f"{cli_result['stdout']}\n{cli_result['stderr']}")
             version = match.group(0) if match else read_repo_version()
-            return response(request["skill"], "ok", "version collected", data={"version": version}, logs=cli_logs(cli_result))
+            return response(
+                request["skill"], "ok", "version collected", data={"version": version}, logs=cli_logs(cli_result)
+            )
         if action == "checks":
             return response(request["skill"], "ok", "system checks collected", logs=cli_logs(cli_result))
         if action == "settings.get":
@@ -189,9 +206,21 @@ def run_system(request: dict[str, Any], deps: SystemDeps) -> dict[str, Any]:
             )
         if action == "settings.reset":
             core = deps.get_ultralytics_core()
-            return response(request["skill"], "ok", "settings reset", data={"settings": json_safe(dict(core["SETTINGS"]))}, logs=cli_logs(cli_result))
+            return response(
+                request["skill"],
+                "ok",
+                "settings reset",
+                data={"settings": json_safe(dict(core["SETTINGS"]))},
+                logs=cli_logs(cli_result),
+            )
         if action == "cfg.get":
-            return response(request["skill"], "ok", "default cfg loaded", data={"cfg": json_safe(read_default_cfg())}, logs=cli_logs(cli_result))
+            return response(
+                request["skill"],
+                "ok",
+                "default cfg loaded",
+                data={"cfg": json_safe(read_default_cfg())},
+                logs=cli_logs(cli_result),
+            )
         if action == "cfg.copy":
             new_file = ensure_manifest_dir(request) / deps.default_cfg_file.name.replace(".yaml", "_copy.yaml")
             return response(

@@ -16,6 +16,7 @@ Model/Query 无关的稳定性校验层。
   把结果追加到 result["stability_checks"] 中。
   也可单独在 CI 脚本中调用 StabilityChecker.run_all(payload, rules)。
 """
+
 from __future__ import annotations
 
 from typing import Any
@@ -24,6 +25,7 @@ from typing import Any
 # ---------------------------------------------------------------------------
 # 基础工具
 # ---------------------------------------------------------------------------
+
 
 def _dotted_get(value: Any, path: str) -> Any:
     """支持 dot-notation 的安全取值，路径不存在返回 _MISSING。"""
@@ -81,6 +83,7 @@ def _as_list(v: Any) -> list[Any] | tuple[Any, ...]:
 # 单条 Check 结果
 # ---------------------------------------------------------------------------
 
+
 def _ok(rule: str, path: str = "", detail: str = "") -> dict[str, Any]:
     return {"rule": rule, "path": path, "ok": True, "detail": detail}
 
@@ -92,6 +95,7 @@ def _fail(rule: str, path: str = "", detail: str = "") -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 # 规则类型
 # ---------------------------------------------------------------------------
+
 
 class StabilityChecker:
     """
@@ -170,8 +174,7 @@ class StabilityChecker:
             self._add(_fail(f"{rule_prefix}.required", path, f"field missing: {path}"))
             return False
         if types and not isinstance(v, types):
-            self._add(_fail(f"{rule_prefix}.type", path,
-                            f"expected {types}, got {type(v).__name__}: {repr(v)[:60]}"))
+            self._add(_fail(f"{rule_prefix}.type", path, f"expected {types}, got {type(v).__name__}: {repr(v)[:60]}"))
             return False
         self._add(_ok(f"{rule_prefix}.required", path))
         return True
@@ -182,8 +185,7 @@ class StabilityChecker:
         if ok:
             self._add(_ok(f"{rule_prefix}.enum", path, f"value={v!r}"))
         else:
-            self._add(_fail(f"{rule_prefix}.enum", path,
-                            f"expected one of {sorted(allowed)}, got {v!r}"))
+            self._add(_fail(f"{rule_prefix}.enum", path, f"expected one of {sorted(allowed)}, got {v!r}"))
         return ok
 
     def _require_range(self, path: str, lo: float, hi: float, rule_prefix: str = "monotonic") -> bool:
@@ -219,8 +221,9 @@ class StabilityChecker:
             self._add(_fail(f"{rule_prefix}.nonempty", path, f"empty or missing: {v!r}"))
         return ok
 
-    def _require_implies(self, cond_path: str, cond_val: Any,
-                         then_path: str, rule: str = "behavior.implication") -> bool:
+    def _require_implies(
+        self, cond_path: str, cond_val: Any, then_path: str, rule: str = "behavior.implication"
+    ) -> bool:
         """如果 cond_path == cond_val，则 then_path 必须存在且非空。"""
         cond = self._get(cond_path)
         if cond != cond_val:
@@ -231,8 +234,7 @@ class StabilityChecker:
         if ok:
             self._add(_ok(rule, then_path, f"implied by {cond_path}={cond_val!r}"))
         else:
-            self._add(_fail(rule, then_path,
-                            f"when {cond_path}={cond_val!r}, {then_path} must be nonempty"))
+            self._add(_fail(rule, then_path, f"when {cond_path}={cond_val!r}, {then_path} must be nonempty"))
         return ok
 
     # -----------------------------------------------------------------------
@@ -263,9 +265,7 @@ class StabilityChecker:
 
     def _check_universal_behavior(self) -> None:
         # status 必须是合法枚举
-        self._require_in("status",
-                         {"ok", "running", "blocked", "failed", "partial"},
-                         rule_prefix="behavior")
+        self._require_in("status", {"ok", "running", "blocked", "failed", "partial"}, rule_prefix="behavior")
         # dry_run 时必须有 plan 字段
         is_dry = self._get("dry_run")
         if is_dry is True:
@@ -274,15 +274,19 @@ class StabilityChecker:
             if ok:
                 self._add(_ok("behavior.dry_run_has_plan", "plan"))
             else:
-                self._add(_fail("behavior.dry_run_has_plan", "plan",
-                                "dry_run=true but plan is missing or empty"))
+                self._add(_fail("behavior.dry_run_has_plan", "plan", "dry_run=true but plan is missing or empty"))
         # recovery 字段存在时，其 attempted 必须是 bool
         recovery = self._get("recovery")
         if _is_dict(recovery):
             attempted = recovery.get("attempted")
             if not isinstance(attempted, bool):
-                self._add(_fail("behavior.recovery_attempted_is_bool", "recovery.attempted",
-                                f"expected bool, got {type(attempted).__name__}"))
+                self._add(
+                    _fail(
+                        "behavior.recovery_attempted_is_bool",
+                        "recovery.attempted",
+                        f"expected bool, got {type(attempted).__name__}",
+                    )
+                )
             else:
                 self._add(_ok("behavior.recovery_attempted_is_bool", "recovery.attempted"))
             # recovery.attempted=true 时必须有 from_device / to_device
@@ -292,15 +296,19 @@ class StabilityChecker:
                     if v:
                         self._add(_ok("behavior.recovery_fields", f"recovery.{sub}"))
                     else:
-                        self._add(_fail("behavior.recovery_fields", f"recovery.{sub}",
-                                        "recovery.attempted=true but field missing"))
+                        self._add(
+                            _fail(
+                                "behavior.recovery_fields",
+                                f"recovery.{sub}",
+                                "recovery.attempted=true but field missing",
+                            )
+                        )
         # next_actions 如果存在必须是 list
         na = self._get("next_actions")
         if _is_missing(na):
             return
         if na is not None and not _is_list(na):
-            self._add(_fail("behavior.next_actions_is_list", "next_actions",
-                            f"expected list, got {type(na).__name__}"))
+            self._add(_fail("behavior.next_actions_is_list", "next_actions", f"expected list, got {type(na).__name__}"))
         elif na is not None:
             self._add(_ok("behavior.next_actions_is_list", "next_actions"))
 
@@ -348,8 +356,7 @@ class StabilityChecker:
         if has_ckpt:
             self._add(_ok("behavior.train_has_checkpoint", "artifacts"))
         else:
-            self._add(_fail("behavior.train_has_checkpoint", "artifacts",
-                            "no artifact with kind=checkpoint found"))
+            self._add(_fail("behavior.train_has_checkpoint", "artifacts", "no artifact with kind=checkpoint found"))
         # job 字段
         self._require_field("job", (dict,))
         self._require_nonempty("job.save_dir")
@@ -366,8 +373,7 @@ class StabilityChecker:
             vlm = mm["vlm"]
             for f in ("status", "model", "api_mode"):
                 if f not in vlm:
-                    self._add(_fail("schema.required", f"multimodal.vlm.{f}",
-                                    "vlm field missing"))
+                    self._add(_fail("schema.required", f"multimodal.vlm.{f}", "vlm field missing"))
                 else:
                     self._add(_ok("schema.required", f"multimodal.vlm.{f}"))
 
@@ -379,8 +385,13 @@ class StabilityChecker:
             if v:
                 self._add(_ok("behavior.blocked_has_reason", "multimodal.vlm.blocked_reason"))
             else:
-                self._add(_fail("behavior.blocked_has_reason", "multimodal.vlm.blocked_reason",
-                                "status=blocked but blocked_reason missing"))
+                self._add(
+                    _fail(
+                        "behavior.blocked_has_reason",
+                        "multimodal.vlm.blocked_reason",
+                        "status=blocked but blocked_reason missing",
+                    )
+                )
         # fusion 策略字段
         fusion = _as_dict(self._get("multimodal.fusion"))
         if _is_dict(fusion):
@@ -390,13 +401,21 @@ class StabilityChecker:
             policy = fusion.get("policy", "")
             suppress_count = _to_float(fusion.get("suppress_count", 0)) or 0
             if policy == "add_only" and suppress_count > 0:
-                self._add(_fail("behavior.fusion_policy_consistency",
-                                "multimodal.fusion.suppress_count",
-                                f"policy=add_only but suppress_count={suppress_count}"))
+                self._add(
+                    _fail(
+                        "behavior.fusion_policy_consistency",
+                        "multimodal.fusion.suppress_count",
+                        f"policy=add_only but suppress_count={suppress_count}",
+                    )
+                )
             elif policy == "add_only":
-                self._add(_ok("behavior.fusion_policy_consistency",
-                               "multimodal.fusion.suppress_count",
-                               "add_only, suppress_count=0 ✓"))
+                self._add(
+                    _ok(
+                        "behavior.fusion_policy_consistency",
+                        "multimodal.fusion.suppress_count",
+                        "add_only, suppress_count=0 ✓",
+                    )
+                )
 
     # -----------------------------------------------------------------------
     # Layer 1/2: multimodal.evaluate 专有
@@ -418,12 +437,15 @@ class StabilityChecker:
         mg = _as_dict(self._get("metric_guardrail"))
         if _is_dict(mg):
             if mg.get("selected") not in (None, "yolo_only", "fused_preview"):
-                self._add(_fail("behavior.guardrail_selected_enum",
-                                "metric_guardrail.selected",
-                                f"unknown value: {mg.get('selected')!r}"))
+                self._add(
+                    _fail(
+                        "behavior.guardrail_selected_enum",
+                        "metric_guardrail.selected",
+                        f"unknown value: {mg.get('selected')!r}",
+                    )
+                )
             else:
-                self._add(_ok("behavior.guardrail_selected_enum",
-                               "metric_guardrail.selected"))
+                self._add(_ok("behavior.guardrail_selected_enum", "metric_guardrail.selected"))
 
     def _check_multimodal_evaluate_monotonic(self) -> None:
         if self._get("status") not in ("ok", "partial"):
@@ -446,13 +468,21 @@ class StabilityChecker:
         if _is_dict(mg) and mg.get("selected") == "fused_preview":
             delta = _to_float(_dotted_get(self.payload, "evaluation.metric_preview.delta.map50_95"))
             if delta is not None and delta < 0:
-                self._add(_fail("monotonic.guardrail_fused_implies_positive_delta",
-                                "evaluation.metric_preview.delta.map50_95",
-                                f"guardrail selected fused_preview but delta={delta} < 0"))
+                self._add(
+                    _fail(
+                        "monotonic.guardrail_fused_implies_positive_delta",
+                        "evaluation.metric_preview.delta.map50_95",
+                        f"guardrail selected fused_preview but delta={delta} < 0",
+                    )
+                )
             else:
-                self._add(_ok("monotonic.guardrail_fused_implies_positive_delta",
-                               "evaluation.metric_preview.delta.map50_95",
-                               f"delta={delta}"))
+                self._add(
+                    _ok(
+                        "monotonic.guardrail_fused_implies_positive_delta",
+                        "evaluation.metric_preview.delta.map50_95",
+                        f"delta={delta}",
+                    )
+                )
 
     # -----------------------------------------------------------------------
     # Layer 1: lora.diagnose
@@ -490,21 +520,17 @@ class StabilityChecker:
         # ranking 必须是非空 list
         ranking = pc.get("ranking")
         if not _is_list(ranking) or len(ranking) == 0:
-            self._add(_fail("schema.nonempty", "peft_compare.ranking",
-                            "ranking must be a non-empty list"))
+            self._add(_fail("schema.nonempty", "peft_compare.ranking", "ranking must be a non-empty list"))
         else:
-            self._add(_ok("schema.nonempty", "peft_compare.ranking",
-                           f"{len(ranking)} variants"))
+            self._add(_ok("schema.nonempty", "peft_compare.ranking", f"{len(ranking)} variants"))
             # 每个 ranking 项必须有 name 和 rank_metric_value
             for i, item in enumerate(ranking):
                 if not _is_dict(item):
-                    self._add(_fail("schema.type", f"peft_compare.ranking.{i}",
-                                    "item must be a dict"))
+                    self._add(_fail("schema.type", f"peft_compare.ranking.{i}", "item must be a dict"))
                     continue
                 for f in ("name", "rank_metric_value"):
                     if f not in item:
-                        self._add(_fail("schema.required", f"peft_compare.ranking.{i}.{f}",
-                                        "field missing"))
+                        self._add(_fail("schema.required", f"peft_compare.ranking.{i}.{f}", "field missing"))
                     else:
                         self._add(_ok("schema.required", f"peft_compare.ranking.{i}.{f}"))
 
@@ -527,10 +553,18 @@ class StabilityChecker:
         done = _to_float(pipe.get("stages_completed", 0)) or 0
         fail = _to_float(pipe.get("stages_failed", 0)) or 0
         if done + fail <= req:
-            self._add(_ok("monotonic.pipeline_stage_counts",
-                           "pipeline.stages_*",
-                           f"completed={done}+failed={fail}≤requested={req}"))
+            self._add(
+                _ok(
+                    "monotonic.pipeline_stage_counts",
+                    "pipeline.stages_*",
+                    f"completed={done}+failed={fail}≤requested={req}",
+                )
+            )
         else:
-            self._add(_fail("monotonic.pipeline_stage_counts",
-                            "pipeline.stages_*",
-                            f"completed={done}+failed={fail} > requested={req}"))
+            self._add(
+                _fail(
+                    "monotonic.pipeline_stage_counts",
+                    "pipeline.stages_*",
+                    f"completed={done}+failed={fail} > requested={req}",
+                )
+            )

@@ -25,13 +25,34 @@ from ultralytics.utils.lora.planner import ArchitectureFingerprint, LOVODataPoin
 
 METRIC = "metrics/mAP50-95(B)"
 PROTOCOL_KEYS = (
-    "dataset", "epochs", "imgsz", "batch", "optimizer", "lr0", "lrf",
-    "weight_decay", "momentum", "amp", "cos_lr", "close_mosaic", "warmup_epochs",
+    "dataset",
+    "epochs",
+    "imgsz",
+    "batch",
+    "optimizer",
+    "lr0",
+    "lrf",
+    "weight_decay",
+    "momentum",
+    "amp",
+    "cos_lr",
+    "close_mosaic",
+    "warmup_epochs",
 )
 CONTROL_KEYS = PROTOCOL_KEYS + (
-    "lora_backend", "lora_type", "lora_dropout", "lora_alpha", "lora_use_rslora",
-    "lora_lr_mult", "lora_include_attention", "lora_gradient_checkpointing",
-    "lora_alpha_warmup", "lora_layer_decay", "training_budget", "deterministic", "workers",
+    "lora_backend",
+    "lora_type",
+    "lora_dropout",
+    "lora_alpha",
+    "lora_use_rslora",
+    "lora_lr_mult",
+    "lora_include_attention",
+    "lora_gradient_checkpointing",
+    "lora_alpha_warmup",
+    "lora_layer_decay",
+    "training_budget",
+    "deterministic",
+    "workers",
 )
 
 
@@ -80,7 +101,9 @@ def _control_signature(record: dict[str, Any]) -> tuple[Any, ...]:
 
 def _fingerprint(record: dict[str, Any]) -> ArchitectureFingerprint:
     payload = record.get("fingerprint") or {}
-    return ArchitectureFingerprint(**{key: payload.get(key, 0.0) for key in ArchitectureFingerprint.__dataclass_fields__})
+    return ArchitectureFingerprint(
+        **{key: payload.get(key, 0.0) for key in ArchitectureFingerprint.__dataclass_fields__}
+    )
 
 
 def _lovo_points(observations: list[dict[str, Any]]) -> list[LOVODataPoint]:
@@ -102,11 +125,7 @@ def _lovo_points(observations: list[dict[str, Any]]) -> list[LOVODataPoint]:
 
 def audit(records: list[dict[str, Any]], min_seeds: int = 3, min_datasets: int = 2) -> dict[str, Any]:
     successes = [record for record in records if record.get("status") == "success" and _metric(record) is not None]
-    baselines = {
-        _baseline_key(record): record
-        for record in successes
-        if record.get("variant") == "full"
-    }
+    baselines = {_baseline_key(record): record for record in successes if record.get("variant") == "full"}
     observations = []
     unmatched = []
     for record in successes:
@@ -141,11 +160,18 @@ def audit(records: list[dict[str, Any]], min_seeds: int = 3, min_datasets: int =
     placements = sorted({item["target_set"] for item in observations})
     seeds_by_protocol: dict[tuple[Any, ...], set[Any]] = defaultdict(set)
     for item in observations:
-        seeds_by_protocol[
-            (item["model"], item["dataset"], item["variant"], item["rank"], item["target_set"])
-        ].add(item["seed"])
+        seeds_by_protocol[(item["model"], item["dataset"], item["variant"], item["rank"], item["target_set"])].add(
+            item["seed"]
+        )
     insufficient_seed_groups = [
-        {"model": key[0], "dataset": key[1], "variant": key[2], "rank": key[3], "target_set": key[4], "seeds": sorted(values)}
+        {
+            "model": key[0],
+            "dataset": key[1],
+            "variant": key[2],
+            "rank": key[3],
+            "target_set": key[4],
+            "seeds": sorted(values),
+        }
         for key, values in sorted(seeds_by_protocol.items(), key=lambda pair: str(pair[0]))
         if len(values) < min_seeds
     ]
@@ -173,9 +199,7 @@ def audit(records: list[dict[str, Any]], min_seeds: int = 3, min_datasets: int =
             if len(controls) == 1 and len(target_payloads) >= 2:
                 controlled_placement.append({"key": key, "placements": sorted(placements), "n_runs": len(items)})
             else:
-                placement_mismatches.append(
-                    {"key": key, "n_runs": len(items), "n_control_signatures": len(controls)}
-                )
+                placement_mismatches.append({"key": key, "n_runs": len(items), "n_control_signatures": len(controls)})
 
     points = _lovo_points(observations)
     variant_lovo = None
@@ -208,7 +232,12 @@ def audit(records: list[dict[str, Any]], min_seeds: int = 3, min_datasets: int =
                         }
                         if len(seeds) < min_seeds:
                             missing_cells.append(
-                                {"dataset": dataset, "variant": variant, "target_set": placement, "seeds": sorted(seeds)}
+                                {
+                                    "dataset": dataset,
+                                    "variant": variant,
+                                    "target_set": placement,
+                                    "seeds": sorted(seeds),
+                                }
                             )
             baseline_datasets = {
                 record.get("dataset")
@@ -235,7 +264,12 @@ def audit(records: list[dict[str, Any]], min_seeds: int = 3, min_datasets: int =
                 complete_models[family] = model
                 break
             incomplete_models.append(
-                {"family": family, "model": model, "missing_cells": missing_cells, "missing_baselines": baseline_seed_missing}
+                {
+                    "family": family,
+                    "model": model,
+                    "missing_cells": missing_cells,
+                    "missing_baselines": baseline_seed_missing,
+                }
             )
     if len(complete_models) >= 3 and len(points) >= 5:
         try:
@@ -262,7 +296,11 @@ def audit(records: list[dict[str, Any]], min_seeds: int = 3, min_datasets: int =
         "successful_records": len(successes),
         "matched_peft_observations": len(observations),
         "unmatched_peft_experiments": unmatched,
-        "coverage": {"architectures": dict(sorted(by_family.items())), "variants": dict(sorted(by_variant.items())), "datasets": datasets},
+        "coverage": {
+            "architectures": dict(sorted(by_family.items())),
+            "variants": dict(sorted(by_variant.items())),
+            "datasets": datasets,
+        },
         "gates": {
             "leave_one_architecture_ready": architecture_ready,
             "leave_one_variant_ready": variant_ready,
@@ -291,7 +329,9 @@ def audit(records: list[dict[str, Any]], min_seeds: int = 3, min_datasets: int =
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--runs", type=Path, action="append", required=True, help="Path to a runs.json file; repeatable")
+    parser.add_argument(
+        "--runs", type=Path, action="append", required=True, help="Path to a runs.json file; repeatable"
+    )
     parser.add_argument("--report", type=Path, required=True, help="Output audit report")
     parser.add_argument("--min-seeds", type=int, default=3)
     parser.add_argument("--min-datasets", type=int, default=2)

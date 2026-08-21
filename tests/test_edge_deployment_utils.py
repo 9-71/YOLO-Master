@@ -24,7 +24,9 @@ def test_letterbox_profile_keeps_aspect_ratio():
 
 def test_scale_xyxy_boxes_clips_to_original_shape():
     boxes = np.array([[10, 20, 2000, 1200]], dtype=np.float32)
-    scaled = edge_utils.scale_xyxy_boxes(boxes, original_shape=(720, 1280), input_shape=(960, 960), pad=(0, 0), ratio=0.75)
+    scaled = edge_utils.scale_xyxy_boxes(
+        boxes, original_shape=(720, 1280), input_shape=(960, 960), pad=(0, 0), ratio=0.75
+    )
     assert scaled.shape == (1, 4)
     assert scaled[0, 2] <= 1280
     assert scaled[0, 3] <= 720

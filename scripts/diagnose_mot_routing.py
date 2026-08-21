@@ -179,7 +179,9 @@ class RouterWeightSummary:
 
     __slots__ = ("layer", "expert", "expert_id", "active_tokens", "total_tokens", "activation_ratio", "mean_weight")
 
-    def __init__(self, layer: str, expert: str, expert_id: int, active_tokens: int, total_tokens: int, mean_weight: float):
+    def __init__(
+        self, layer: str, expert: str, expert_id: int, active_tokens: int, total_tokens: int, mean_weight: float
+    ):
         self.layer = layer
         self.expert = expert
         self.expert_id = expert_id
@@ -360,9 +362,7 @@ def deformable_activation_checks(
             else:
                 baseline_values = deformable_values(records, lambda s, target=baseline: s == target, metric)
             diff = mean(irregular_values) - mean(baseline_values)
-            ci_low, ci_high = bootstrap_diff_ci(
-                irregular_values, baseline_values, samples=bootstrap_samples, seed=seed
-            )
+            ci_low, ci_high = bootstrap_diff_ci(irregular_values, baseline_values, samples=bootstrap_samples, seed=seed)
             p_value = permutation_p_value(irregular_values, baseline_values, permutations=permutations, seed=seed)
             significant = bool(
                 np.isfinite(diff)
@@ -379,8 +379,8 @@ def deformable_activation_checks(
                     "metric": metric,
                     "irregular_scenes": "|".join(irregular),
                     "baseline": baseline_name,
-            "irregular_image_samples": str(int(irregular_values.size)),
-            "baseline_image_samples": str(int(baseline_values.size)),
+                    "irregular_image_samples": str(int(irregular_values.size)),
+                    "baseline_image_samples": str(int(baseline_values.size)),
                     "irregular_mean": f"{mean(irregular_values):.6f}",
                     "baseline_mean": f"{baseline_mean:.6f}",
                     "mean_diff": f"{diff:.6f}",
@@ -423,7 +423,9 @@ def plot_heatmap(records: list[dict[str, str]], out_path: Path, value: str) -> N
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--model", type=Path, default=ROOT / "ultralytics/cfg/models/master/v0_10/det/yolo-master-mot-n.yaml")
+    parser.add_argument(
+        "--model", type=Path, default=ROOT / "ultralytics/cfg/models/master/v0_10/det/yolo-master-mot-n.yaml"
+    )
     parser.add_argument("--nc", type=int, default=80)
     parser.add_argument("--device", default="cpu")
     parser.add_argument("--imgsz", type=int, default=640)

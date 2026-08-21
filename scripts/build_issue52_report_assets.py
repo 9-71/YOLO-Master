@@ -112,9 +112,7 @@ def derive_pareto(output: Path, pruning: list[dict[str, str]]) -> list[dict[str,
                 "mAP50-95": row["mAP50-95"],
                 "latency_mean_ms": row["latency_mean_ms"],
                 "structurally_pruned": str(pruned).lower(),
-                "quality_gate_pass": str(
-                    pruned and num(dense, "mAP50-95") - num(row, "mAP50-95") <= 0.01
-                ).lower(),
+                "quality_gate_pass": str(pruned and num(dense, "mAP50-95") - num(row, "mAP50-95") <= 0.01).lower(),
                 "pareto": str(is_pareto).lower(),
             }
         )
@@ -320,11 +318,9 @@ def build_plots(
         [
             [
                 int(
-                    next(
-                        row
-                        for row in direct
-                        if float(row["threshold"]) == threshold and row["layer_name"] == layer
-                    )["retained_experts"]
+                    next(row for row in direct if float(row["threshold"]) == threshold and row["layer_name"] == layer)[
+                        "retained_experts"
+                    ]
                 )
                 for layer in names
             ]

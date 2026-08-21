@@ -13,6 +13,7 @@ Two failure modes are covered:
 The fix writes the full ES_MOE arg list (count + per-expert kernel sizes) into
 ``model.yaml`` so both survive the rebuild.
 """
+
 import yaml
 
 from ultralytics.nn.modules.moe.modules import ES_MOE
@@ -28,9 +29,7 @@ def _experts(model):
 
 def _kernels(model):
     return [
-        [e.conv.depthwise.kernel_size[0] for e in m.experts]
-        for _, m in model.named_modules()
-        if isinstance(m, ES_MOE)
+        [e.conv.depthwise.kernel_size[0] for e in m.experts] for _, m in model.named_modules() if isinstance(m, ES_MOE)
     ]
 
 

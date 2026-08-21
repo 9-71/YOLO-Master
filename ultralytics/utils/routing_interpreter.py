@@ -127,9 +127,7 @@ class ExpertFeatureMap:
             "layer_name": self.layer_name,
             "module_type": self.module_type,
             "num_experts": len(self.expert_maps),
-            "spatial_shapes": [
-                list(m.shape) if m is not None else None for m in self.expert_maps
-            ],
+            "spatial_shapes": [list(m.shape) if m is not None else None for m in self.expert_maps],
         }
 
 
@@ -378,12 +376,8 @@ class RoutingInterpreter:
             if router is None:
                 continue
 
-            def _capture_hook(
-                _router, _inputs, output, *, current_name=name, current_module=module
-            ):
-                probabilities = self._router_probabilities(
-                    output, int(getattr(current_module, "num_experts", 0))
-                )
+            def _capture_hook(_router, _inputs, output, *, current_name=name, current_module=module):
+                probabilities = self._router_probabilities(output, int(getattr(current_module, "num_experts", 0)))
                 if probabilities is None:
                     return None
                 probabilities = probabilities.detach().float().cpu()
@@ -403,6 +397,7 @@ class RoutingInterpreter:
                 storage: list[torch.Tensor | None] = [None] * len(experts)
                 captured_features[name] = storage
                 for idx, expert in enumerate(experts):
+
                     def _make_expert_hook(slot_list, expert_idx):
                         def _hook_fn(_mod, _inputs, output):
                             feat = output.detach().float().cpu()
@@ -414,15 +409,10 @@ class RoutingInterpreter:
 
                         return _hook_fn
 
-                    handles.append(
-                        expert.register_forward_hook(_make_expert_hook(storage, idx))
-                    )
+                    handles.append(expert.register_forward_hook(_make_expert_hook(storage, idx)))
 
         if not handles:
-            raise ValueError(
-                "routed modules were found, but none expose a supported router "
-                "or routing submodule"
-            )
+            raise ValueError("routed modules were found, but none expose a supported router or routing submodule")
 
         training_flags = self._training_flags()
         try:
@@ -435,10 +425,7 @@ class RoutingInterpreter:
             self._restore_training_flags(training_flags)
 
         if layer_name is not None and layer_name not in captured:
-            raise RuntimeError(
-                f"router for layer {layer_name!r} did not produce a supported "
-                f"probability tensor"
-            )
+            raise RuntimeError(f"router for layer {layer_name!r} did not produce a supported probability tensor")
 
         expert_maps: dict[str, ExpertFeatureMap] = {}
         for layer_name, storage in captured_features.items():
@@ -471,7 +458,9 @@ class RoutingInterpreter:
 
         for name, heatmap in heatmaps.items():
             probabilities = heatmap.probabilities
-            safe_name = "root" if name == "<root>" else re.sub(r"[^A-Za-z0-9._-]+", "_", name).replace(".", "_") or "root"
+            safe_name = (
+                "root" if name == "<root>" else re.sub(r"[^A-Za-z0-9._-]+", "_", name).replace(".", "_") or "root"
+            )
 
             if probabilities.ndim == 2:
                 values = probabilities[0]
@@ -517,14 +506,8 @@ class RoutingInterpreter:
                 artifact_name = f"expert_{expert_idx}_heatmap"
                 # Use expert feature map if available, otherwise fall back to
                 # router probability (backward-compatible).
-                _use_feat = (
-                    expert_features is not None and name in expert_features
-                )
-                feat_map = (
-                    expert_features[name].expert_maps[expert_idx]
-                    if _use_feat
-                    else None
-                )
+                _use_feat = expert_features is not None and name in expert_features
+                feat_map = expert_features[name].expert_maps[expert_idx] if _use_feat else None
                 if feat_map is not None:
                     overlay_values = feat_map
                     overlay_title = f"{name} - expert {expert_idx} feature (RMS)"
@@ -552,14 +535,13 @@ class RoutingInterpreter:
             columns = min(spatial.shape[0], 4) + 2
             rows = math.ceil((spatial.shape[0] + 2) / columns)
             figure, axes = plt.subplots(rows, columns, figsize=(4.0 * columns, 3.8 * rows), squeeze=False)
-            panels = [(confidence, "confidence", False, "magma"), (assignments.float(), "top-1 assignment", True, "tab20")]
+            panels = [
+                (confidence, "confidence", False, "magma"),
+                (assignments.float(), "top-1 assignment", True, "tab20"),
+            ]
             for idx in range(spatial.shape[0]):
                 _use_feat = expert_features is not None and name in expert_features
-                feat_map = (
-                    expert_features[name].expert_maps[idx]
-                    if _use_feat
-                    else None
-                )
+                feat_map = expert_features[name].expert_maps[idx] if _use_feat else None
                 if feat_map is not None:
                     panels.append((feat_map, f"expert {idx} feat", False, "inferno"))
                 elif _use_feat:
@@ -567,7 +549,7 @@ class RoutingInterpreter:
                 else:
                     panels.append((spatial[idx], f"expert {idx}", False, "inferno"))
             for panel_idx, (values, title, categorical, cmap) in enumerate(panels):
-                low, high = (self._display_range(values) if not categorical else (None, None))
+                low, high = self._display_range(values) if not categorical else (None, None)
                 self._plot_map(
                     axes.flat[panel_idx],
                     values,
@@ -726,9 +708,7 @@ class RoutingInterpreter:
                 batch = dict(batch)
                 batch["img"] = batch["img"].to(device)
 
-            heatmaps = self.capture_routing(
-                batch, layer_name=layer_name, forward_fn=forward_fn
-            )
+            heatmaps = self.capture_routing(batch, layer_name=layer_name, forward_fn=forward_fn)
 
             for name, heatmap in heatmaps.items():
                 probs = heatmap.probabilities  # [B, E, ...]
@@ -747,9 +727,7 @@ class RoutingInterpreter:
                         if mod_name == name:
                             routed_module = mod
                             break
-                    top_k_registry[name] = int(
-                        getattr(routed_module, "top_k", min(E, 2))
-                    )
+                    top_k_registry[name] = int(getattr(routed_module, "top_k", min(E, 2)))
                     kl_lists[name] = []
                     spread_lists[name] = []
                     accumulated_probs[name] = torch.zeros(E, dtype=torch.float64)
@@ -766,9 +744,7 @@ class RoutingInterpreter:
 
                 # --- sparse top-k hit counts ---
                 for e in range(E):
-                    accumulator_hit[name][e] += (
-                        (topk_indices == e).any(dim=1).sum().item()
-                    )
+                    accumulator_hit[name][e] += (topk_indices == e).any(dim=1).sum().item()
 
                 # --- co-occurrence ---
                 for b_idx in range(B):
@@ -783,15 +759,11 @@ class RoutingInterpreter:
                 if probs.ndim > 2:
                     kl = self._kl_divergence_uniform(probs.float())
                 else:
-                    kl = self._kl_divergence_uniform(
-                        probs.float().unsqueeze(-1).unsqueeze(-1)
-                    )
+                    kl = self._kl_divergence_uniform(probs.float().unsqueeze(-1).unsqueeze(-1))
                 kl_lists[name].extend(kl.flatten().tolist())
 
                 # --- weight spread ---
-                gathered = torch.gather(
-                    spatial_mean.float(), 1, topk_indices
-                )  # [B, topk]
+                gathered = torch.gather(spatial_mean.float(), 1, topk_indices)  # [B, topk]
                 spread = gathered.max(dim=1).values - gathered.min(dim=1).values
                 spread_lists[name].extend(spread.tolist())
 
@@ -813,12 +785,8 @@ class RoutingInterpreter:
                 top_k=top_k_registry[name],
                 num_samples=sample_counts[name],
                 expert_hit_counts=tuple(accumulator_hit[name].tolist()),
-                expert_hit_percentages=tuple(
-                    (accumulator_hit[name].float() / denom * 100.0).tolist()
-                ),
-                co_occurrence_matrix=tuple(
-                    tuple(int(v) for v in row) for row in accumulator_cooc[name]
-                ),
+                expert_hit_percentages=tuple((accumulator_hit[name].float() / denom * 100.0).tolist()),
+                co_occurrence_matrix=tuple(tuple(int(v) for v in row) for row in accumulator_cooc[name]),
             )
 
         # --- build RouterDifferentiationMetrics ---
@@ -845,15 +813,8 @@ class RoutingInterpreter:
             dominant_expert = expert_usage.index(dominant)
             normalized_gini = self._normalized_gini(usage)
             normalized_entropy = self._normalized_entropy(usage)
-            dead = tuple(
-                i for i, v in enumerate(expert_usage) if v <= 0.01
-            )
-            collapsed = bool(
-                dominant >= 0.8
-                or normalized_gini >= 0.8
-                or normalized_entropy <= 0.5
-                or dead
-            )
+            dead = tuple(i for i, v in enumerate(expert_usage) if v <= 0.01)
+            collapsed = bool(dominant >= 0.8 or normalized_gini >= 0.8 or normalized_entropy <= 0.5 or dead)
             collapse_reports[name] = RoutingCollapseReport(
                 layer_name=name,
                 expert_usage=expert_usage,
@@ -926,7 +887,9 @@ class RoutingInterpreter:
         return {
             name: module
             for name, module in routed.items()
-            if not any(child is not module and self._is_interpretable_routed_module(child) for child in module.modules())
+            if not any(
+                child is not module and self._is_interpretable_routed_module(child) for child in module.modules()
+            )
         }
 
     @classmethod
@@ -950,7 +913,11 @@ class RoutingInterpreter:
         if value is None or num_experts <= 0:
             return None
         try:
-            tensor = value.detach().float().cpu().reshape(-1) if isinstance(value, torch.Tensor) else torch.tensor(value).float().reshape(-1)
+            tensor = (
+                value.detach().float().cpu().reshape(-1)
+                if isinstance(value, torch.Tensor)
+                else torch.tensor(value).float().reshape(-1)
+            )
         except (TypeError, ValueError):
             return None
         if tensor.numel() != num_experts:
@@ -1006,10 +973,7 @@ class RoutingInterpreter:
         """
         E = probabilities.shape[1]
         uniform = 1.0 / E
-        kl = (
-            probabilities
-            * (probabilities / uniform).log().clamp_min(-100)
-        ).sum(dim=1)
+        kl = (probabilities * (probabilities / uniform).log().clamp_min(-100)).sum(dim=1)
         return kl.clamp_min(0.0)
 
     @classmethod
@@ -1035,9 +999,7 @@ class RoutingInterpreter:
         return cls._squeeze_image_level_spatial_dims(probabilities)
 
     @classmethod
-    def _sparse_router_pair(
-        cls, output: Any, num_experts: int
-    ) -> tuple[torch.Tensor, torch.Tensor, int] | None:
+    def _sparse_router_pair(cls, output: Any, num_experts: int) -> tuple[torch.Tensor, torch.Tensor, int] | None:
         """Find matching top-k weights and indices inside a router output."""
         tensors = cls._router_tensors(output)
         weights = [tensor for tensor in tensors if tensor.is_floating_point()]
@@ -1191,8 +1153,16 @@ class RoutingInterpreter:
         if feature.ndim >= 4:
             descriptors["spatial_height"] = torch.full((feature.shape[0],), float(feature.shape[-2]))
             descriptors["spatial_width"] = torch.full((feature.shape[0],), float(feature.shape[-1]))
-            dx = (feature[..., 1:] - feature[..., :-1]).abs().flatten(1).mean(dim=1) if feature.shape[-1] > 1 else torch.zeros(feature.shape[0])
-            dy = (feature[..., 1:, :] - feature[..., :-1, :]).abs().flatten(1).mean(dim=1) if feature.shape[-2] > 1 else torch.zeros(feature.shape[0])
+            dx = (
+                (feature[..., 1:] - feature[..., :-1]).abs().flatten(1).mean(dim=1)
+                if feature.shape[-1] > 1
+                else torch.zeros(feature.shape[0])
+            )
+            dy = (
+                (feature[..., 1:, :] - feature[..., :-1, :]).abs().flatten(1).mean(dim=1)
+                if feature.shape[-2] > 1
+                else torch.zeros(feature.shape[0])
+            )
             descriptors["high_frequency"] = 0.5 * (dx + dy)
         return descriptors
 
@@ -1220,7 +1190,11 @@ class RoutingInterpreter:
         descriptors: dict[str, torch.Tensor] = {}
         for name, value in raw.items():
             try:
-                tensor = value.detach().float().cpu().reshape(-1) if isinstance(value, torch.Tensor) else torch.tensor(value).float().reshape(-1)
+                tensor = (
+                    value.detach().float().cpu().reshape(-1)
+                    if isinstance(value, torch.Tensor)
+                    else torch.tensor(value).float().reshape(-1)
+                )
             except (TypeError, ValueError):
                 continue
             if tensor.numel() and bool(torch.isfinite(tensor).all()):
@@ -1248,7 +1222,12 @@ class RoutingInterpreter:
             values = list(output)
             replaced = False
             for index, value in enumerate(values):
-                if not replaced and isinstance(value, torch.Tensor) and value.is_floating_point() and cls._expert_axis(value, num_experts) is not None:
+                if (
+                    not replaced
+                    and isinstance(value, torch.Tensor)
+                    and value.is_floating_point()
+                    and cls._expert_axis(value, num_experts) is not None
+                ):
                     values[index] = cls._forced_tensor(value, num_experts, expert_idx)
                     replaced = True
                 elif replaced and isinstance(value, torch.Tensor) and not value.is_floating_point():
@@ -1260,7 +1239,11 @@ class RoutingInterpreter:
         if isinstance(output, Mapping):
             values = dict(output)
             for key, value in values.items():
-                if isinstance(value, torch.Tensor) and value.is_floating_point() and cls._expert_axis(value, num_experts) is not None:
+                if (
+                    isinstance(value, torch.Tensor)
+                    and value.is_floating_point()
+                    and cls._expert_axis(value, num_experts) is not None
+                ):
                     values[key] = cls._forced_tensor(value, num_experts, expert_idx)
                     break
             return type(output)(values)
@@ -1275,10 +1258,7 @@ class RoutingInterpreter:
         if isinstance(output, list):
             return [cls._replace_router_tensors(value, replacements) for value in output]
         if isinstance(output, Mapping):
-            values = {
-                key: cls._replace_router_tensors(value, replacements)
-                for key, value in output.items()
-            }
+            values = {key: cls._replace_router_tensors(value, replacements) for key, value in output.items()}
             try:
                 return type(output)(values)
             except TypeError:
@@ -1422,7 +1402,10 @@ class RoutingInterpreter:
             height, width = int(background.shape[0]), int(background.shape[1])
             axis.imshow(background.numpy(), cmap="gray" if background.ndim == 2 else None)
             resized = torch.nn.functional.interpolate(
-                values[None, None], size=(height, width), mode="nearest" if categorical else "bilinear", align_corners=False if not categorical else None
+                values[None, None],
+                size=(height, width),
+                mode="nearest" if categorical else "bilinear",
+                align_corners=False if not categorical else None,
             )[0, 0]
             axis.imshow(resized.numpy(), alpha=0.58, cmap=cmap, vmin=vmin, vmax=vmax)
         else:

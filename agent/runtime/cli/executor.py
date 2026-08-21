@@ -20,10 +20,15 @@ REPO_ROOT = Path(__file__).resolve().parents[3]
 DEFAULT_MANIFEST_DIR = REPO_ROOT / "runs" / "agent"
 ANSI_RE = re.compile(r"\x1B\[[0-?]*[ -/]*[@-~]")
 
+
 def strip_ansi(text: str) -> str:
     return ANSI_RE.sub("", text or "")
+
+
 def cli_install_command() -> list[str]:
     return [sys.executable, "-m", "pip", "install", "-e", str(REPO_ROOT)]
+
+
 def install_ultralytics_cli() -> dict[str, Any]:
     cmd = cli_install_command()
     proc = subprocess.run(cmd, cwd=REPO_ROOT, capture_output=True, text=True)
@@ -33,6 +38,8 @@ def install_ultralytics_cli() -> dict[str, Any]:
         "stdout": strip_ansi(proc.stdout),
         "stderr": strip_ansi(proc.stderr),
     }
+
+
 def find_yolo_cli() -> str | None:
     names = ("yolo", "yolo.exe", "yolo-script.py")
     candidates: list[Path] = []
@@ -61,6 +68,8 @@ def find_yolo_cli() -> str | None:
         if resolved.exists() and os.access(resolved, os.X_OK):
             return str(resolved)
     return None
+
+
 def ensure_yolo_cli(force_install: bool = False) -> tuple[str, dict[str, Any]]:
     yolo_path = find_yolo_cli()
     if yolo_path and not force_install:
@@ -76,6 +85,8 @@ def ensure_yolo_cli(force_install: bool = False) -> tuple[str, dict[str, Any]]:
     install["status"] = "installed"
     install["path"] = yolo_path
     return yolo_path, install
+
+
 def cli_value(value: Any) -> str:
     if isinstance(value, Path):
         return str(value)
@@ -84,14 +95,20 @@ def cli_value(value: Any) -> str:
     if value is None:
         return "None"
     return repr(value)
+
+
 def kv_arg(key: str, value: Any) -> str:
     return f"{key}={cli_value(value)}"
+
+
 def repo_cli_env() -> dict[str, str]:
     env = os.environ.copy()
     current = env.get("PYTHONPATH", "")
     prefix = str(REPO_ROOT)
     env["PYTHONPATH"] = prefix if not current else f"{prefix}{os.pathsep}{current}"
     return env
+
+
 def cli_save_dir(request: dict[str, Any], params: dict[str, Any]) -> Path | None:
     project = params.get("project")
     name = params.get("name")
@@ -100,6 +117,8 @@ def cli_save_dir(request: dict[str, Any], params: dict[str, Any]) -> Path | None
     if project:
         return resolved_path(str(project))
     return None
+
+
 def inject_cli_artifact_location(request: dict[str, Any], params: dict[str, Any]) -> dict[str, Any]:
     enriched = dict(params)
     if "project" not in enriched:
@@ -107,6 +126,8 @@ def inject_cli_artifact_location(request: dict[str, Any], params: dict[str, Any]
     if "name" not in enriched:
         enriched["name"] = request["request_id"]
     return enriched
+
+
 def run_cli(args: list[str], cwd: Path | None = None, force_install: bool = False) -> dict[str, Any]:
     yolo_path, install = ensure_yolo_cli(force_install=force_install)
     cmd = [yolo_path, *args]
@@ -119,6 +140,8 @@ def run_cli(args: list[str], cwd: Path | None = None, force_install: bool = Fals
         "stderr": strip_ansi(proc.stderr),
         "install": install,
     }
+
+
 def cli_logs(cli_result: dict[str, Any]) -> dict[str, Any]:
     return {
         "cmd": cli_result["cmd"],
@@ -127,6 +150,8 @@ def cli_logs(cli_result: dict[str, Any]) -> dict[str, Any]:
         "stderr": cli_result["stderr"],
         "install": cli_result["install"],
     }
+
+
 def cli_plan(
     request: dict[str, Any],
     args: list[str],
@@ -144,11 +169,15 @@ def cli_plan(
         params={"cmd": ["yolo", *args], "cwd": str((cwd or REPO_ROOT).resolve())},
         extra=merged_extra,
     )
+
+
 def detect_cli_device(cli_result: dict[str, Any]) -> str | None:
     for arg in cli_result.get("cmd", [])[1:]:
         if isinstance(arg, str) and arg.startswith("device="):
             return arg.split("=", 1)[1]
     return None
+
+
 def detect_missing_module(text: str) -> str | None:
     patterns = [
         re.compile(r"No module named ['\"]([^'\"]+)['\"]"),
@@ -159,6 +188,8 @@ def detect_missing_module(text: str) -> str | None:
         if match:
             return match.group(1)
     return None
+
+
 def classify_cli_failure(cli_result: dict[str, Any]) -> dict[str, Any]:
     text = f"{cli_result.get('stdout', '')}\n{cli_result.get('stderr', '')}"
     info: dict[str, Any] = {
@@ -181,7 +212,12 @@ def classify_cli_failure(cli_result: dict[str, Any]) -> dict[str, Any]:
             "Retry with a smaller `batch` or `imgsz` on CUDA, or let the agent fall back to `cpu` when the device was auto-selected.",
             "Check that the selected CUDA runtime matches the current PyTorch build.",
         ]
-    elif "not implemented for 'MPS'" in text or "MPS backend out of memory" in text or "MPS" in text and "not supported" in text:
+    elif (
+        "not implemented for 'MPS'" in text
+        or "MPS backend out of memory" in text
+        or "MPS" in text
+        and "not supported" in text
+    ):
         category = "mps_runtime_error"
         hints = [
             "Retry with a smaller `batch` or `imgsz` while keeping `device=mps`.",
@@ -210,11 +246,15 @@ def classify_cli_failure(cli_result: dict[str, Any]) -> dict[str, Any]:
     if hints:
         info["hints"] = hints
     return info
+
+
 def tail_text(text: str, max_lines: int = 20) -> str:
     lines = strip_ansi(text).splitlines()
     if not lines:
         return ""
     return "\n".join(lines[-max_lines:])
+
+
 def cli_attempt_record(cli_result: dict[str, Any]) -> dict[str, Any]:
     record: dict[str, Any] = {
         "cmd": cli_result["cmd"],
@@ -229,10 +269,14 @@ def cli_attempt_record(cli_result: dict[str, Any]) -> dict[str, Any]:
         if cli_result.get("stderr"):
             record["stderr_tail"] = tail_text(cli_result["stderr"])
     return json_safe(record)
+
+
 def replace_cli_device(values: dict[str, Any], device: str) -> dict[str, Any]:
     updated = dict(values)
     updated["device"] = device
     return updated
+
+
 def should_retry_with_cpu(
     request: dict[str, Any],
     cli_result: dict[str, Any],
@@ -248,6 +292,8 @@ def should_retry_with_cpu(
         return False
     error = classify_cli_failure(cli_result)
     return error.get("category") in {"mps_runtime_error", "cuda_runtime_error"}
+
+
 def run_cli_with_recovery(
     request: dict[str, Any],
     mode: str,
@@ -299,6 +345,8 @@ def run_cli_with_recovery(
         "recovery": recovery,
         "failed": failed,
     }
+
+
 def ensure_cli_success(
     request: dict[str, Any],
     cli_result: dict[str, Any],
@@ -321,6 +369,8 @@ def ensure_cli_success(
     if recovery:
         payload["recovery"] = recovery
     return payload
+
+
 def build_cli_key_values(
     request: dict[str, Any],
     *,
@@ -342,11 +392,15 @@ def build_cli_key_values(
     if inject_save_dir:
         values = inject_cli_artifact_location(request, values)
     return values
+
+
 def cli_args_from_values(mode: str, values: dict[str, Any]) -> list[str]:
     args = [mode]
     for key, value in values.items():
         args.append(kv_arg(key, value))
     return args
+
+
 def read_results_csv_metrics(save_dir: Path | None) -> dict[str, Any]:
     if not save_dir:
         return {}
@@ -361,6 +415,8 @@ def read_results_csv_metrics(save_dir: Path | None) -> dict[str, Any]:
     if not rows:
         return {}
     return {key: coerce_scalar(value) for key, value in rows[-1].items()}
+
+
 def parse_cli_speed(stdout: str) -> dict[str, float]:
     speed: dict[str, float] = {}
     pattern = re.compile(
@@ -379,6 +435,8 @@ def parse_cli_speed(stdout: str) -> dict[str, float]:
         if match.group(3) is not None:
             speed["loss"] = float(match.group(3))
     return speed
+
+
 def parse_detection_cli_metrics(stdout: str) -> tuple[dict[str, Any], dict[str, Any]]:
     pattern = re.compile(r"^all\s+(\d+)\s+(\d+)\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)\s*$")
     for raw_line in reversed(stdout.splitlines()):
@@ -408,6 +466,8 @@ def parse_detection_cli_metrics(stdout: str) -> tuple[dict[str, Any], dict[str, 
         }
         return raw_metrics, evaluation
     return {}, {}
+
+
 def build_evaluation_summary(metrics: dict[str, Any], stdout: str = "") -> dict[str, Any]:
     _, parsed = parse_detection_cli_metrics(stdout)
     evaluation = dict(parsed)
@@ -434,6 +494,8 @@ def build_evaluation_summary(metrics: dict[str, Any], stdout: str = "") -> dict[
     if speed:
         evaluation["speed_ms"] = speed
     return evaluation
+
+
 def parse_predict_cli_output(stdout: str) -> tuple[list[dict[str, Any]], dict[str, float]]:
     results: list[dict[str, Any]] = []
     speed: dict[str, float] = parse_cli_speed(stdout)
@@ -446,11 +508,15 @@ def parse_predict_cli_output(stdout: str) -> tuple[list[dict[str, Any]], dict[st
                 item["boxes"] = 0
             results.append(item)
     return results, speed
+
+
 def capture_output(func, *args, **kwargs) -> tuple[Any, str, str]:
     stdout_buffer, stderr_buffer = io.StringIO(), io.StringIO()
     with contextlib.redirect_stdout(stdout_buffer), contextlib.redirect_stderr(stderr_buffer):
         result = func(*args, **kwargs)
     return result, stdout_buffer.getvalue(), stderr_buffer.getvalue()
+
+
 @contextlib.contextmanager
 def pushd(path: Path):
     old = Path.cwd()

@@ -1,5 +1,6 @@
 # 🐧Please note that this file has been modified by Tencent on 2026/02/07. All Tencent Modifications are Copyright (C) 2026 Tencent.
 """Efficient routers for Mixture-of-Experts models"""
+
 import math
 import torch
 import torch.nn as nn
@@ -48,10 +49,7 @@ def _validate_router_input(x: torch.Tensor, expected_channels: int, context: str
             context=context or "router input",
         )
     if torch.isnan(x).any() or torch.isinf(x).any():
-        raise MoERouterError(
-            "Router input contains NaN/Inf values"
-            + (f" [{context}]" if context else "")
-        )
+        raise MoERouterError("Router input contains NaN/Inf values" + (f" [{context}]" if context else ""))
 
 
 # ==========================================
@@ -68,8 +66,9 @@ class UltraEfficientRouter(nn.Module):
     Expected FLOPs reduction: ~95% vs a local router baseline.
     """
 
-    def __init__(self, in_channels, num_experts, reduction=16, top_k=2,
-                 noise_std=1.0, temperature: float = 1.0, pool_scale=8):
+    def __init__(
+        self, in_channels, num_experts, reduction=16, top_k=2, noise_std=1.0, temperature: float = 1.0, pool_scale=8
+    ):
         super().__init__()
         self.num_experts = num_experts
         self.top_k = top_k
@@ -91,12 +90,13 @@ class UltraEfficientRouter(nn.Module):
             nn.GroupNorm(get_safe_groups(reduced_channels, 4), reduced_channels),
             nn.SiLU(inplace=False),
             # Expert projection
-            nn.Conv2d(reduced_channels, num_experts, 1, bias=True)
+            nn.Conv2d(reduced_channels, num_experts, 1, bias=True),
         )
         self.softmax = nn.Softmax(dim=1)
 
-    def forward(self, x, top_k: Optional[int] = None) -> Tuple[
-        torch.Tensor, torch.Tensor, Optional[torch.Tensor], Optional[torch.Tensor], Optional[torch.Tensor]]:
+    def forward(
+        self, x, top_k: Optional[int] = None
+    ) -> Tuple[torch.Tensor, torch.Tensor, Optional[torch.Tensor], Optional[torch.Tensor], Optional[torch.Tensor]]:
         _validate_router_input(x, _get_router_in_channels(self.router), context="UltraEfficientRouter")
         B, C, H, W = x.shape
         current_top_k = max(1, min(int(self.top_k if top_k is None else top_k), self.num_experts))
@@ -128,9 +128,9 @@ class UltraEfficientRouter(nn.Module):
         # 6) Softmax + TopK (fused operation)
         weights = F.softmax(scaled_logits.float(), dim=1).type_as(x)
         pooled_weights = weights.mean(dim=[2, 3], keepdim=True)
-        
+
         topk_vals, topk_indices = torch.topk(pooled_weights, current_top_k, dim=1)
-        
+
         # Out-of-place normalization preserves the Top-K autograd graph.
         topk_vals = topk_vals / topk_vals.sum(dim=1, keepdim=True).clamp_min(1e-6)
 
@@ -182,9 +182,9 @@ class BaseRouter(nn.Module):
         self.capacity_factor = capacity_factor  # P1-5: optional token-level overflow guard
         self.softmax = nn.Softmax(dim=1)
 
-    def _process_logits(self, logits: torch.Tensor, noise_std: float, training: bool,
-                        top_k: Optional[int] = None) -> Tuple[
-        torch.Tensor, torch.Tensor, Dict]:
+    def _process_logits(
+        self, logits: torch.Tensor, noise_std: float, training: bool, top_k: Optional[int] = None
+    ) -> Tuple[torch.Tensor, torch.Tensor, Dict]:
         """Unified logic to process logits into Top-K selection.
 
         P1-5: When capacity_factor is set, excess tokens beyond the capacity limit
@@ -195,9 +195,7 @@ class BaseRouter(nn.Module):
 
         # Guard: detect NaN/Inf in logits early (catches upstream corruption)
         if torch.isnan(logits).any() or torch.isinf(logits).any():
-            raise MoERouterError(
-                f"Router logits contain NaN/Inf before softmax (B={logits.shape[0]})"
-            )
+            raise MoERouterError(f"Router logits contain NaN/Inf before softmax (B={logits.shape[0]})")
 
         # 1) Add noise during training (simplified Gumbel-Softmax trick)
         if training and noise_std > 0:
@@ -221,9 +219,7 @@ class BaseRouter(nn.Module):
                 raise MoERouterError("capacity_factor must be finite and > 0")
             capacity = max(1, math.ceil(self.capacity_factor * B * effective_top_k / self.num_experts))
             expert_positions = F.one_hot(topk_indices, num_classes=self.num_experts).cumsum(dim=0)
-            assignment_overflow_mask = (
-                expert_positions.gather(2, topk_indices.unsqueeze(-1)).squeeze(-1) > capacity
-            )
+            assignment_overflow_mask = expert_positions.gather(2, topk_indices.unsqueeze(-1)).squeeze(-1) > capacity
             if assignment_overflow_mask.any():
                 topk_vals = topk_vals.masked_fill(assignment_overflow_mask, 0.0)
                 overflow_mask = assignment_overflow_mask.all(dim=1)
@@ -254,17 +250,17 @@ class BaseRouter(nn.Module):
         # 5) Collect loss-related info (train only)
         loss_dict = {}
         if training:
-            loss_dict['router_logits'] = logits
-            loss_dict['router_probs'] = probs
-            loss_dict['topk_indices'] = topk_indices
+            loss_dict["router_logits"] = logits
+            loss_dict["router_probs"] = probs
+            loss_dict["topk_indices"] = topk_indices
             if assignment_overflow_mask is not None:
                 overflow_count = int(assignment_overflow_mask.sum().item())
-                loss_dict['overflow_count'] = overflow_count
-                loss_dict['overflow_fraction'] = overflow_count / max(B * effective_top_k, 1)
-                loss_dict['overflow_mask'] = assignment_overflow_mask.detach().clone()
-                loss_dict['token_overflow_mask'] = overflow_mask.detach().clone()
-                loss_dict['capacity_limit'] = int(capacity)
-                loss_dict['overflow_policy'] = 'per_expert_default_straight_through'
+                loss_dict["overflow_count"] = overflow_count
+                loss_dict["overflow_fraction"] = overflow_count / max(B * effective_top_k, 1)
+                loss_dict["overflow_mask"] = assignment_overflow_mask.detach().clone()
+                loss_dict["token_overflow_mask"] = overflow_mask.detach().clone()
+                loss_dict["capacity_limit"] = int(capacity)
+                loss_dict["overflow_policy"] = "per_expert_default_straight_through"
 
         return topk_vals, topk_indices, loss_dict
 
@@ -281,7 +277,7 @@ class EfficientSpatialRouter(BaseRouter):
             nn.BatchNorm2d(reduced_channels),
             nn.SiLU(inplace=False),
             nn.Conv2d(reduced_channels, num_experts, 1, bias=False),
-            nn.BatchNorm2d(num_experts)  # numerical stability
+            nn.BatchNorm2d(num_experts),  # numerical stability
         )
 
     def forward(self, x, top_k: Optional[int] = None):
@@ -325,7 +321,7 @@ class AdaptiveRoutingLayer(BaseRouter):
             nn.BatchNorm2d(reduced_channels),
             nn.SiLU(inplace=False),
             nn.Conv2d(reduced_channels, num_experts, 1, bias=False),
-            nn.BatchNorm2d(num_experts)
+            nn.BatchNorm2d(num_experts),
         )
 
     def forward(self, x, top_k: Optional[int] = None):
@@ -352,7 +348,7 @@ class LocalRoutingLayer(BaseRouter):
             nn.BatchNorm2d(reduced_channels),
             nn.SiLU(inplace=False),
             nn.Conv2d(reduced_channels, num_experts, 1, bias=False),
-            nn.BatchNorm2d(num_experts)
+            nn.BatchNorm2d(num_experts),
         )
 
     def forward(self, x, top_k: Optional[int] = None):
@@ -448,7 +444,7 @@ class DynamicRoutingLayer(nn.Module):
         self.in_channels = in_channels
         self.num_experts = num_experts
         self.top_k = min(top_k, num_experts) if top_k is not None else num_experts
-        self.use_top_k = (top_k is not None)  # whether to enable Top-K
+        self.use_top_k = top_k is not None  # whether to enable Top-K
 
         self.global_pool = nn.AdaptiveAvgPool2d(1)
 
@@ -517,7 +513,7 @@ class DynamicRoutingLayer(nn.Module):
 
         # Apply mask and re-normalize
         weights = stable_normalize(weights * mask_one_hot, dim=1)
-        
+
         return weights.view(B, E, H, W)
 
     def _hard_top_k(self, logits):

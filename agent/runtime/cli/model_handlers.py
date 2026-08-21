@@ -16,7 +16,9 @@ class ModelDeps:
 def run_model_inspect(request: dict[str, Any], deps: ModelDeps) -> dict[str, Any]:
     actions = request["params"].get("actions") or ["info", "names", "device", "task_map"]
     if is_dry_run(request):
-        return plan_response(request, "inspect dry run prepared", "python_api", "YOLO(...).inspect", params={"actions": actions})
+        return plan_response(
+            request, "inspect dry run prepared", "python_api", "YOLO(...).inspect", params={"actions": actions}
+        )
 
     model = deps.build_model(request)
     data: dict[str, Any] = {"task": model.task, "model_name": json_safe(getattr(model, "model_name", None))}

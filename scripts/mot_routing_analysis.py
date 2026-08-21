@@ -22,6 +22,7 @@ EXPERT_NAMES = ["LocalConv", "Window", "Deformable"]
 def collect_routing_hooks(model):
     """Register forward hooks on all MoTBlocks to collect routing weights."""
     from ultralytics.nn.modules.mot import MoTBlock
+
     routing_data = defaultdict(list)
 
     def make_hook(layer_name):
@@ -30,16 +31,19 @@ def collect_routing_hooks(model):
                 snap = module.last_routing_snapshot
                 expert_usage = snap.get("expert_usage", None)
                 if expert_usage is not None:
-                    routing_data[layer_name].append({
-                        "expert_usage": expert_usage.cpu().tolist() if isinstance(expert_usage, torch.Tensor) else expert_usage,
-                        "aux_loss": snap.get("aux_loss", 0),
-                    })
+                    routing_data[layer_name].append(
+                        {
+                            "expert_usage": expert_usage.cpu().tolist()
+                            if isinstance(expert_usage, torch.Tensor)
+                            else expert_usage,
+                            "aux_loss": snap.get("aux_loss", 0),
+                        }
+                    )
             # Also capture raw router weights from the forward
             if hasattr(module, "router") and hasattr(module.router, "_last_weights"):
                 weights = module.router._last_weights
-                routing_data[f"{layer_name}_spatial"].append(
-                    weights.detach().cpu().float().mean(dim=(2, 3)).tolist()
-                )
+                routing_data[f"{layer_name}_spatial"].append(weights.detach().cpu().float().mean(dim=(2, 3)).tolist())
+
         return hook
 
     hooks = []
@@ -80,12 +84,14 @@ def analyze_scenes(model, data_yaml, device, num_samples=50):
 
     # Limit samples
     import random
+
     random.seed(42)
     if len(images) > num_samples:
         images = random.sample(images, num_samples)
 
     # Register hooks
     from ultralytics.nn.modules.mot import MoTBlock
+
     hooks = []
 
     def make_hook(name):
@@ -95,6 +101,7 @@ def analyze_scenes(model, data_yaml, device, num_samples=50):
                 eu = snap.get("expert_usage")
                 if eu is not None:
                     routing_data[name].append(eu.cpu().tolist())
+
         return hook_fn
 
     for name, module in model.named_modules():
@@ -122,13 +129,15 @@ def analyze_scenes(model, data_yaml, device, num_samples=50):
                 avg_obj_size = 0
                 small_obj_ratio = 0
 
-            scene_stats.append({
-                "image": img_path.name,
-                "num_objects": num_objects,
-                "density": "dense" if num_objects > 30 else ("sparse" if num_objects < 10 else "medium"),
-                "avg_obj_size": avg_obj_size,
-                "small_obj_ratio": small_obj_ratio,
-            })
+            scene_stats.append(
+                {
+                    "image": img_path.name,
+                    "num_objects": num_objects,
+                    "density": "dense" if num_objects > 30 else ("sparse" if num_objects < 10 else "medium"),
+                    "avg_obj_size": avg_obj_size,
+                    "small_obj_ratio": small_obj_ratio,
+                }
+            )
         except Exception as e:
             print(f"  [WARN] {img_path.name}: {e}")
 
@@ -194,9 +203,7 @@ def main():
     model.model.eval()
 
     print(f"[2/4] Running inference on {args.num_samples} VisDrone val images...")
-    routing_data, scene_stats = analyze_scenes(
-        model.model, args.data, args.device, args.num_samples
-    )
+    routing_data, scene_stats = analyze_scenes(model.model, args.data, args.device, args.num_samples)
 
     print("[3/4] Summarizing routing patterns...")
     summary, scene_analysis = summarize_routing(routing_data, scene_stats)
@@ -223,15 +230,9 @@ def main():
     output_path.parent.mkdir(parents=True, exist_ok=True)
     results = {
         "model": args.model,
-        "per_layer_summary": {
-            k: {kk: vv for kk, vv in v.items()}
-            for k, v in summary.items()
-        },
+        "per_layer_summary": {k: {kk: vv for kk, vv in v.items()} for k, v in summary.items()},
         "scene_analysis": {
-            group: {
-                layer: {k: v for k, v in stats.items()}
-                for layer, stats in layers.items()
-            }
+            group: {layer: {k: v for k, v in stats.items()} for layer, stats in layers.items()}
             for group, layers in scene_analysis.items()
         },
     }
@@ -248,7 +249,9 @@ def main():
         for layer_name, stats in layers.items():
             means = np.array(stats["mean"])
             top_expert = np.argmax(means)
-            print(f"  {group:20s} | {layer_name:40s} | top_expert={EXPERT_NAMES[top_expert]:15s} | weights={means.round(4).tolist()}")
+            print(
+                f"  {group:20s} | {layer_name:40s} | top_expert={EXPERT_NAMES[top_expert]:15s} | weights={means.round(4).tolist()}"
+            )
 
 
 if __name__ == "__main__":

@@ -27,6 +27,7 @@ agent/runtime/cli/snapshot.py
   diff = SnapshotDiff.compare(baseline, current)
   assert diff.regression_count == 0, diff.summary()
 """
+
 from __future__ import annotations
 
 import json
@@ -38,6 +39,7 @@ from typing import Any
 # ---------------------------------------------------------------------------
 # 工具函数
 # ---------------------------------------------------------------------------
+
 
 def _dotted_get(value: Any, path: str) -> Any:
     current = value
@@ -69,6 +71,7 @@ def _to_float(v: Any) -> float | None:
 # 环境指纹
 # ---------------------------------------------------------------------------
 
+
 class EnvironmentSnapshot:
     """捕获当前 Python/Torch/设备环境，用于标注快照采集时的运行上下文。"""
 
@@ -79,6 +82,7 @@ class EnvironmentSnapshot:
     def capture(cls) -> "EnvironmentSnapshot":
         import sys
         import platform
+
         data: dict[str, Any] = {
             "python": sys.version.split()[0],
             "platform": sys.platform,
@@ -87,6 +91,7 @@ class EnvironmentSnapshot:
         }
         try:
             import torch
+
             data["torch"] = torch.__version__
             data["mps_available"] = torch.backends.mps.is_available()
             data["cuda_available"] = torch.cuda.is_available()
@@ -94,6 +99,7 @@ class EnvironmentSnapshot:
             data["torch"] = None
         try:
             import ultralytics
+
             data["ultralytics"] = ultralytics.__version__
         except Exception:
             data["ultralytics"] = None
@@ -117,7 +123,7 @@ STRUCTURAL_FIELDS: dict[str, type] = {
     "status": str,
     "summary": str,
     "manifest": (str, type(None)),
-    "usage.tokens.total": int,          # 存在性，不比较具体值
+    "usage.tokens.total": int,  # 存在性，不比较具体值
     "cost_estimate.currency": str,
 }
 
@@ -151,16 +157,16 @@ class PayloadSnapshot:
       - artifacts 的 kind 列表（不含路径）
     """
 
-    def __init__(self, skill: str, data: dict[str, Any],
-                 env: EnvironmentSnapshot | None = None):
+    def __init__(self, skill: str, data: dict[str, Any], env: EnvironmentSnapshot | None = None):
         self.skill = skill
         self.data = data
         self.env = env
         self.captured_at = data.get("_captured_at", time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
 
     @classmethod
-    def capture(cls, payload: dict[str, Any], skill: str = "",
-                env: EnvironmentSnapshot | None = None) -> "PayloadSnapshot":
+    def capture(
+        cls, payload: dict[str, Any], skill: str = "", env: EnvironmentSnapshot | None = None
+    ) -> "PayloadSnapshot":
         skill = skill or str(payload.get("skill", ""))
         summary: dict[str, Any] = {
             "_captured_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
@@ -193,9 +199,7 @@ class PayloadSnapshot:
         # 4. artifacts 种类列表（不含绝对路径）
         arts = payload.get("artifacts") or []
         if isinstance(arts, list):
-            summary["_artifact_kinds"] = sorted(
-                {a.get("kind", "?") for a in arts if isinstance(a, dict)}
-            )
+            summary["_artifact_kinds"] = sorted({a.get("kind", "?") for a in arts if isinstance(a, dict)})
 
         # 5. next_actions 存在性
         na = payload.get("next_actions")
@@ -248,9 +252,9 @@ class PayloadSnapshot:
 # 快照对比
 # ---------------------------------------------------------------------------
 
+
 class DiffItem:
-    def __init__(self, key: str, baseline: Any, current: Any,
-                 is_regression: bool, note: str = ""):
+    def __init__(self, key: str, baseline: Any, current: Any, is_regression: bool, note: str = ""):
         self.key = key
         self.baseline = baseline
         self.current = current
@@ -304,7 +308,12 @@ class SnapshotDiff:
                 continue  # 完全一致，跳过
 
             # 判断是否是 regression
-            if key.startswith("_exists.") or key.startswith("_behavior.") or key.startswith("_mm.") or key.startswith("_recovery."):
+            if (
+                key.startswith("_exists.")
+                or key.startswith("_behavior.")
+                or key.startswith("_mm.")
+                or key.startswith("_recovery.")
+            ):
                 # 这些字段必须与 baseline 一致
                 is_regression = bv != cv
                 note = "structural/behavioral field changed"
@@ -340,11 +349,8 @@ class SnapshotDiff:
                 is_regression = False
                 note = "unknown key diff"
 
-            items.append(DiffItem(key=key, baseline=bv, current=cv,
-                                  is_regression=is_regression, note=note))
-        return cls(items=items,
-                   baseline_skill=baseline.skill,
-                   current_skill=current.skill)
+            items.append(DiffItem(key=key, baseline=bv, current=cv, is_regression=is_regression, note=note))
+        return cls(items=items, baseline_skill=baseline.skill, current_skill=current.skill)
 
     def summary(self) -> str:
         lines = [

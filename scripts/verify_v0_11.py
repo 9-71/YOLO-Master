@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Correctness checks for the v0.11 HybridAdaptiveGateMoEv2 block and full model."""
+
 import os
 import sys
 import copy
@@ -32,8 +33,10 @@ def block_checks():
         assert prior.grad is not None, "expert_prior got no gradient"
         assert blk.routing.stat_norm.weight.grad is not None, "stat_norm got no gradient"
         backend = blk.expert_backend
-        print(f"  experts={experts:>2} split={split} backend={backend:<14} "
-              f"out={tuple(y.shape)} aux={float(aux):.4f} prior.grad_norm={prior.grad.norm():.4f} OK")
+        print(
+            f"  experts={experts:>2} split={split} backend={backend:<14} "
+            f"out={tuple(y.shape)} aux={float(aux):.4f} prior.grad_norm={prior.grad.norm():.4f} OK"
+        )
 
         # eval-mode forward (no aux loss path, hard top-k)
         blk.eval()
@@ -62,10 +65,9 @@ def model_checks():
         out = model(x)
         # gather aux losses published to the registry
         aux_terms = [v for v in MOE_LOSS_REGISTRY.values() if torch.is_tensor(v)]
-        print(f"  {name:<6} params={params[name]/1e6:.4f}M  moe_blocks_with_aux={len(aux_terms)}")
+        print(f"  {name:<6} params={params[name] / 1e6:.4f}M  moe_blocks_with_aux={len(aux_terms)}")
     delta = (params["v0_11"] - params["v0_6"]) / 1e6
-    print(f"  param delta v0_11 - v0_6 = {delta:+.4f}M "
-          f"({100*delta*1e6/params['v0_6']:+.3f}%)")
+    print(f"  param delta v0_11 - v0_6 = {delta:+.4f}M ({100 * delta * 1e6 / params['v0_6']:+.3f}%)")
     print("  model checks passed\n")
 
 

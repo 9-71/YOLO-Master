@@ -321,7 +321,15 @@ def should_use_wandb(cfg: TrainConfig) -> bool:
     return cfg.wandb_enabled()
 
 
-def wandb_init_custom(state: dict, run_name: str, model_spec: ModelSpec, cfg: TrainConfig, dense_eval: bool, resolved_run_tag: str, dataset_spec: DatasetSpec):
+def wandb_init_custom(
+    state: dict,
+    run_name: str,
+    model_spec: ModelSpec,
+    cfg: TrainConfig,
+    dense_eval: bool,
+    resolved_run_tag: str,
+    dataset_spec: DatasetSpec,
+):
     """Initialize a W&B run for this script."""
     from ultralytics.utils import LOGGER
 
@@ -416,7 +424,9 @@ def wandb_log_ultralytics_defaults(state: dict, trainer, stage: str):
             LOGGER.warning(f"[issue49] wandb default artifact log failed: {exc}")
         try:
             if trainer.args.plots and hasattr(trainer.validator.metrics, "curves_results"):
-                for curve_name, curve_values in zip(trainer.validator.metrics.curves, trainer.validator.metrics.curves_results):
+                for curve_name, curve_values in zip(
+                    trainer.validator.metrics.curves, trainer.validator.metrics.curves_results
+                ):
                     x, y, x_title, y_title = curve_values
                     _plot_curve(
                         run,
@@ -534,7 +544,9 @@ def train_one(model_spec: ModelSpec, dataset_spec: DatasetSpec, cfg: TrainConfig
         model.add_callback("on_train_start", dense_cb)
 
     if should_use_wandb(cfg):
-        for event, callback in make_wandb_callbacks(run_name, model_spec, cfg, dense_eval, tag_slug, dataset_spec).items():
+        for event, callback in make_wandb_callbacks(
+            run_name, model_spec, cfg, dense_eval, tag_slug, dataset_spec
+        ).items():
             model.add_callback(event, callback)
 
     print(
@@ -544,7 +556,9 @@ def train_one(model_spec: ModelSpec, dataset_spec: DatasetSpec, cfg: TrainConfig
                 "run_name": run_name,
                 "model": model_spec.name,
                 "cfg": str(model_spec.cfg.relative_to(ROOT) if model_spec.cfg.is_relative_to(ROOT) else model_spec.cfg),
-                "data": str(dataset_spec.yaml.relative_to(ROOT) if dataset_spec.yaml.is_relative_to(ROOT) else dataset_spec.yaml),
+                "data": str(
+                    dataset_spec.yaml.relative_to(ROOT) if dataset_spec.yaml.is_relative_to(ROOT) else dataset_spec.yaml
+                ),
                 "dense_eval": dense_eval,
                 "epochs": cfg.epochs,
                 "imgsz": cfg.imgsz,
@@ -622,7 +636,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--patience", type=int, default=100)
     parser.add_argument("--lr0", type=float, help="Optional override for the initial learning rate.")
     parser.add_argument("--no-amp", action="store_true", help="Disable mixed precision training.")
-    parser.add_argument("--dense-eval-for-esmoe", action="store_true", help="Force dense inference during eval for ES-MoE runs.")
+    parser.add_argument(
+        "--dense-eval-for-esmoe", action="store_true", help="Force dense inference during eval for ES-MoE runs."
+    )
     parser.add_argument("--run-tag", default="", help="Explicit run tag. Default auto-assigns run001/run002/...")
     parser.add_argument("--wandb-project", default="yolo_master_issue49")
     parser.add_argument("--wandb-entity")

@@ -35,7 +35,11 @@ from ultralytics.nn.modules.moe.modules import (
     _record_moe_snapshot,
 )
 from ultralytics.nn.modules.moe.experts import (
-    OptimizedSimpleExpert, GhostExpert, SimpleExpert, SpatialExpert, InvertedResidualExpert,
+    OptimizedSimpleExpert,
+    GhostExpert,
+    SimpleExpert,
+    SpatialExpert,
+    InvertedResidualExpert,
 )
 from ultralytics.nn.modules.moe.routers import UltraEfficientRouter, AdvancedRoutingLayer
 from ultralytics.nn.modules.moe.loss import MoELoss, gshard_balance_loss, weighted_gshard_balance_loss
@@ -108,8 +112,9 @@ def test_collect_helper_handles_none_and_eval():
 def test_routing_gradient_flows_by_default():
     """With detach_routing=False (default), main-task grad reaches the router."""
     torch.manual_seed(0)
-    m = OptimizedMOEImproved(in_channels=32, out_channels=32, num_experts=4, top_k=2,
-                             progressive_sparsity=False).train()
+    m = OptimizedMOEImproved(
+        in_channels=32, out_channels=32, num_experts=4, top_k=2, progressive_sparsity=False
+    ).train()
     assert m.detach_routing is False
     x = torch.randn(2, 32, 16, 16, requires_grad=True)
     out = m(x)
@@ -131,7 +136,15 @@ def test_improved_moe_rejects_nonfinite_shared_expert_output(monkeypatch):
 def test_improved_moe_rejects_nonfinite_sparse_aggregation(monkeypatch):
     m = OptimizedMOEImproved(32, 32, num_experts=4, top_k=2, progressive_sparsity=False).eval()
     monkeypatch.setattr(m.experts[0], "forward", lambda x: torch.full_like(x, float("nan")))
-    monkeypatch.setattr(m.routing, "forward", lambda x, top_k: (torch.tensor([[1.0, 0.0]], device=x.device).expand(x.shape[0], -1), torch.tensor([[0, 1]], device=x.device).expand(x.shape[0], -1), {}))
+    monkeypatch.setattr(
+        m.routing,
+        "forward",
+        lambda x, top_k: (
+            torch.tensor([[1.0, 0.0]], device=x.device).expand(x.shape[0], -1),
+            torch.tensor([[0, 1]], device=x.device).expand(x.shape[0], -1),
+            {},
+        ),
+    )
     with pytest.raises(RuntimeError, match="sparse expert aggregation"):
         m(torch.randn(2, 32, 16, 16))
 
@@ -139,7 +152,15 @@ def test_improved_moe_rejects_nonfinite_sparse_aggregation(monkeypatch):
 def test_improved_moe_rejects_nonfinite_after_low_precision_output_conversion(monkeypatch):
     m = OptimizedMOEImproved(32, 32, num_experts=4, top_k=2, progressive_sparsity=False).eval().half()
     monkeypatch.setattr(m.shared_expert, "forward", lambda x: torch.full_like(x.float(), 1e5))
-    monkeypatch.setattr(m.routing, "forward", lambda x, top_k: (torch.tensor([[1.0, 0.0]], device=x.device).expand(x.shape[0], -1), torch.tensor([[0, 1]], device=x.device).expand(x.shape[0], -1), {}))
+    monkeypatch.setattr(
+        m.routing,
+        "forward",
+        lambda x, top_k: (
+            torch.tensor([[1.0, 0.0]], device=x.device).expand(x.shape[0], -1),
+            torch.tensor([[0, 1]], device=x.device).expand(x.shape[0], -1),
+            {},
+        ),
+    )
     monkeypatch.setattr(m.experts[0], "forward", lambda x: torch.zeros_like(x))
     try:
         m(torch.randn(2, 32, 16, 16, dtype=torch.float16))
@@ -154,8 +175,9 @@ def test_improved_moe_rejects_nonfinite_after_low_precision_output_conversion(mo
 def test_routing_detach_isolates_router():
     """With detach_routing=True, main-task grad must NOT reach router weights."""
     torch.manual_seed(0)
-    m = OptimizedMOEImproved(in_channels=32, out_channels=32, num_experts=4, top_k=2,
-                             progressive_sparsity=False, detach_routing=True).eval()
+    m = OptimizedMOEImproved(
+        in_channels=32, out_channels=32, num_experts=4, top_k=2, progressive_sparsity=False, detach_routing=True
+    ).eval()
     # eval() so no aux loss is published; only main-task path contributes grad.
     x = torch.randn(2, 32, 16, 16)
     out = m(x)
@@ -216,13 +238,16 @@ def test_moe_snapshot_tensors_remain_on_source_device():
 # ---------------------------------------------------------------------------
 # deepcopy safety (EMA / checkpoint load rely on this)
 # ---------------------------------------------------------------------------
-@pytest.mark.parametrize("factory", [
-    lambda: UltraOptimizedMoE(32, 32, num_experts=4, top_k=2),
-    lambda: OptimizedMOE(32, 32, num_experts=4, top_k=2),
-    lambda: OptimizedMOEImproved(32, 32, num_experts=4, top_k=2, progressive_sparsity=False),
-    lambda: AdaptiveGateMoE(32, 32, num_experts=4, top_k=2),
-    lambda: HybridAdaptiveGateMoE(32, 32, num_experts=4, top_k=2),
-])
+@pytest.mark.parametrize(
+    "factory",
+    [
+        lambda: UltraOptimizedMoE(32, 32, num_experts=4, top_k=2),
+        lambda: OptimizedMOE(32, 32, num_experts=4, top_k=2),
+        lambda: OptimizedMOEImproved(32, 32, num_experts=4, top_k=2, progressive_sparsity=False),
+        lambda: AdaptiveGateMoE(32, 32, num_experts=4, top_k=2),
+        lambda: HybridAdaptiveGateMoE(32, 32, num_experts=4, top_k=2),
+    ],
+)
 def test_deepcopy_safe_after_forward(factory):
     """deepcopy after a training forward (with non-leaf aux in registry) must work."""
     torch.manual_seed(0)
@@ -237,13 +262,16 @@ def test_deepcopy_safe_after_forward(factory):
 # ---------------------------------------------------------------------------
 # forward shapes
 # ---------------------------------------------------------------------------
-@pytest.mark.parametrize("factory", [
-    lambda: UltraOptimizedMoE(32, 48, num_experts=4, top_k=2),
-    lambda: OptimizedMOE(32, 48, num_experts=4, top_k=2),
-    lambda: OptimizedMOEImproved(32, 32, num_experts=4, top_k=2, progressive_sparsity=False),
-    lambda: AdaptiveGateMoE(32, 32, num_experts=4, top_k=2),
-    lambda: HybridAdaptiveGateMoE(32, 32, num_experts=4, top_k=2),
-])
+@pytest.mark.parametrize(
+    "factory",
+    [
+        lambda: UltraOptimizedMoE(32, 48, num_experts=4, top_k=2),
+        lambda: OptimizedMOE(32, 48, num_experts=4, top_k=2),
+        lambda: OptimizedMOEImproved(32, 32, num_experts=4, top_k=2, progressive_sparsity=False),
+        lambda: AdaptiveGateMoE(32, 32, num_experts=4, top_k=2),
+        lambda: HybridAdaptiveGateMoE(32, 32, num_experts=4, top_k=2),
+    ],
+)
 def test_forward_shapes(factory):
     """Forward preserves spatial dims and yields the configured out_channels."""
     torch.manual_seed(0)
@@ -267,8 +295,7 @@ def test_moeloss_no_silent_floor_by_default():
     idx = torch.topk(probs, K, dim=1).indices
 
     big = MoELoss(balance_loss_coeff=0.01, z_loss_coeff=0.0, num_experts=E, top_k=K)
-    small_floor = MoELoss(balance_loss_coeff=0.01, z_loss_coeff=0.0, num_experts=E, top_k=K,
-                          coeff_floor=0.1)
+    small_floor = MoELoss(balance_loss_coeff=0.01, z_loss_coeff=0.0, num_experts=E, top_k=K, coeff_floor=0.1)
     l_default = float(big(probs, logits, idx).detach())
     l_floored = float(small_floor(probs, logits, idx).detach())
     # With floor disabled the loss is ~10x smaller than the floored variant.
@@ -283,8 +310,7 @@ def test_moeloss_diversity_skips_single_expert():
     probs = torch.softmax(logits, dim=1)
     idx = torch.topk(probs, K, dim=1).indices
     expert_out = torch.randn(B, E, D)
-    loss_fn = MoELoss(balance_loss_coeff=1.0, z_loss_coeff=0.0, diversity_loss_coeff=1.0,
-                      num_experts=E, top_k=K)
+    loss_fn = MoELoss(balance_loss_coeff=1.0, z_loss_coeff=0.0, diversity_loss_coeff=1.0, num_experts=E, top_k=K)
     out = loss_fn(probs, logits, idx, expert_outputs=expert_out, return_dict=True)
     assert torch.isfinite(out["loss"]).all()
     assert float(out["diversity_loss"]) == 0.0
@@ -297,8 +323,7 @@ def test_moeloss_diversity_requires_expert_outputs():
     logits = torch.randn(B, E)
     probs = torch.softmax(logits, dim=1)
     idx = torch.topk(probs, K, dim=1).indices
-    loss_fn = MoELoss(balance_loss_coeff=1.0, z_loss_coeff=0.0, diversity_loss_coeff=1.0,
-                      num_experts=E, top_k=K)
+    loss_fn = MoELoss(balance_loss_coeff=1.0, z_loss_coeff=0.0, diversity_loss_coeff=1.0, num_experts=E, top_k=K)
     with pytest.raises(ValueError, match="requires expert_outputs"):
         loss_fn(probs, logits, idx)
 
@@ -422,8 +447,8 @@ def test_es_moe_rejects_invalid_routing_configuration(kwargs):
 # §3.5: last_conv_out_channels is layout-agnostic
 # ---------------------------------------------------------------------------
 def test_last_conv_out_channels_various_experts():
-    e1 = OptimizedSimpleExpert(16, 24)      # ends with GroupNorm after Conv
-    e2 = GhostExpert(16, 24)                 # ghost structure
+    e1 = OptimizedSimpleExpert(16, 24)  # ends with GroupNorm after Conv
+    e2 = GhostExpert(16, 24)  # ghost structure
     assert last_conv_out_channels(e1) == 24
     # GhostExpert concatenates; its last conv is the cheap_operation conv.
     assert last_conv_out_channels(e2) > 0
@@ -466,13 +491,13 @@ def test_adaptive_balance_controller_gshard_scale_and_nonneg():
     E = 8
     ctrl = AdaptiveBalanceController(E)
     bal = torch.full((E,), 1.0 / E)
-    aux_early = float(ctrl({'expert_usage': bal}, torch.tensor(0)))
-    aux_late = float(ctrl({'expert_usage': bal}, torch.tensor(10 ** 6)))
+    aux_early = float(ctrl({"expert_usage": bal}, torch.tensor(0)))
+    aux_late = float(ctrl({"expert_usage": bal}, torch.tensor(10**6)))
     assert aux_early >= 0.0 and aux_late >= 0.0, "aux must be non-negative"
     assert aux_late >= 0.05, f"late-stage balanced aux collapsed to {aux_late} (should stay O(0.1))"
     col = torch.zeros(E)
     col[0] = 1.0
-    assert float(ctrl({'expert_usage': col}, torch.tensor(0))) > aux_early  # collapse penalized more
+    assert float(ctrl({"expert_usage": col}, torch.tensor(0))) > aux_early  # collapse penalized more
 
 
 def test_controller_block_not_dominated_when_mixed():
@@ -493,7 +518,7 @@ def test_controller_block_not_dominated_when_mixed():
     m(torch.randn(2, 64, 16, 16))
     total = float(_collect_moe_aux_loss(m, torch.device("cpu")))
     b = float(MOE_LOSS_REGISTRY.get(m.b).detach())
-    assert b / max(total, 1e-9) > 0.05, f"controller block share {b/total:.4f} too small (silently dominated)"
+    assert b / max(total, 1e-9) > 0.05, f"controller block share {b / total:.4f} too small (silently dominated)"
 
 
 def _first_router_weight(m):
@@ -549,8 +574,9 @@ def test_controller_balance_loss_grad_reaches_router():
     w = _first_router_weight(m)
     m.zero_grad(set_to_none=True)
     (out.float().mean() + aux).backward()
-    assert w is not None and w.grad is not None and w.grad.abs().sum() > 0, \
+    assert w is not None and w.grad is not None and w.grad.abs().sum() > 0, (
         "router weight received no gradient from the balance loss"
+    )
 
 
 def test_adaptive_controller_grad_to_router_probs():
@@ -594,6 +620,7 @@ def test_eval_does_not_write_registry():
 # rev8: fixes from the 2026-06-25 deep-scan report ()
 # ===========================================================================
 
+
 def test_p01_hyperultimate_get_gflops_no_attribute_error():
     """P-01: get_gflops must use fused_conv (was fused_weight -> AttributeError)."""
     m = HyperUltimateMoE(32, 32, num_experts=4, top_k=2)
@@ -630,8 +657,11 @@ def test_f03_advanced_router_proj_registered():
     out = r(torch.randn(2, 32, 8, 8))  # C=32 != in_channels=64
     assert out is not None
     # _proj exists as Identity (no learnable params), no dynamic creation
-    assert not any(k.startswith("_proj") for k, _ in r.named_parameters()
-                   if isinstance(dict(r.named_modules()).get("_proj.split()[0]"), nn.Conv2d))
+    assert not any(
+        k.startswith("_proj")
+        for k, _ in r.named_parameters()
+        if isinstance(dict(r.named_modules()).get("_proj.split()[0]"), nn.Conv2d)
+    )
 
 
 def test_p04_zloss_computed_after_noise():
@@ -675,6 +705,7 @@ def test_hyperfused_progressive_sparsity_uses_current_top_k(monkeypatch):
 
 def test_optimized_moe_improved_expert_dropout_skips_only_after_warmup(monkeypatch):
     """Expert dropout is active at its configured interval and deterministic."""
+
     def run_once():
         module = OptimizedMOEImproved(8, 8, num_experts=4, top_k=2).train()
         module.warmup_steps = 0
@@ -683,9 +714,11 @@ def test_optimized_moe_improved_expert_dropout_skips_only_after_warmup(monkeypat
         captured = []
         for idx, expert in enumerate(module.experts):
             original = expert.forward
+
             def wrapped(x, _original=original, _idx=idx):
                 captured.append(_idx)
                 return _original(x)
+
             expert.forward = wrapped
         module(torch.ones(4, 8, 4, 4))
         return captured
@@ -761,7 +794,7 @@ def test_l05_soft_balancing_penalizes_collapse():
     loss_fn = MoELoss(num_experts=4, top_k=2, use_soft_balancing=True)
     lg_u = torch.zeros(16, 4, requires_grad=True)
     l_unif = loss_fn(torch.softmax(lg_u, dim=1), lg_u)
-    lg_c = torch.tensor([[10., -10., -10., -10.]]).repeat(16, 1).requires_grad_(True)
+    lg_c = torch.tensor([[10.0, -10.0, -10.0, -10.0]]).repeat(16, 1).requires_grad_(True)
     l_col = loss_fn(torch.softmax(lg_c, dim=1), lg_c)
     assert float(l_col) > float(l_unif)
     l_col.backward()
@@ -792,8 +825,7 @@ def test_e02_index_add_clamp_prevents_overflow():
 def test_soft_balance_loss_grad_reaches_router():
     """soft balancing: balance_loss must produce a non-zero grad on logits."""
     N, E, K = 16, 4, 2
-    loss_fn = MoELoss(num_experts=E, top_k=K, use_soft_balancing=True,
-                      balance_loss_coeff=1.0, z_loss_coeff=0.0)
+    loss_fn = MoELoss(num_experts=E, top_k=K, use_soft_balancing=True, balance_loss_coeff=1.0, z_loss_coeff=0.0)
     logits = torch.randn(N, E, requires_grad=True)
     probs = torch.softmax(logits, dim=1)
     loss_fn(probs, logits, return_dict=True)["loss"].backward()
@@ -807,8 +839,7 @@ def test_soft_balance_uses_topk_counts_when_available():
     logits = torch.randn(N, E, requires_grad=True)
     probs = torch.softmax(logits, dim=1)
     indices = torch.zeros(N, K, dtype=torch.long)
-    loss_fn = MoELoss(num_experts=E, top_k=K, use_soft_balancing=True,
-                      balance_loss_coeff=1.0, z_loss_coeff=0.0)
+    loss_fn = MoELoss(num_experts=E, top_k=K, use_soft_balancing=True, balance_loss_coeff=1.0, z_loss_coeff=0.0)
     out = loss_fn(probs, logits, indices, return_dict=True)
     expected = E * probs.mean(dim=0)[0]
     assert torch.allclose(out["balance_loss"], expected, atol=1e-6)
@@ -817,19 +848,15 @@ def test_soft_balance_uses_topk_counts_when_available():
 def test_soft_balance_loss_responds_to_imbalance():
     """soft balancing: a collapsed router must yield a larger balance_loss."""
     N, E, K = 16, 4, 2
-    loss_fn = MoELoss(num_experts=E, top_k=K, use_soft_balancing=True,
-                      balance_loss_coeff=1.0, z_loss_coeff=0.0)
+    loss_fn = MoELoss(num_experts=E, top_k=K, use_soft_balancing=True, balance_loss_coeff=1.0, z_loss_coeff=0.0)
     uniform_logits = torch.zeros(N, E)
     collapsed_logits = torch.full((N, E), -10.0)
     collapsed_logits[:, 0] = 10.0
-    bl_uniform = loss_fn(torch.softmax(uniform_logits, 1), uniform_logits,
-                         return_dict=True)["balance_loss"]
-    bl_collapsed = loss_fn(torch.softmax(collapsed_logits, 1), collapsed_logits,
-                           return_dict=True)["balance_loss"]
+    bl_uniform = loss_fn(torch.softmax(uniform_logits, 1), uniform_logits, return_dict=True)["balance_loss"]
+    bl_collapsed = loss_fn(torch.softmax(collapsed_logits, 1), collapsed_logits, return_dict=True)["balance_loss"]
     # GShard soft: uniform -> ~1.0, full collapse -> ~E. Must be distinguishable.
     assert bl_collapsed > bl_uniform + 0.5, (
-        f"balance_loss insensitive to imbalance: uniform={bl_uniform:.3f}, "
-        f"collapsed={bl_collapsed:.3f}"
+        f"balance_loss insensitive to imbalance: uniform={bl_uniform:.3f}, collapsed={bl_collapsed:.3f}"
     )
 
 
@@ -873,4 +900,5 @@ def test_get_global_mean_float16_input():
 
 if __name__ == "__main__":
     import sys
+
     sys.exit(pytest.main([__file__, "-v"]))

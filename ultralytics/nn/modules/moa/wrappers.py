@@ -121,17 +121,20 @@ class C2fMoA(nn.Module):
         eff_heads = max(eff_heads, MoABlock.NUM_GROUPS)
 
         self.m = nn.ModuleList(
-            MoABlock(self.c, num_heads=eff_heads,
-                     mlp_ratio=mlp_ratio,
-                     temperature=temperature,
-                     shortcut=shortcut,
-                     aux_loss_coeff=aux_loss_coeff,
-                     block_index=i,
-                     local_window_size=local_window_size,
-                     sequential_heads=sequential_heads,
-                     regional_max_kv_tokens=regional_max_kv_tokens,
-                     sparse_inference=sparse_inference,
-                     sparse_inference_threshold=sparse_inference_threshold)
+            MoABlock(
+                self.c,
+                num_heads=eff_heads,
+                mlp_ratio=mlp_ratio,
+                temperature=temperature,
+                shortcut=shortcut,
+                aux_loss_coeff=aux_loss_coeff,
+                block_index=i,
+                local_window_size=local_window_size,
+                sequential_heads=sequential_heads,
+                regional_max_kv_tokens=regional_max_kv_tokens,
+                sparse_inference=sparse_inference,
+                sparse_inference_threshold=sparse_inference_threshold,
+            )
             for i in range(n)
         )
         self.last_aux_loss: torch.Tensor = torch.zeros((), requires_grad=False)
@@ -309,7 +312,7 @@ class NeckMoAFusion(nn.Module):
             self_out = self.self_out_proj(self_out)
 
         # ── Router blend ─────────────────────────────────────────────────
-        weights, router_logits = self.router(hi, return_logits=True)         # [B, 2, H, W]
+        weights, router_logits = self.router(hi, return_logits=True)  # [B, 2, H, W]
         exporting = is_export_or_tracing()
         if not exporting and self.training and self.aux_loss_coeff > 0:
             self.last_aux_loss, finite_diagnostics = _moa_router_aux_loss(

@@ -8,9 +8,7 @@ from ultralytics.nn.autobackend import AutoBackend
 # ==================== 🐵 猴子补丁：修复框架热身 Bug ====================
 # 替换掉原版容易产生 NaN 的 torch.empty，确保 EsMoE 路由安全通过 final_eval
 def safe_warmup(self, imgsz=(1, 3, 640, 640)):
-    im = torch.zeros(
-        *imgsz, dtype=torch.half if self.fp16 else torch.float, device=self.device
-    )
+    im = torch.zeros(*imgsz, dtype=torch.half if self.fp16 else torch.float, device=self.device)
     self.forward(im)
 
 

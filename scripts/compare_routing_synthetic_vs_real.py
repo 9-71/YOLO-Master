@@ -10,6 +10,7 @@
       --num-samples 50 ^
       --output experiments_zviolin\runs\routing_compare
 """
+
 import argparse
 import json
 import sys
@@ -31,6 +32,7 @@ from diagnose_mot_routing import (  # noqa: E402
 )
 
 import matplotlib  # noqa: E402
+
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 import numpy as np  # noqa: E402
@@ -75,13 +77,15 @@ def register_hooks(model):
                     for k in range(K):
                         top_at_k = indices[b, k].reshape(-1)
                         cnt_topk += int((top_at_k == expert_id).sum().item())
-                    records.append({
-                        "layer": layer_name,
-                        "expert": EXPERT_NAMES[expert_id],
-                        # 原算法期望的字段名 (保持不变)
-                        "activation_ratio": cnt_top1 / token_count,
-                        "topk_activation_ratio": cnt_topk / (K * token_count),
-                    })
+                    records.append(
+                        {
+                            "layer": layer_name,
+                            "expert": EXPERT_NAMES[expert_id],
+                            # 原算法期望的字段名 (保持不变)
+                            "activation_ratio": cnt_top1 / token_count,
+                            "topk_activation_ratio": cnt_topk / (K * token_count),
+                        }
+                    )
 
         return hook
 
@@ -173,7 +177,7 @@ def run_real(model, x: torch.Tensor) -> List[Dict]:
     for i in range(x.shape[0]):
         rows, hooks = register_hooks(model)
         with torch.no_grad():
-            _ = model(x[i:i + 1])
+            _ = model(x[i : i + 1])
         for h in hooks:
             h.remove()
         rows_all.extend(rows)
@@ -189,8 +193,7 @@ def main():
     parser.add_argument("--imgsz", type=int, default=320)
     parser.add_argument("--synthetic-runs", type=int, default=10)
     parser.add_argument("--output", default="experiments_zviolin/runs/routing_compare")
-    parser.add_argument("--threshold", type=float, default=0.05,
-                        help="激活率差异阈值（< 5% 视为可靠）")
+    parser.add_argument("--threshold", type=float, default=0.05, help="激活率差异阈值（< 5% 视为可靠）")
     args = parser.parse_args()
 
     device = normalize_torch_device(args.device)

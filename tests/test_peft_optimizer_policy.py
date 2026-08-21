@@ -44,9 +44,7 @@ def test_auto_optimizer_uses_stable_adamw_policy_for_active_peft(iterations):
     trainer = _trainer(adapter_active=True)
     model = _AdapterFixture()
 
-    optimizer = trainer.build_optimizer(
-        model, name="auto", lr=0.01, momentum=0.937, decay=0.001, iterations=iterations
-    )
+    optimizer = trainer.build_optimizer(model, name="auto", lr=0.01, momentum=0.937, decay=0.001, iterations=iterations)
 
     assert isinstance(optimizer, torch.optim.AdamW)
     assert trainer.args.warmup_bias_lr == 0.0
@@ -73,9 +71,7 @@ def test_auto_optimizer_preserves_iteration_based_musgd_for_full_finetuning():
     trainer = _trainer(adapter_active=False)
     model = nn.Linear(4, 4)
 
-    optimizer = trainer.build_optimizer(
-        model, name="auto", lr=0.01, momentum=0.937, decay=0.001, iterations=78_000
-    )
+    optimizer = trainer.build_optimizer(model, name="auto", lr=0.01, momentum=0.937, decay=0.001, iterations=78_000)
 
     assert isinstance(optimizer, MuSGD)
 

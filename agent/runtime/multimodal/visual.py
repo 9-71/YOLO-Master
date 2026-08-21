@@ -43,7 +43,9 @@ def load_pillow_image(path: Path):
     return Image.open(path)
 
 
-def clamp_box_xyxy(box: list[float] | tuple[float, ...], width: int, height: int, margin: float = 0.0) -> list[int] | None:
+def clamp_box_xyxy(
+    box: list[float] | tuple[float, ...], width: int, height: int, margin: float = 0.0
+) -> list[int] | None:
     if len(box) < 4:
         return None
     try:
@@ -127,7 +129,14 @@ def render_marked_image(
                     text_h = 11
                 text_x = bbox[0]
                 text_y = max(0, bbox[1] - text_h - 4)
-                draw.rectangle([text_x, text_y, min(width, text_x + text_w + 6), min(height, text_y + text_h + 4)], fill=color)
+                draw.rectangle(
+                    [text_x, text_y, min(width, text_x + text_w + 6), min(height, text_y + text_h + 4)], fill=color
+                )
                 draw.text((text_x + 3, text_y + 2), label, fill="black", font=font)
     image.save(marked_path, quality=92)
-    return {"path": str(marked_path.resolve()), "source": str(source_path.resolve()), "boxes": len(normalized), "kind": "marked_image"}
+    return {
+        "path": str(marked_path.resolve()),
+        "source": str(source_path.resolve()),
+        "boxes": len(normalized),
+        "kind": "marked_image",
+    }

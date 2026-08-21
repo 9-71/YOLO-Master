@@ -4,6 +4,7 @@ Tests: YOLO11s, YOLO12s, RT-DETR-l
 Part A: Planner Decision Verification
 Part B: 1-Epoch Training Smoke Test (if applicable)
 """
+
 import sys
 import traceback
 import torch
@@ -31,9 +32,9 @@ def log(msg: str):
 
 
 def verify_model(model_name: str, weight_path: str):
-    log(f"\n{'='*60}")
+    log(f"\n{'=' * 60}")
     log(f"PART A: Planner Verification — {model_name}")
-    log(f"{'='*60}")
+    log(f"{'=' * 60}")
     log(f"Weight file: {weight_path}")
 
     # 1. Load checkpoint

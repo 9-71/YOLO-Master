@@ -11,8 +11,11 @@ from runtime.cli.normalize import normalize_value, parse_bool, resolved_path
 REPO_ROOT = Path(__file__).resolve().parents[3]
 IMAGE_EXTENSIONS = {".bmp", ".dng", ".jpeg", ".jpg", ".mpo", ".png", ".tif", ".tiff", ".webp"}
 
+
 def is_image_file(path: Path) -> bool:
     return path.is_file() and path.suffix.lower() in IMAGE_EXTENSIONS
+
+
 def read_image_list_file(path: Path, root: Path | None = None) -> list[Path]:
     images: list[Path] = []
     base = root or path.parent
@@ -26,6 +29,8 @@ def read_image_list_file(path: Path, root: Path | None = None) -> list[Path]:
         if is_image_file(candidate):
             images.append(candidate)
     return images
+
+
 def expand_image_reference(value: Any, root: Path | None = None) -> list[Path]:
     if value in (None, ""):
         return []
@@ -48,6 +53,8 @@ def expand_image_reference(value: Any, root: Path | None = None) -> list[Path]:
         if is_image_file(candidate):
             return [candidate.resolve()]
     return []
+
+
 def normalize_dataset_names(names: Any) -> dict[int, str]:
     if isinstance(names, dict):
         normalized = {}
@@ -60,6 +67,8 @@ def normalize_dataset_names(names: Any) -> dict[int, str]:
     if isinstance(names, list):
         return {idx: str(value) for idx, value in enumerate(names)}
     return {}
+
+
 def load_dataset_yaml(data_ref: Any) -> tuple[Path, dict[str, Any]]:
     import yaml
 
@@ -75,6 +84,8 @@ def load_dataset_yaml(data_ref: Any) -> tuple[Path, dict[str, Any]]:
     if not isinstance(loaded, dict):
         raise ValueError(f"Dataset YAML must contain a mapping: {data_path}")
     return data_path, loaded
+
+
 def dataset_settings_dir() -> Path | None:
     try:
         settings = dict(importlib.import_module("ultralytics.utils").SETTINGS)
@@ -82,6 +93,8 @@ def dataset_settings_dir() -> Path | None:
         return None
     value = settings.get("datasets_dir")
     return Path(str(value)).expanduser().resolve() if value else None
+
+
 def resolve_dataset_root(data_path: Path, dataset_cfg: dict[str, Any]) -> Path:
     path_value = dataset_cfg.get("path")
     if path_value in (None, ""):
@@ -103,12 +116,16 @@ def resolve_dataset_root(data_path: Path, dataset_cfg: dict[str, Any]) -> Path:
         if candidate.exists():
             return candidate
     return candidates[0]
+
+
 def dataset_split_spec(dataset_cfg: dict[str, Any], requested_split: str) -> tuple[str, Any]:
     for split in (requested_split, "val", "train", "test"):
         value = dataset_cfg.get(split)
         if value not in (None, ""):
             return split, value
     raise ValueError(f"Dataset YAML has no usable split for `{requested_split}`.")
+
+
 def collect_dataset_images(data_ref: Any, split: str) -> tuple[list[Path], dict[str, Any], dict[int, str]]:
     data_path, dataset_cfg = load_dataset_yaml(data_ref)
     root = resolve_dataset_root(data_path, dataset_cfg)
@@ -124,6 +141,8 @@ def collect_dataset_images(data_ref: Any, split: str) -> tuple[list[Path], dict[
         "names_count": len(names),
     }
     return images, dataset_info, names
+
+
 def dedupe_images(images: list[Path]) -> list[Path]:
     seen: set[str] = set()
     unique: list[Path] = []
@@ -134,6 +153,8 @@ def dedupe_images(images: list[Path]) -> list[Path]:
         seen.add(key)
         unique.append(image.resolve())
     return unique
+
+
 def select_image_sample(
     images: list[Path],
     *,
@@ -154,6 +175,8 @@ def select_image_sample(
     if limit is not None and limit > 0:
         selected = selected[:limit]
     return selected
+
+
 def collect_multimodal_evaluation_images(
     request: dict[str, Any],
     evaluate_params: dict[str, Any],
@@ -191,15 +214,25 @@ def collect_multimodal_evaluation_images(
     if not sample:
         raise ValueError("No local images were found for multimodal evaluation.")
     return sample, dataset_info, names
+
+
 def label_path_for_image(image_path: Path) -> Path:
     parts = image_path.resolve().parts
     if "images" in parts:
         idx = len(parts) - 1 - list(reversed(parts)).index("images")
         return Path(*parts[:idx], "labels", *parts[idx + 1 :]).with_suffix(".txt")
     return image_path.with_suffix(".txt")
+
+
 def read_ground_truth_summary(image_path: Path, names: dict[int, str], max_objects: int = 30) -> dict[str, Any]:
     label_path = label_path_for_image(image_path)
-    summary: dict[str, Any] = {"path": str(label_path), "exists": label_path.exists(), "objects": 0, "labels": [], "label_counts": {}}
+    summary: dict[str, Any] = {
+        "path": str(label_path),
+        "exists": label_path.exists(),
+        "objects": 0,
+        "labels": [],
+        "label_counts": {},
+    }
     if not label_path.exists():
         return summary
     labels: list[dict[str, Any]] = []
@@ -223,6 +256,8 @@ def read_ground_truth_summary(image_path: Path, names: dict[int, str], max_objec
     if len(labels) > max_objects:
         summary["truncated"] = len(labels) - max_objects
     return summary
+
+
 def parse_label_line(raw_line: str) -> tuple[int, list[float], list[float]] | None:
     parts = raw_line.strip().split()
     if len(parts) < 5:

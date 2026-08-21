@@ -87,9 +87,9 @@ def main():
         if target_models and name not in target_models:
             continue
         path = spec["path"]
-        print_and_report(report_lines, f"\n{'='*40}")
+        print_and_report(report_lines, f"\n{'=' * 40}")
         print_and_report(report_lines, f"Testing {name}")
-        print_and_report(report_lines, f"{'='*40}")
+        print_and_report(report_lines, f"{'=' * 40}")
 
         # =====================================================================
         # Part A: Planner Decision Verification
@@ -253,7 +253,7 @@ def main():
                 continue
 
             result_stats = _compute_param_stats(result_model)
-            no_change = (result_stats.adapter == 0 and result_stats.total == original_stats.total)
+            no_change = result_stats.adapter == 0 and result_stats.total == original_stats.total
             print_and_report(report_lines, f"  Original adapter params: {original_stats.adapter}")
             print_and_report(report_lines, f"  Result adapter params:   {result_stats.adapter}")
             print_and_report(report_lines, f"  Total params unchanged:  {no_change}")

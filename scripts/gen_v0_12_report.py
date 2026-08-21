@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Generate comparison plots and HTML report from VOC training results."""
+
 import csv
 from pathlib import Path
 
@@ -114,34 +115,34 @@ def generate_report():
     </tr>
     <tr>
       <td>mAP50</td>
-      <td>{final_v0_6.get('metrics/mAP50(B)', 0):.5f}</td>
-      <td>{final_v0_12.get('metrics/mAP50(B)', 0):.5f}</td>
-      <td class="{'delta-positive' if final_v0_12.get('metrics/mAP50(B)',0) >= final_v0_6.get('metrics/mAP50(B)',0) else 'delta-negative'}">
-        {final_v0_12.get('metrics/mAP50(B)', 0) - final_v0_6.get('metrics/mAP50(B)', 0):+.5f}
+      <td>{final_v0_6.get("metrics/mAP50(B)", 0):.5f}</td>
+      <td>{final_v0_12.get("metrics/mAP50(B)", 0):.5f}</td>
+      <td class="{"delta-positive" if final_v0_12.get("metrics/mAP50(B)", 0) >= final_v0_6.get("metrics/mAP50(B)", 0) else "delta-negative"}">
+        {final_v0_12.get("metrics/mAP50(B)", 0) - final_v0_6.get("metrics/mAP50(B)", 0):+.5f}
       </td>
     </tr>
     <tr>
       <td>mAP50-95</td>
-      <td>{final_v0_6.get('metrics/mAP50-95(B)', 0):.5f}</td>
-      <td>{final_v0_12.get('metrics/mAP50-95(B)', 0):.5f}</td>
-      <td class="{'delta-positive' if final_v0_12.get('metrics/mAP50-95(B)',0) >= final_v0_6.get('metrics/mAP50-95(B)',0) else 'delta-negative'}">
-        {final_v0_12.get('metrics/mAP50-95(B)', 0) - final_v0_6.get('metrics/mAP50-95(B)', 0):+.5f}
+      <td>{final_v0_6.get("metrics/mAP50-95(B)", 0):.5f}</td>
+      <td>{final_v0_12.get("metrics/mAP50-95(B)", 0):.5f}</td>
+      <td class="{"delta-positive" if final_v0_12.get("metrics/mAP50-95(B)", 0) >= final_v0_6.get("metrics/mAP50-95(B)", 0) else "delta-negative"}">
+        {final_v0_12.get("metrics/mAP50-95(B)", 0) - final_v0_6.get("metrics/mAP50-95(B)", 0):+.5f}
       </td>
     </tr>
     <tr>
       <td>Precision</td>
-      <td>{final_v0_6.get('metrics/precision(B)', 0):.5f}</td>
-      <td>{final_v0_12.get('metrics/precision(B)', 0):.5f}</td>
-      <td class="{'delta-positive' if final_v0_12.get('metrics/precision(B)',0) >= final_v0_6.get('metrics/precision(B)',0) else 'delta-negative'}">
-        {final_v0_12.get('metrics/precision(B)', 0) - final_v0_6.get('metrics/precision(B)', 0):+.5f}
+      <td>{final_v0_6.get("metrics/precision(B)", 0):.5f}</td>
+      <td>{final_v0_12.get("metrics/precision(B)", 0):.5f}</td>
+      <td class="{"delta-positive" if final_v0_12.get("metrics/precision(B)", 0) >= final_v0_6.get("metrics/precision(B)", 0) else "delta-negative"}">
+        {final_v0_12.get("metrics/precision(B)", 0) - final_v0_6.get("metrics/precision(B)", 0):+.5f}
       </td>
     </tr>
     <tr>
       <td>Recall</td>
-      <td>{final_v0_6.get('metrics/recall(B)', 0):.5f}</td>
-      <td>{final_v0_12.get('metrics/recall(B)', 0):.5f}</td>
-      <td class="{'delta-positive' if final_v0_12.get('metrics/recall(B)',0) >= final_v0_6.get('metrics/recall(B)',0) else 'delta-negative'}">
-        {final_v0_12.get('metrics/recall(B)', 0) - final_v0_6.get('metrics/recall(B)', 0):+.5f}
+      <td>{final_v0_6.get("metrics/recall(B)", 0):.5f}</td>
+      <td>{final_v0_12.get("metrics/recall(B)", 0):.5f}</td>
+      <td class="{"delta-positive" if final_v0_12.get("metrics/recall(B)", 0) >= final_v0_6.get("metrics/recall(B)", 0) else "delta-negative"}">
+        {final_v0_12.get("metrics/recall(B)", 0) - final_v0_6.get("metrics/recall(B)", 0):+.5f}
       </td>
     </tr>
     <tr>
@@ -176,11 +177,11 @@ def generate_report():
   <div class="card-grid">
     <div class="stat-card">
       <div class="stat-label">v0_6 Final mAP50-95</div>
-      <div class="stat-value {'metric-good' if final_v0_6.get('metrics/mAP50-95(B)',0) > 0.3 else 'metric-neutral'}">{final_v0_6.get('metrics/mAP50-95(B)', 0):.4f}</div>
+      <div class="stat-value {"metric-good" if final_v0_6.get("metrics/mAP50-95(B)", 0) > 0.3 else "metric-neutral"}">{final_v0_6.get("metrics/mAP50-95(B)", 0):.4f}</div>
     </div>
     <div class="stat-card">
       <div class="stat-label">v0_12 Final mAP50-95</div>
-      <div class="stat-value {'metric-good' if final_v0_12.get('metrics/mAP50-95(B)',0) > 0.3 else 'metric-neutral'}">{final_v0_12.get('metrics/mAP50-95(B)', 0):.4f}</div>
+      <div class="stat-value {"metric-good" if final_v0_12.get("metrics/mAP50-95(B)", 0) > 0.3 else "metric-neutral"}">{final_v0_12.get("metrics/mAP50-95(B)", 0):.4f}</div>
     </div>
   </div>
 
@@ -197,7 +198,7 @@ def generate_report():
         m12 = e12.get("metrics/mAP50-95(B)", 0)
         delta = m12 - m6
         delta_cls = "delta-positive" if delta >= 0 else "delta-negative"
-        html += f'    <tr><td>{i+1}</td><td>{m6:.5f}</td><td>{m12:.5f}</td><td class="{delta_cls}">{delta:+.5f}</td></tr>\n'
+        html += f'    <tr><td>{i + 1}</td><td>{m6:.5f}</td><td>{m12:.5f}</td><td class="{delta_cls}">{delta:+.5f}</td></tr>\n'
 
     html += f"""  </table>
 
@@ -218,7 +219,7 @@ def generate_report():
 
   <h2>6. Conclusion</h2>
   <div class="card">
-    <p>The v0_12 <code>OptimalHybridGateMoE</code> achieves {'<strong class="metric-good">superior</strong>' if final_v0_12.get('metrics/mAP50-95(B)',0) >= final_v0_6.get('metrics/mAP50-95(B)',0) else '<strong class="metric-bad">comparable</strong>'} mAP50-95 ({final_v0_12.get('metrics/mAP50-95(B)', 0):.5f} vs {final_v0_6.get('metrics/mAP50-95(B)', 0):.5f}) with {'<strong class="metric-good">6.6% fewer parameters</strong>'} (2.896M vs 3.102M) and {'<strong class="metric-good">6.4% fewer GFLOPs</strong>'} (7.3 vs 7.8), demonstrating that targeted micro-optimizations (router normalization, noise injection, adaptive split, lightweight refine) are more effective than the macro-module additions (LowRank, ContextMixer, DetailGate) that characterized v0.7-v0.10.</p>
+    <p>The v0_12 <code>OptimalHybridGateMoE</code> achieves {'<strong class="metric-good">superior</strong>' if final_v0_12.get("metrics/mAP50-95(B)", 0) >= final_v0_6.get("metrics/mAP50-95(B)", 0) else '<strong class="metric-bad">comparable</strong>'} mAP50-95 ({final_v0_12.get("metrics/mAP50-95(B)", 0):.5f} vs {final_v0_6.get("metrics/mAP50-95(B)", 0):.5f}) with {'<strong class="metric-good">6.6% fewer parameters</strong>'} (2.896M vs 3.102M) and {'<strong class="metric-good">6.4% fewer GFLOPs</strong>'} (7.3 vs 7.8), demonstrating that targeted micro-optimizations (router normalization, noise injection, adaptive split, lightweight refine) are more effective than the macro-module additions (LowRank, ContextMixer, DetailGate) that characterized v0.7-v0.10.</p>
   </div>
 
   <div class="footer">

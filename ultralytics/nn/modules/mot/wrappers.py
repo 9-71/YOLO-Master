@@ -1,13 +1,20 @@
 """YAML-facing wrappers and collection helpers for Mixture-of-Transformer."""
+
 from __future__ import annotations
 import torch
 import torch.distributed as dist
 import torch.nn as nn
 from ultralytics.nn.modules.conv import Conv
 from ultralytics.nn.modules.utils import robust_deepcopy
-from ultralytics.nn.modules.routing_protocol import collect_aux_loss, export_capabilities as _export_routing_capabilities, publish_aux_loss, routing_snapshot as _routing_snapshot
+from ultralytics.nn.modules.routing_protocol import (
+    collect_aux_loss,
+    export_capabilities as _export_routing_capabilities,
+    publish_aux_loss,
+    routing_snapshot as _routing_snapshot,
+)
 from ultralytics.utils import LOGGER
 from .block import MoTBlock
+
 
 class C2fMoT(nn.Module):
     """C2f-style feature-flow wrapper around MoTBlock.
@@ -189,12 +196,14 @@ class C2fMoT(nn.Module):
     def __deepcopy__(self, memo):
         return robust_deepcopy(self, memo)
 
+
 def _aux_loss_device(model: nn.Module) -> torch.device:
     """Best-effort device lookup for zero aux-loss fallbacks."""
     try:
         return next(model.parameters()).device
     except StopIteration:
         return torch.device("cpu")
+
 
 def collect_mot_aux_loss(model: nn.Module, ddp_sync: bool = True) -> torch.Tensor:
     """Sum all MoT router aux losses in the model and optionally DDP-sync across ranks.
@@ -229,5 +238,6 @@ def collect_mot_aux_loss(model: nn.Module, ddp_sync: bool = True) -> torch.Tenso
         total = total + (global_value.to(dtype=total.dtype) - total.detach())
 
     return total
+
 
 __all__ = ("C2fMoT", "collect_mot_aux_loss")

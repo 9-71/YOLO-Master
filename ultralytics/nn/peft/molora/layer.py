@@ -824,8 +824,9 @@ class MoLoRALayer(nn.Module):
             if self.experts[0].is_conv:
                 base_groups = getattr(self.base_layer, "groups", 1)
                 for weight, e in zip(weights.tolist(), self.experts):
-                    _merge_conv_delta(self.base_layer.weight, e.lora_A, e.lora_B, e.scaling * weight,
-                                      groups=base_groups)
+                    _merge_conv_delta(
+                        self.base_layer.weight, e.lora_A, e.lora_B, e.scaling * weight, groups=base_groups
+                    )
             else:
                 for weight, e in zip(weights.tolist(), self.experts):
                     _merge_linear_delta(self.base_layer.weight, e.lora_A, e.lora_B, e.scaling * weight)
@@ -851,8 +852,9 @@ class MoLoRALayer(nn.Module):
             if self.experts[0].is_conv:
                 base_groups = getattr(self.base_layer, "groups", 1)
                 for weight, e in zip(weights, self.experts):
-                    _unmerge_conv_delta(self.base_layer.weight, e.lora_A, e.lora_B, e.scaling * weight,
-                                        groups=base_groups)
+                    _unmerge_conv_delta(
+                        self.base_layer.weight, e.lora_A, e.lora_B, e.scaling * weight, groups=base_groups
+                    )
             else:
                 for weight, e in zip(weights, self.experts):
                     _unmerge_linear_delta(self.base_layer.weight, e.lora_A, e.lora_B, e.scaling * weight)

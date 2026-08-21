@@ -1,5 +1,6 @@
 # 🐧Please note that this file has been modified by Tencent on 2026/01/18. All Tencent Modifications are Copyright (C) 2026 Tencent.
 """Utility functions for Mixture-of-Experts models"""
+
 import torch
 import torch.nn as nn
 from typing import Iterator, Tuple, Union
@@ -116,12 +117,12 @@ class BatchedExpertComputation:
 
     @staticmethod
     def compute_sparse_experts_batched(
-            x: torch.Tensor,
-            experts: nn.ModuleList,
-            routing_weights: torch.Tensor,
-            routing_indices: torch.Tensor,
-            top_k: int,
-            num_experts: int
+        x: torch.Tensor,
+        experts: nn.ModuleList,
+        routing_weights: torch.Tensor,
+        routing_indices: torch.Tensor,
+        top_k: int,
+        num_experts: int,
     ) -> torch.Tensor:
         """
         Batched expert computation:
@@ -150,18 +151,14 @@ class BatchedExpertComputation:
         # ``num_experts`` → traceable), then gather the Top-K selected outputs
         # and weight-sum them.  No ``if mask.any()`` / ``continue`` guards.
         if torch.onnx.is_in_onnx_export() or torch.jit.is_tracing():
-            all_outs = torch.stack(
-                [experts[i](x) for i in range(num_experts)], dim=1
-            )  # [B, E, out_C, H, W]
+            all_outs = torch.stack([experts[i](x) for i in range(num_experts)], dim=1)  # [B, E, out_C, H, W]
 
-            expert_output = torch.zeros(
-                B, out_channels, H, W, device=x.device, dtype=x.dtype
-            )
+            expert_output = torch.zeros(B, out_channels, H, W, device=x.device, dtype=x.dtype)
             for k in range(current_top_k):
-                idx_k = indices_flat[:, k]                                   # [B]
-                w_k = weights_flat[:, k]                                     # [B]
+                idx_k = indices_flat[:, k]  # [B]
+                w_k = weights_flat[:, k]  # [B]
                 idx_exp = idx_k.view(B, 1, 1, 1, 1).expand(B, 1, out_channels, H, W)
-                selected = torch.gather(all_outs, 1, idx_exp).squeeze(1)     # [B, out_C, H, W]
+                selected = torch.gather(all_outs, 1, idx_exp).squeeze(1)  # [B, out_C, H, W]
                 expert_output = expert_output + cast_like(selected, expert_output) * cast_like(
                     w_k.view(B, 1, 1, 1), expert_output
                 )

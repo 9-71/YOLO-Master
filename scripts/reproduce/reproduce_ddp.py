@@ -32,6 +32,7 @@ Usage (≥ 2 GPUs; ``--workers 0`` recommended on the Python-3.14 stack — see 
 
 Single-node convention (GPUs 0..N-1). To pin specific GPUs, set CUDA_VISIBLE_DEVICES and pass --device 0,1.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -48,17 +49,17 @@ ROOT = Path(__file__).resolve().parents[2]
 # Registry — the two shared nano baselines × the three datasets               #
 # --------------------------------------------------------------------------- #
 DATASETS = {
-    "VisDrone":  {"data": "VisDrone.yaml",  "imgsz": 640, "nc": 10, "project": "runs/reproduce/visdrone"},
-    "SKU-110K":  {"data": "SKU-110K.yaml",  "imgsz": 640, "nc": 1,  "project": "runs/reproduce/sku110k"},
-    "AI-TOD-v2": {"data": "AI-TOD-v2.yaml", "imgsz": 800, "nc": 8,  "project": "runs/reproduce/aitodv2"},
+    "VisDrone": {"data": "VisDrone.yaml", "imgsz": 640, "nc": 10, "project": "runs/reproduce/visdrone"},
+    "SKU-110K": {"data": "SKU-110K.yaml", "imgsz": 640, "nc": 1, "project": "runs/reproduce/sku110k"},
+    "AI-TOD-v2": {"data": "AI-TOD-v2.yaml", "imgsz": 800, "nc": 8, "project": "runs/reproduce/aitodv2"},
 }
 # esmoe=True -> contains ES_MOE blocks (sparse eval collapses mAP; --no-sparse-eval corrects it).
 MODELS = {
-    "v0.1-N":     {"cfg": "ultralytics/cfg/models/master/v0_1/det/yolo-master-n.yaml",         "esmoe": False},
-    "EsMoE-N":    {"cfg": "ultralytics/cfg/models/master/v0/det/yolo-master-n.yaml",            "esmoe": True},
-    "EsMoE-P2-N": {"cfg": "ultralytics/cfg/models/master/v0/det/yolo-master-n-p2.yaml",         "esmoe": True},
-    "v0.1-P2-N":  {"cfg": "ultralytics/cfg/models/master/v0_1/det/yolo-master-n-p2.yaml",       "esmoe": False},
-    "UoMoE-N":    {"cfg": "ultralytics/cfg/models/master/v0_1/det/yolo-master-n-uomoe.yaml",    "esmoe": False},
+    "v0.1-N": {"cfg": "ultralytics/cfg/models/master/v0_1/det/yolo-master-n.yaml", "esmoe": False},
+    "EsMoE-N": {"cfg": "ultralytics/cfg/models/master/v0/det/yolo-master-n.yaml", "esmoe": True},
+    "EsMoE-P2-N": {"cfg": "ultralytics/cfg/models/master/v0/det/yolo-master-n-p2.yaml", "esmoe": True},
+    "v0.1-P2-N": {"cfg": "ultralytics/cfg/models/master/v0_1/det/yolo-master-n-p2.yaml", "esmoe": False},
+    "UoMoE-N": {"cfg": "ultralytics/cfg/models/master/v0_1/det/yolo-master-n-uomoe.yaml", "esmoe": False},
     "UoMoE-P2-N": {"cfg": "ultralytics/cfg/models/master/v0_1/det/yolo-master-n-uomoe-p2.yaml", "esmoe": False},
 }
 
@@ -144,8 +145,11 @@ def _prestage_dataset(data: str) -> None:
         print(f"[reproduce_ddp] pre-staging dataset '{data}' once before DDP launch...", flush=True)
         check_det_dataset(data, autodownload=True)
     except Exception as exc:  # noqa: BLE001
-        print(f"[reproduce_ddp][WARN] dataset pre-stage failed ({type(exc).__name__}: {exc}); "
-              f"ranks will each run their own check.", flush=True)
+        print(
+            f"[reproduce_ddp][WARN] dataset pre-stage failed ({type(exc).__name__}: {exc}); "
+            f"ranks will each run their own check.",
+            flush=True,
+        )
 
 
 def _free_port() -> int:
@@ -158,9 +162,15 @@ def _free_port() -> int:
 def _reexec_under_torchrun(args: argparse.Namespace, data: str, n: int) -> None:
     """Pre-stage the dataset, then replace this process with a torchrun launch of the same command."""
     _prestage_dataset(data)
-    cmd = [sys.executable, "-m", "torch.distributed.run",
-           f"--nproc_per_node={n}", f"--master_port={_free_port()}",  # dynamic port -> no EADDRINUSE
-           os.path.abspath(sys.argv[0]), *sys.argv[1:]]
+    cmd = [
+        sys.executable,
+        "-m",
+        "torch.distributed.run",
+        f"--nproc_per_node={n}",
+        f"--master_port={_free_port()}",  # dynamic port -> no EADDRINUSE
+        os.path.abspath(sys.argv[0]),
+        *sys.argv[1:],
+    ]
     print(f"[reproduce_ddp] launching {n}-way DDP via torchrun:\n    {' '.join(cmd)}", flush=True)
     os.execv(sys.executable, cmd)  # replaces this process; does not return
 
@@ -201,7 +211,7 @@ def _final_metrics(results_csv: Path) -> str:
     if not rows:
         return "(empty results.csv)"
     r = {k.strip(): v for k, v in rows[-1].items()}
-    return f"epoch={r.get('epoch','?')} mAP50={r.get('metrics/mAP50(B)','?')} mAP50-95={r.get('metrics/mAP50-95(B)','?')}"
+    return f"epoch={r.get('epoch', '?')} mAP50={r.get('metrics/mAP50(B)', '?')} mAP50-95={r.get('metrics/mAP50-95(B)', '?')}"
 
 
 def build_opt(args: argparse.Namespace) -> dict:
@@ -248,9 +258,12 @@ def train_one(args: argparse.Namespace, ds: dict, model_name: str, project: Path
         resume = True
     else:
         if is_main():
-            print(f"[train] {run_name}: cfg={ms['cfg']} data={ds['data']} imgsz={imgsz} batch={args.batch} "
-                  f"ddp={WORLD_SIZE}x dense_eval={dense_eval} optimizer={opt['optimizer']}"
-                  + (f" lr0={args.lr0}" if args.lr0 is not None else ""), flush=True)
+            print(
+                f"[train] {run_name}: cfg={ms['cfg']} data={ds['data']} imgsz={imgsz} batch={args.batch} "
+                f"ddp={WORLD_SIZE}x dense_eval={dense_eval} optimizer={opt['optimizer']}"
+                + (f" lr0={args.lr0}" if args.lr0 is not None else ""),
+                flush=True,
+            )
         model = YOLO(str(ROOT / ms["cfg"]))
         resume = False
 
@@ -272,8 +285,8 @@ def train_one(args: argparse.Namespace, ds: dict, model_name: str, project: Path
         name=run_name,
         exist_ok=True,
         pretrained=False,
-        lora_r=0,          # disable default.yaml lora_r (would silently LoRA-fy the run)
-        **opt,             # optimizer (auto->SGD@0.01) + optional --lr0 override
+        lora_r=0,  # disable default.yaml lora_r (would silently LoRA-fy the run)
+        **opt,  # optimizer (auto->SGD@0.01) + optional --lr0 override
         val=True,
         plots=True,
         cache=args.cache,
@@ -288,34 +301,56 @@ def train_one(args: argparse.Namespace, ds: dict, model_name: str, project: Path
 
 
 def build_parser() -> argparse.ArgumentParser:
-    p = argparse.ArgumentParser(description=__doc__.split("\n")[0],
-                                formatter_class=argparse.RawDescriptionHelpFormatter)
+    p = argparse.ArgumentParser(
+        description=__doc__.split("\n")[0], formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     p.add_argument("--dataset", required=True, choices=list(DATASETS))
-    p.add_argument("--model", required=True, choices=list(MODELS) + ["all"],
-                   help="A model name, or 'all' to train every model in sequence.")
-    p.add_argument("--device", required=True,
-                   help="Comma-separated GPU ids, >=2 (e.g. '0,1'). REQUIRED: this script is DDP-only.")
+    p.add_argument(
+        "--model",
+        required=True,
+        choices=list(MODELS) + ["all"],
+        help="A model name, or 'all' to train every model in sequence.",
+    )
+    p.add_argument(
+        "--device", required=True, help="Comma-separated GPU ids, >=2 (e.g. '0,1'). REQUIRED: this script is DDP-only."
+    )
     p.add_argument("--epochs", type=int, default=300)
     p.add_argument("--batch", type=int, default=64, help="TOTAL batch, split evenly across GPUs.")
     p.add_argument("--imgsz", type=int, default=None, help="Override the per-dataset default (640 / 800).")
-    p.add_argument("--optimizer", default="auto",
-                   help="Default 'auto' -> SGD@0.01 (IGNORES --lr0). --lr0 forces SGD.")
-    p.add_argument("--lr0", type=float, default=None,
-                   help="LR override for large-batch scaling (e.g. --lr0 0.04 at batch 256); forces SGD "
-                        "and pins momentum=0.9 / warmup_bias_lr=0.")
+    p.add_argument("--optimizer", default="auto", help="Default 'auto' -> SGD@0.01 (IGNORES --lr0). --lr0 forces SGD.")
+    p.add_argument(
+        "--lr0",
+        type=float,
+        default=None,
+        help="LR override for large-batch scaling (e.g. --lr0 0.04 at batch 256); forces SGD "
+        "and pins momentum=0.9 / warmup_bias_lr=0.",
+    )
     p.add_argument("--workers", type=int, default=16, help="Dataloader workers PER GPU (see README note).")
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--patience", type=int, default=0, help="0 disables early stopping.")
     p.add_argument("--amp", action=argparse.BooleanOptionalAction, default=True)
-    p.add_argument("--cache", nargs="?", const="ram", default=False,
-                   help="'--cache'/'--cache ram' = RAM, '--cache disk' = on-disk .npy, omit to disable.")
-    p.add_argument("--sparse-eval", action=argparse.BooleanOptionalAction, default=True,
-                   help="ES_MOE sparse eval. Default True = as-shipped (collapses mAP). --no-sparse-eval "
-                        "opts into corrected dense eval. No-op for v0.1-N.")
+    p.add_argument(
+        "--cache",
+        nargs="?",
+        const="ram",
+        default=False,
+        help="'--cache'/'--cache ram' = RAM, '--cache disk' = on-disk .npy, omit to disable.",
+    )
+    p.add_argument(
+        "--sparse-eval",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="ES_MOE sparse eval. Default True = as-shipped (collapses mAP). --no-sparse-eval "
+        "opts into corrected dense eval. No-op for v0.1-N.",
+    )
     p.add_argument("--project", default=None, help="Override the per-dataset run project directory.")
-    p.add_argument("--wandb-mode", choices=["online", "offline", "disabled"], default="disabled",
-                   help="Sets WANDB_MODE (inherited by workers) for Ultralytics' native W&B. Default off; "
-                        "per-epoch metrics always go to results.csv.")
+    p.add_argument(
+        "--wandb-mode",
+        choices=["online", "offline", "disabled"],
+        default="disabled",
+        help="Sets WANDB_MODE (inherited by workers) for Ultralytics' native W&B. Default off; "
+        "per-epoch metrics always go to results.csv.",
+    )
     p.add_argument("--check-build", action="store_true", help="Instantiate the selected model(s) and exit.")
     p.add_argument("--dry-run", action="store_true", help="Print the plan and exit.")
     p.add_argument("--verbose", action="store_true")
@@ -332,6 +367,7 @@ def main() -> int:
     # --- utility modes (no DDP) ---
     if args.check_build:
         from ultralytics.nn.tasks import DetectionModel
+
         for m in models:
             mdl = DetectionModel(str(ROOT / MODELS[m]["cfg"]), ch=3, nc=ds["nc"], verbose=False)
             print(f"[build-ok] {m}: {sum(p.numel() for p in mdl.parameters()) / 1e6:.3f}M  ({MODELS[m]['cfg']})")
@@ -340,23 +376,34 @@ def main() -> int:
     # --- DDP-only enforcement (single GPU / CPU refused) ---
     n_gpu = _gpu_count(args.device)
     if n_gpu < 2:
-        print(f"[error] This script is DDP-ONLY. --device={args.device!r} implies {n_gpu} GPU(s). Pass at "
-              f"least two (e.g. --device 0,1). For single-GPU use scripts/reproduce/reproduce_*.py.",
-              file=sys.stderr)
+        print(
+            f"[error] This script is DDP-ONLY. --device={args.device!r} implies {n_gpu} GPU(s). Pass at "
+            f"least two (e.g. --device 0,1). For single-GPU use scripts/reproduce/reproduce_*.py.",
+            file=sys.stderr,
+        )
         return 2
 
     if is_main():
         imgsz = args.imgsz or ds["imgsz"]
-        print(f"[reproduce_ddp] dataset={args.dataset} data={ds['data']} imgsz={imgsz} project={project}\n"
-              f"                models={models} device={args.device} ({n_gpu} GPUs) batch={args.batch}(total) "
-              f"epochs={args.epochs} wandb={args.wandb_mode}", flush=True)
+        print(
+            f"[reproduce_ddp] dataset={args.dataset} data={ds['data']} imgsz={imgsz} project={project}\n"
+            f"                models={models} device={args.device} ({n_gpu} GPUs) batch={args.batch}(total) "
+            f"epochs={args.epochs} wandb={args.wandb_mode}",
+            flush=True,
+        )
         for m in models:
-            note = "ES_MOE dense-eval" if (MODELS[m]["esmoe"] and not args.sparse_eval) else \
-                   ("ES_MOE sparse-eval (as-shipped)" if MODELS[m]["esmoe"] else "no ES_MOE")
+            note = (
+                "ES_MOE dense-eval"
+                if (MODELS[m]["esmoe"] and not args.sparse_eval)
+                else ("ES_MOE sparse-eval (as-shipped)" if MODELS[m]["esmoe"] else "no ES_MOE")
+            )
             print(f"  - {m:<8} {note}")
         if args.batch % n_gpu:
-            print(f"[warn] batch={args.batch} not divisible by {n_gpu} GPUs; each rank gets "
-                  f"{args.batch // n_gpu} (remainder dropped).", flush=True)
+            print(
+                f"[warn] batch={args.batch} not divisible by {n_gpu} GPUs; each rank gets "
+                f"{args.batch // n_gpu} (remainder dropped).",
+                flush=True,
+            )
 
     if args.dry_run:
         return 0
@@ -366,7 +413,7 @@ def main() -> int:
         _reexec_under_torchrun(args, ds["data"], n_gpu)  # pre-stages, then os.execv -> does not return
 
     # --- now running as a torchrun rank ---
-    patch_contiguous_sampler()   # small val set / large batch / many ranks -> negative sampler __len__
+    patch_contiguous_sampler()  # small val set / large batch / many ranks -> negative sampler __len__
     project.mkdir(parents=True, exist_ok=True)
     statuses = []
     for m in models:
@@ -376,6 +423,7 @@ def main() -> int:
             print(f"[fail] {m} (rank {RANK}): {type(exc).__name__}: {exc}", flush=True)
             if is_main():
                 import traceback
+
                 traceback.print_exc()
             statuses.append({"model": m, "status": "failed", "error": str(exc)})
         finally:

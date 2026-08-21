@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Correctness checks for the v0.12 OptimalHybridGateMoE block and full model."""
+
 import os
 import sys
 import copy
@@ -37,11 +38,13 @@ def block_checks():
         noise_prog = float(blk.routing._noise_progress)
         assert noise_prog > 0, f"noise_progress not advancing: {noise_prog}"
         backend = blk.expert_backend
-        print(f"  experts={experts:>2} split={split} backend={backend:<14} "
-              f"out={tuple(y.shape)} aux={float(aux):.4f} "
-              f"prior.grad_norm={prior.grad.norm():.4f} "
-              f"refine.grad={blk.refine_scale.grad.item():.4f} "
-              f"noise_prog={noise_prog:.4f} OK")
+        print(
+            f"  experts={experts:>2} split={split} backend={backend:<14} "
+            f"out={tuple(y.shape)} aux={float(aux):.4f} "
+            f"prior.grad_norm={prior.grad.norm():.4f} "
+            f"refine.grad={blk.refine_scale.grad.item():.4f} "
+            f"noise_prog={noise_prog:.4f} OK"
+        )
 
         # eval-mode forward (no aux loss path, no noise)
         blk.eval()
@@ -69,12 +72,13 @@ def model_checks():
         x = torch.randn(1, 3, 320, 320)
         out = model(x)
         aux_terms = [v for v in MOE_LOSS_REGISTRY.values() if torch.is_tensor(v)]
-        print(f"  {name:<6} params={params[name]/1e6:.4f}M  "
-              f"moe_blocks_with_aux={len(aux_terms)}  "
-              f"out_shape={[o.shape for o in out] if isinstance(out, (list, tuple)) else out.shape}")
+        print(
+            f"  {name:<6} params={params[name] / 1e6:.4f}M  "
+            f"moe_blocks_with_aux={len(aux_terms)}  "
+            f"out_shape={[o.shape for o in out] if isinstance(out, (list, tuple)) else out.shape}"
+        )
     delta = (params["v0_12"] - params["v0_6"]) / 1e6
-    print(f"  param delta v0_12 - v0_6 = {delta:+.4f}M "
-          f"({100*delta*1e6/params['v0_6']:+.3f}%)")
+    print(f"  param delta v0_12 - v0_6 = {delta:+.4f}M ({100 * delta * 1e6 / params['v0_6']:+.3f}%)")
     print("  model checks passed\n")
 
 

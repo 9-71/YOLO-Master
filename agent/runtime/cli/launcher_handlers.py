@@ -81,7 +81,9 @@ def run_solutions(request: dict[str, Any], deps: LauncherDeps) -> dict[str, Any]
         for key, value in request["params"].items():
             if key != "action":
                 args.append(format_solution_arg(key, value))
-        return plan_response(request, "solutions dry run prepared", "module", "handle_yolo_solutions", params={"args": args})
+        return plan_response(
+            request, "solutions dry run prepared", "module", "handle_yolo_solutions", params={"args": args}
+        )
 
     if prefer_cli(request):
         args = ["solutions", solution]

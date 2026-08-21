@@ -9,6 +9,7 @@ import torch.nn as nn
 from ultralytics.utils import LOGGER
 from .api import _compute_param_stats, _is_adapter_param
 
+
 class LoraTrainingStrategy:
     """
     Advanced training strategies for LoRA fine-tuning.
@@ -22,7 +23,7 @@ class LoraTrainingStrategy:
 
     def __init__(self, model, config=None, epochs=100):
         self.model = model
-        self.config = config or getattr(model, 'lora_config', None)
+        self.config = config or getattr(model, "lora_config", None)
         self.epochs = epochs
         # Store original alpha values per layer.
         # Uses weakref.ref as key to survive model deepcopy / serialization,
@@ -98,7 +99,7 @@ class LoraTrainingStrategy:
             # Normalize to [0, 1]
             normalized_depth = min(layer_idx / max(total_layers, 1), 1.0)
             # Exponential decay: shallow layers get higher LR
-            factor = decay_rate ** normalized_depth
+            factor = decay_rate**normalized_depth
             factors[name] = factor
 
         return factors
@@ -106,10 +107,10 @@ class LoraTrainingStrategy:
     def apply_layer_decay_to_optimizer(self, optimizer, decay_rate=0.85) -> int:
         """
         Apply layer-wise LR decay to existing optimizer param groups.
-        
+
         This function REPLACES the single LoRA param group with multiple
         param groups, each with a different LR based on layer depth.
-        
+
         PyTorch optimizer requires one param_group per unique LR, so we group
         parameters by their layer index and create one param_group per layer.
 
@@ -121,8 +122,7 @@ class LoraTrainingStrategy:
         # and defeats the purpose of layer-wise decay.
         if decay_rate <= 0.0 or decay_rate > 1.0:
             LOGGER.warning(
-                f"[LoRA-Strategy] ⚠️ Invalid lora_layer_decay={decay_rate}. "
-                f"Must be in (0, 1]. Skipping layer decay."
+                f"[LoRA-Strategy] ⚠️ Invalid lora_layer_decay={decay_rate}. Must be in (0, 1]. Skipping layer decay."
             )
             return 0
         if decay_rate < 0.5:
@@ -189,7 +189,7 @@ class LoraTrainingStrategy:
 
         # Also rebuild state if necessary (state is keyed by parameter object, so it remains valid)
         # But we need to update the optimizer's internal _param_group map if it exists
-        if hasattr(optimizer, '_param_groups'):
+        if hasattr(optimizer, "_param_groups"):
             optimizer._param_groups = optimizer.param_groups
 
         parameter_ids = [id(param) for pg in optimizer.param_groups for param in pg.get("params", [])]
@@ -238,13 +238,13 @@ class LoraTrainingStrategy:
 
         # Determine config-level defaults
         cfg_alpha = 32  # default
-        cfg_r = 8       # default
+        cfg_r = 8  # default
         if self.config is not None:
-            cfg_alpha = getattr(self.config, 'alpha', 32) or getattr(self.config, 'lora_alpha', 32) or 32
-            cfg_r = getattr(self.config, 'r', 8) or getattr(self.config, 'lora_r', 8) or 8
+            cfg_alpha = getattr(self.config, "alpha", 32) or getattr(self.config, "lora_alpha", 32) or 32
+            cfg_r = getattr(self.config, "r", 8) or getattr(self.config, "lora_r", 8) or 8
 
         for module in self.model.modules():
-            lora_a = getattr(module, 'lora_A', None)
+            lora_a = getattr(module, "lora_A", None)
             # Only process actual LoRA layers
             if lora_a is None:
                 continue
@@ -255,30 +255,30 @@ class LoraTrainingStrategy:
                 is_lora_layer = True
             elif isinstance(lora_a, nn.ModuleDict):
                 # Check that at least one adapter entry has a weight attribute
-                is_lora_layer = any(hasattr(child, 'weight') for child in lora_a.values())
-            elif hasattr(lora_a, 'weight'):
+                is_lora_layer = any(hasattr(child, "weight") for child in lora_a.values())
+            elif hasattr(lora_a, "weight"):
                 is_lora_layer = True
             if not is_lora_layer:
                 continue
 
             # Strategy: detect how to control scaling for this PEFT version
-            la_attr = getattr(module, 'lora_alpha', None)
-            lr_attr = getattr(module, 'r', None)
-            sc_attr = getattr(module, 'scaling', None)
+            la_attr = getattr(module, "lora_alpha", None)
+            lr_attr = getattr(module, "r", None)
+            sc_attr = getattr(module, "scaling", None)
 
             # ── Path A: PEFT >= 0.18 dict-style lora_alpha / scaling ──
             if isinstance(la_attr, dict) and isinstance(sc_attr, dict):
                 # Both are dicts keyed by adapter name (e.g. 'default')
                 # scaling = alpha / r, so we control scaling dict directly
-                adapter_name = list(la_attr.keys())[0] if la_attr else 'default'
+                adapter_name = list(la_attr.keys())[0] if la_attr else "default"
                 orig_alpha = float(la_attr.get(adapter_name, cfg_alpha))
                 orig_scaling = float(sc_attr.get(adapter_name, orig_alpha / max(cfg_r, 1)))
                 self._original_alphas[weakref.ref(module)] = {
-                    '_type': 'scaling_dict',
-                    'orig_alpha': orig_alpha,
-                    'orig_scaling': orig_scaling,
-                    'adapter_name': adapter_name,
-                    'r': float(lr_attr) if isinstance(lr_attr, (int, float)) else float(cfg_r),
+                    "_type": "scaling_dict",
+                    "orig_alpha": orig_alpha,
+                    "orig_scaling": orig_scaling,
+                    "adapter_name": adapter_name,
+                    "r": float(lr_attr) if isinstance(lr_attr, (int, float)) else float(cfg_r),
                 }
                 # Set scaling to 0 to disable LoRA contribution at start
                 sc_attr[adapter_name] = 0.0
@@ -286,13 +286,12 @@ class LoraTrainingStrategy:
                 continue
 
             # ── Path B: Both lora_alpha and r are directly writable numbers (older PEFT) ──
-            if (isinstance(la_attr, (int, float)) and isinstance(lr_attr, (int, float))
-                    and lr_attr > 0):
+            if isinstance(la_attr, (int, float)) and isinstance(lr_attr, (int, float)) and lr_attr > 0:
                 orig_alpha = float(la_attr)
                 self._original_alphas[weakref.ref(module)] = {
-                    '_type': 'direct',
-                    'orig_alpha': orig_alpha,
-                    'r': float(lr_attr),
+                    "_type": "direct",
+                    "orig_alpha": orig_alpha,
+                    "r": float(lr_attr),
                 }
                 # Set alpha to 0 (scaling becomes 0)
                 module.lora_alpha = 0.0
@@ -305,9 +304,9 @@ class LoraTrainingStrategy:
                     _orig_alpha = float(la_attr)
                     _r = float(lr_attr) if isinstance(lr_attr, (int, float)) else float(cfg_r)
                     self._original_alphas[weakref.ref(module)] = {
-                        '_type': 'property',
-                        'orig_alpha': _orig_alpha,
-                        'r': _r,
+                        "_type": "property",
+                        "orig_alpha": _orig_alpha,
+                        "r": _r,
                     }
                     # Attempt to set; we'll verify in step
                     module.lora_alpha = 0.0
@@ -319,27 +318,27 @@ class LoraTrainingStrategy:
             # ── Path D: Has numeric 'scaling' attribute (older PEFT or custom) ──
             if isinstance(sc_attr, (int, float)) and sc_attr > 0:
                 self._original_alphas[weakref.ref(module)] = {
-                    '_type': 'scaling',
-                    'orig_scaling': float(sc_attr),
+                    "_type": "scaling",
+                    "orig_scaling": float(sc_attr),
                 }
                 module.scaling = 0.0
                 found = True
                 continue
 
             # ── Path E: Fallback - try to use peft_config dict if available ──
-            peft_config = getattr(module, 'peft_config', None)
+            peft_config = getattr(module, "peft_config", None)
             if peft_config is not None:
                 try:
-                    if isinstance(peft_config, dict) and 'lora_alpha' in peft_config:
-                        _orig_alpha = float(peft_config['lora_alpha'])
-                        _r = float(peft_config.get('r', cfg_r))
+                    if isinstance(peft_config, dict) and "lora_alpha" in peft_config:
+                        _orig_alpha = float(peft_config["lora_alpha"])
+                        _r = float(peft_config.get("r", cfg_r))
                         self._original_alphas[weakref.ref(module)] = {
-                            '_type': 'config_dict',
-                            'orig_alpha': _orig_alpha,
-                            'r': _r,
-                            'module_ref': module,  # store ref to update dict
+                            "_type": "config_dict",
+                            "orig_alpha": _orig_alpha,
+                            "r": _r,
+                            "module_ref": module,  # store ref to update dict
                         }
-                        peft_config['lora_alpha'] = 0.0
+                        peft_config["lora_alpha"] = 0.0
                         found = True
                         continue
                 except (TypeError, ValueError):
@@ -350,7 +349,8 @@ class LoraTrainingStrategy:
             # Diagnostic: report the distribution of _type paths so users can quickly
             # verify that the PEFT-version-specific fallback is working correctly.
             from collections import Counter
-            type_dist = Counter(v.get('_type', 'unknown') for v in self._original_alphas.values())
+
+            type_dist = Counter(v.get("_type", "unknown") for v in self._original_alphas.values())
             type_summary = ", ".join(f"{t}={c}" for t, c in type_dist.most_common())
             LOGGER.info(
                 f"[LoRA-Strategy] 🔥 Alpha warmup prepared ({len(self._original_alphas)} layers) "
@@ -360,8 +360,7 @@ class LoraTrainingStrategy:
             # Determine if this architecture critically depends on warmup.
             # YOLO12 Area-Attention (AAttn) requires alpha warmup to prevent NaN.
             has_area_attn = any(
-                "AAttn" in m.__class__.__name__ or "A2C2f" in m.__class__.__name__
-                for m in self.model.modules()
+                "AAttn" in m.__class__.__name__ or "A2C2f" in m.__class__.__name__ for m in self.model.modules()
             )
             if has_area_attn:
                 self._warmup_required = True
@@ -403,54 +402,54 @@ class LoraTrainingStrategy:
                 continue
 
             orig = self._original_alphas[ref]
-            _type = orig['_type']
+            _type = orig["_type"]
 
             try:
                 # ── Path A: scaling dict (PEFT >= 0.18) ──
-                if _type == 'scaling_dict':
-                    sc_attr = getattr(module, 'scaling', None)
+                if _type == "scaling_dict":
+                    sc_attr = getattr(module, "scaling", None)
                     if isinstance(sc_attr, dict):
-                        adapter_name = orig.get('adapter_name', 'default')
-                        orig_scaling = orig['orig_scaling']
+                        adapter_name = orig.get("adapter_name", "default")
+                        orig_scaling = orig["orig_scaling"]
                         sc_attr[adapter_name] = orig_scaling * current_scale
                         updated += 1
                     continue
 
-                if _type == 'direct':
-                    target_alpha = orig['orig_alpha'] * current_scale
-                    if hasattr(module, 'lora_alpha'):
+                if _type == "direct":
+                    target_alpha = orig["orig_alpha"] * current_scale
+                    if hasattr(module, "lora_alpha"):
                         module.lora_alpha = float(target_alpha)
                         updated += 1
 
-                elif _type == 'property':
-                    target_alpha = orig['orig_alpha'] * current_scale
-                    if hasattr(module, 'lora_alpha'):
+                elif _type == "property":
+                    target_alpha = orig["orig_alpha"] * current_scale
+                    if hasattr(module, "lora_alpha"):
                         module.lora_alpha = float(target_alpha)
                         # Verify the write actually stuck
-                        actual = getattr(module, 'lora_alpha', None)
+                        actual = getattr(module, "lora_alpha", None)
                         if actual is not None and abs(float(actual) - target_alpha) < 0.01:
                             updated += 1
                         else:
                             # Property is read-only, try scaling attribute as fallback
-                            if hasattr(module, 'scaling'):
-                                orig_scaling = orig['orig_alpha'] / orig['r']
+                            if hasattr(module, "scaling"):
+                                orig_scaling = orig["orig_alpha"] / orig["r"]
                                 module.scaling = orig_scaling * current_scale
                                 updated += 1
                                 # Update type for future steps
-                                orig['_type'] = 'scaling_fallback'
-                                orig['orig_scaling'] = orig_scaling
+                                orig["_type"] = "scaling_fallback"
+                                orig["orig_scaling"] = orig_scaling
 
-                elif _type == 'scaling' or _type == 'scaling_fallback':
-                    orig_scaling = orig.get('orig_scaling', orig.get('orig_alpha', 1.0) / orig.get('r', 1.0))
-                    if hasattr(module, 'scaling'):
+                elif _type == "scaling" or _type == "scaling_fallback":
+                    orig_scaling = orig.get("orig_scaling", orig.get("orig_alpha", 1.0) / orig.get("r", 1.0))
+                    if hasattr(module, "scaling"):
                         module.scaling = orig_scaling * current_scale
                         updated += 1
 
-                elif _type == 'config_dict':
-                    target_alpha = orig['orig_alpha'] * current_scale
-                    peft_config = getattr(module, 'peft_config', None)
+                elif _type == "config_dict":
+                    target_alpha = orig["orig_alpha"] * current_scale
+                    peft_config = getattr(module, "peft_config", None)
                     if isinstance(peft_config, dict):
-                        peft_config['lora_alpha'] = float(target_alpha)
+                        peft_config["lora_alpha"] = float(target_alpha)
                         updated += 1
 
             except Exception as e:
@@ -467,39 +466,43 @@ class LoraTrainingStrategy:
             if ref not in self._original_alphas:
                 continue
             orig = self._original_alphas[ref]
-            _type = orig['_type']
+            _type = orig["_type"]
 
             try:
                 # ── Path A: scaling dict (PEFT >= 0.18) ──
-                if _type == 'scaling_dict':
-                    sc_attr = getattr(module, 'scaling', None)
+                if _type == "scaling_dict":
+                    sc_attr = getattr(module, "scaling", None)
                     if isinstance(sc_attr, dict):
-                        adapter_name = orig.get('adapter_name', 'default')
-                        sc_attr[adapter_name] = float(orig['orig_scaling'])
+                        adapter_name = orig.get("adapter_name", "default")
+                        sc_attr[adapter_name] = float(orig["orig_scaling"])
                         restored += 1
                     continue
 
-                if _type in ('direct', 'property'):
-                    if hasattr(module, 'lora_alpha'):
-                        module.lora_alpha = float(orig['orig_alpha'])
+                if _type in ("direct", "property"):
+                    if hasattr(module, "lora_alpha"):
+                        module.lora_alpha = float(orig["orig_alpha"])
                         restored += 1
 
-                elif _type in ('scaling', 'scaling_fallback'):
-                    if hasattr(module, 'scaling'):
-                        module.scaling = float(orig.get('orig_scaling', orig.get('orig_alpha', 1.0) / orig.get('r', 1.0)))
+                elif _type in ("scaling", "scaling_fallback"):
+                    if hasattr(module, "scaling"):
+                        module.scaling = float(
+                            orig.get("orig_scaling", orig.get("orig_alpha", 1.0) / orig.get("r", 1.0))
+                        )
                         restored += 1
 
-                elif _type == 'config_dict':
-                    peft_config = getattr(module, 'peft_config', None)
+                elif _type == "config_dict":
+                    peft_config = getattr(module, "peft_config", None)
                     if isinstance(peft_config, dict):
-                        peft_config['lora_alpha'] = float(orig['orig_alpha'])
+                        peft_config["lora_alpha"] = float(orig["orig_alpha"])
                         restored += 1
 
             except Exception as e:
                 LOGGER.debug(f"[LoRA-Strategy] Alpha warmup finalize failed for module {type(module).__name__}: {e}")
                 continue
 
-        LOGGER.info(f"[LoRA-Strategy] Alpha warmup finalized — {restored}/{len(self._original_alphas)} alphas restored.")
+        LOGGER.info(
+            f"[LoRA-Strategy] Alpha warmup finalized — {restored}/{len(self._original_alphas)} alphas restored."
+        )
         self._strategy_active = False
 
     # ── Strategy 3: Orthogonal Regularization Loss ──
@@ -513,16 +516,16 @@ class LoraTrainingStrategy:
         Compute regularization loss encouraging LoRA A/B matrices to stay orthogonal.
 
         Prevents rank collapse where A·B degenerates into a low-effective-rank product.
-        
+
         Loss = λ × (Σ||A^T A - I||_F + Σ||B^T B - I||_F) / N_pairs
-        
+
         OPTIMIZED (v2): Uses chunked computation to reduce peak GPU memory.
         Instead of accumulating all r×r intermediate matrices simultaneously,
         processes layers in chunks of ``chunk_size`` (default 32). Each chunk's
         loss is computed and immediately reduced to a scalar before the next
         chunk, keeping peak temporary memory at O(chunk_size × r²) instead of
         O(N_layers × r²).
-        
+
         Args:
             model: LoRA-enabled model
             weight: Scaling factor for the loss
@@ -535,8 +538,8 @@ class LoraTrainingStrategy:
         try:
             device = next(model.parameters()).device
         except StopIteration:
-            device = torch.device('cpu')
-            
+            device = torch.device("cpu")
+
         if chunk_size is None:
             chunk_size = LoraTrainingStrategy._ORTHO_CHUNK_SIZE
 
@@ -550,18 +553,18 @@ class LoraTrainingStrategy:
                 return
             if isinstance(attr, nn.ModuleDict):
                 for child in attr.values():
-                    if hasattr(child, 'weight') and child.weight.numel() > 0:
+                    if hasattr(child, "weight") and child.weight.numel() > 0:
                         weight_pairs.append((child.weight, is_A))
-            elif hasattr(attr, 'weight') and attr.weight.numel() > 0:
+            elif hasattr(attr, "weight") and attr.weight.numel() > 0:
                 weight_pairs.append((attr.weight, is_A))
 
         # CRITICAL FIX: Do NOT detach() the weight tensors — that severs the
         # gradient graph and the orthogonal regularization becomes a no-op.
         for name, module in model.named_modules():
-            lora_a = getattr(module, 'lora_A', None)
+            lora_a = getattr(module, "lora_A", None)
             if lora_a is not None:
                 _collect_weights(lora_a, is_A=True)
-            lora_b = getattr(module, 'lora_B', None)
+            lora_b = getattr(module, "lora_B", None)
             if lora_b is not None:
                 _collect_weights(lora_b, is_A=False)
 
@@ -573,7 +576,7 @@ class LoraTrainingStrategy:
         pair_count = 0
 
         for chunk_start in range(0, len(weight_pairs), chunk_size):
-            chunk = weight_pairs[chunk_start:chunk_start + chunk_size]
+            chunk = weight_pairs[chunk_start : chunk_start + chunk_size]
             chunk_loss = torch.tensor(0.0, device=device, dtype=torch.float32)
 
             for A_w, is_A in chunk:
@@ -586,7 +589,7 @@ class LoraTrainingStrategy:
                         WW_T = torch.matmul(W, W.t())
                         rows = WW_T.shape[0]
                         ident = torch.eye(rows, device=device, dtype=WW_T.dtype)
-                        chunk_loss = chunk_loss + torch.norm(WW_T - ident, p='fro')
+                        chunk_loss = chunk_loss + torch.norm(WW_T - ident, p="fro")
                         pair_count += 1
                 else:
                     if W.dim() >= 2 and W.shape[-1] > 0:
@@ -595,7 +598,7 @@ class LoraTrainingStrategy:
                         WT_W = torch.matmul(W.t(), W)
                         cols = WT_W.shape[0]
                         ident = torch.eye(cols, device=device, dtype=WT_W.dtype)
-                        chunk_loss = chunk_loss + torch.norm(WT_W - ident, p='fro')
+                        chunk_loss = chunk_loss + torch.norm(WT_W - ident, p="fro")
                         pair_count += 1
 
             # Accumulate chunk loss (scalar addition, no retained intermediates).
@@ -611,12 +614,12 @@ class LoraTrainingStrategy:
     _last_dropout_value = None  # Cache last applied dropout value to avoid redundant updates
 
     @staticmethod
-    def update_dropout_schedule(model, epoch, epochs_total, 
-                                  start_dropout=0.0, end_dropout=0.15,
-                                  schedule_start_ratio=0.3) -> int:
+    def update_dropout_schedule(
+        model, epoch, epochs_total, start_dropout=0.0, end_dropout=0.15, schedule_start_ratio=0.3
+    ) -> int:
         """
         Dynamically increase LoRA dropout rate as training progresses.
-        
+
         In early phases, low dropout preserves gradient signal for learning.
         In later phases, higher dropout acts as regularizer preventing overfitting.
 
@@ -625,7 +628,7 @@ class LoraTrainingStrategy:
             epoch: Current epoch (0-indexed)
             epochs_total: Total number of training epochs
             start_dropout: Initial dropout rate
-            end_dropout: Final dropout rate  
+            end_dropout: Final dropout rate
             schedule_start_ratio: When to start increasing (fraction of total)
 
         Returns:
@@ -666,10 +669,12 @@ class LoraTrainingStrategy:
             current_dropout = start_dropout + (end_dropout - start_dropout) * min(progress, 1.0)
 
         # OPTIMIZATION: Skip redundant updates if dropout value hasn't changed
-        if LoraTrainingStrategy._last_dropout_value is not None and \
-           abs(LoraTrainingStrategy._last_dropout_value - current_dropout) < 1e-6:
+        if (
+            LoraTrainingStrategy._last_dropout_value is not None
+            and abs(LoraTrainingStrategy._last_dropout_value - current_dropout) < 1e-6
+        ):
             return 0  # No change needed
-        
+
         LoraTrainingStrategy._last_dropout_value = current_dropout
 
         updated = 0
@@ -677,14 +682,14 @@ class LoraTrainingStrategy:
             # PEFT stores dropout as module.lora_dropout, which may be:
             #   - nn.Dropout directly
             #   - nn.ModuleDict containing a 'default' key → nn.Dropout
-            drop_attr = getattr(module, 'lora_dropout', None)
+            drop_attr = getattr(module, "lora_dropout", None)
             if drop_attr is None:
                 continue
 
             if isinstance(drop_attr, torch.nn.Dropout):
                 drop_attr.p = float(current_dropout)
                 updated += 1
-            elif hasattr(drop_attr, 'default') and isinstance(drop_attr.default, torch.nn.Dropout):
+            elif hasattr(drop_attr, "default") and isinstance(drop_attr.default, torch.nn.Dropout):
                 drop_attr.default.p = float(current_dropout)
                 updated += 1
 
@@ -705,15 +710,15 @@ def get_lora_training_stats(model, svd_sample_ratio: float = 0.2, svd_max_layers
     """
     s = _compute_param_stats(model)
     stats = {
-        'lora_enabled': getattr(model, 'lora_enabled', False),
-        'total_params': s.total,
-        'trainable_params': s.trainable,
-        'lora_params': s.adapter,
-        'frozen_params': s.frozen,
-        'lora_modules': 0,
-        'effective_rank_avg': 0.0,
-        'norm_A_frobenius': 0.0,
-        'norm_B_frobenius': 0.0,
+        "lora_enabled": getattr(model, "lora_enabled", False),
+        "total_params": s.total,
+        "trainable_params": s.trainable,
+        "lora_params": s.adapter,
+        "frozen_params": s.frozen,
+        "lora_modules": 0,
+        "effective_rank_avg": 0.0,
+        "norm_A_frobenius": 0.0,
+        "norm_B_frobenius": 0.0,
     }
 
     # First pass: collect LoRA modules and cheap stats (Frobenius norms).
@@ -723,8 +728,8 @@ def get_lora_training_stats(model, svd_sample_ratio: float = 0.2, svd_max_layers
         if attr is None:
             return []
         if isinstance(attr, nn.ModuleDict):
-            return [child.weight for child in attr.values() if hasattr(child, 'weight')]
-        if hasattr(attr, 'weight'):
+            return [child.weight for child in attr.values() if hasattr(child, "weight")]
+        if hasattr(attr, "weight"):
             return [attr.weight]
         return []
 
@@ -734,25 +739,25 @@ def get_lora_training_stats(model, svd_sample_ratio: float = 0.2, svd_max_layers
     lora_layers = []
 
     for module in model.modules():
-        a_weights = _extract_weights(getattr(module, 'lora_A', None))
-        b_weights = _extract_weights(getattr(module, 'lora_B', None))
+        a_weights = _extract_weights(getattr(module, "lora_A", None))
+        b_weights = _extract_weights(getattr(module, "lora_B", None))
 
         if a_weights:
             for A in a_weights:
                 A_det = A.detach()
-                norm_A_sum += torch.norm(A_det, p='fro').item()
+                norm_A_sum += torch.norm(A_det, p="fro").item()
                 if A_det.dim() >= 2:
                     lora_layers.append(A_det)
             lora_module_count += 1
 
         if b_weights:
             for B in b_weights:
-                norm_B_sum += torch.norm(B.detach(), p='fro').item()
+                norm_B_sum += torch.norm(B.detach(), p="fro").item()
 
-    stats['lora_modules'] = lora_module_count
+    stats["lora_modules"] = lora_module_count
     if lora_module_count > 0:
-        stats['norm_A_frobenius'] = norm_A_sum / lora_module_count
-        stats['norm_B_frobenius'] = norm_B_sum / lora_module_count
+        stats["norm_A_frobenius"] = norm_A_sum / lora_module_count
+        stats["norm_B_frobenius"] = norm_B_sum / lora_module_count
 
         # Second pass: sampled SVD for effective rank (expensive operation).
         # Evenly sample across depth rather than random-sample so results are reproducible.
@@ -776,7 +781,7 @@ def get_lora_training_stats(model, svd_sample_ratio: float = 0.2, svd_max_layers
             if rank_values:
                 avg_eff_rank = sum(r[2] for r in rank_values) / len(rank_values)
                 avg_theoretical = sum(min(r[0], r[1]) for r in rank_values) / len(rank_values)
-                stats['effective_rank_avg'] = avg_eff_rank / avg_theoretical if avg_theoretical > 0 else 0
+                stats["effective_rank_avg"] = avg_eff_rank / avg_theoretical if avg_theoretical > 0 else 0
 
     return stats
 
@@ -832,49 +837,57 @@ def suggest_lora_config_for_dataset(
     per_class = (num_images / num_classes) if num_classes else None
 
     if num_images < 500 or (per_class is not None and per_class < 5):
-        rec.update({
-            "lora_r": 32,
-            "lora_alpha": 64,
-            "lora_lr_mult": 2.0,
-            "lora_layer_decay": 0.0,
-            "lora_alpha_warmup": 0,
-            "lora_ortho_weight": 0.0,
-            "lora_dropout": 0.02,
-        })
+        rec.update(
+            {
+                "lora_r": 32,
+                "lora_alpha": 64,
+                "lora_lr_mult": 2.0,
+                "lora_layer_decay": 0.0,
+                "lora_alpha_warmup": 0,
+                "lora_ortho_weight": 0.0,
+                "lora_dropout": 0.02,
+            }
+        )
         notes.append(
             "Small-dataset regime: LoRA often underperforms Full SFT here. "
             "If LoRA is still desired, use rank=32+ and compare against Full SFT baseline (lora_r=0)."
         )
     elif num_images < 5000:
-        rec.update({
-            "lora_r": 32,
-            "lora_alpha": 64,
-            "lora_lr_mult": 2.0,
-            "lora_layer_decay": 0.9,
-            "lora_alpha_warmup": 3,
-            "lora_ortho_weight": 1e-4,
-            "lora_dropout": 0.05,
-        })
+        rec.update(
+            {
+                "lora_r": 32,
+                "lora_alpha": 64,
+                "lora_lr_mult": 2.0,
+                "lora_layer_decay": 0.9,
+                "lora_alpha_warmup": 3,
+                "lora_ortho_weight": 1e-4,
+                "lora_dropout": 0.05,
+            }
+        )
         notes.append("Small/medium regime: rank=32 with orthogonal regularization recommended.")
     elif num_images < 20000:
-        rec.update({
-            "lora_r": 16,
-            "lora_alpha": 32,
-            "lora_lr_mult": 2.0,
-            "lora_layer_decay": 0.9,
-            "lora_alpha_warmup": 3,
-            "lora_ortho_weight": 1e-4,
-        })
+        rec.update(
+            {
+                "lora_r": 16,
+                "lora_alpha": 32,
+                "lora_lr_mult": 2.0,
+                "lora_layer_decay": 0.9,
+                "lora_alpha_warmup": 3,
+                "lora_ortho_weight": 1e-4,
+            }
+        )
         notes.append("Medium regime: LoRA typically matches or exceeds Full SFT here.")
     else:
-        rec.update({
-            "lora_r": 16,
-            "lora_alpha": 32,
-            "lora_lr_mult": 2.0,
-            "lora_layer_decay": 0.85,
-            "lora_alpha_warmup": 5,
-            "lora_ortho_weight": 1e-4,
-        })
+        rec.update(
+            {
+                "lora_r": 16,
+                "lora_alpha": 32,
+                "lora_lr_mult": 2.0,
+                "lora_layer_decay": 0.85,
+                "lora_alpha_warmup": 5,
+                "lora_ortho_weight": 1e-4,
+            }
+        )
         notes.append("Large regime: LoRA or DoRA recommended; adapter efficiency peaks here.")
 
     if epochs is not None and epochs < 20:
@@ -886,5 +899,4 @@ def suggest_lora_config_for_dataset(
     return rec
 
 
-
-__all__ = ['LoraTrainingStrategy', 'get_lora_training_stats', 'suggest_lora_config_for_dataset']
+__all__ = ["LoraTrainingStrategy", "get_lora_training_stats", "suggest_lora_config_for_dataset"]

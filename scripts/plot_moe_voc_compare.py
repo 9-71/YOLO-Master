@@ -8,6 +8,7 @@ Usage:
     python3 scripts/plot_moe_voc_compare.py \
         --project runs/moe_voc_smoke --versions v0_6 v0_11
 """
+
 from __future__ import annotations
 
 import argparse
@@ -15,6 +16,7 @@ import csv
 from pathlib import Path
 
 import matplotlib
+
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
@@ -83,16 +85,26 @@ def main():
             print(f"{v:<8} (no results.csv)")
             continue
         # best mAP50-95 row
-        best = max(rows, key=lambda r: float(r.get("metrics/mAP50-95(B)", "nan") or "nan")
-                   if (r.get("metrics/mAP50-95(B)", "") not in ("", "nan")) else float("-inf"))
+        best = max(
+            rows,
+            key=lambda r: (
+                float(r.get("metrics/mAP50-95(B)", "nan") or "nan")
+                if (r.get("metrics/mAP50-95(B)", "") not in ("", "nan"))
+                else float("-inf")
+            ),
+        )
+
         def g(k):
             try:
                 return float(best.get(k, ""))
             except ValueError:
                 return float("nan")
-        print(f"{v:<8} {int(g('epoch')):>5} {g('metrics/mAP50-95(B)'):>9.5f} "
-              f"{g('metrics/mAP50(B)'):>8.5f} {g('metrics/precision(B)'):>9.5f} "
-              f"{g('metrics/recall(B)'):>8.5f} {g('train/moe_loss'):>9.4f}")
+
+        print(
+            f"{v:<8} {int(g('epoch')):>5} {g('metrics/mAP50-95(B)'):>9.5f} "
+            f"{g('metrics/mAP50(B)'):>8.5f} {g('metrics/precision(B)'):>9.5f} "
+            f"{g('metrics/recall(B)'):>8.5f} {g('train/moe_loss'):>9.4f}"
+        )
 
 
 if __name__ == "__main__":

@@ -9,6 +9,7 @@ Usage:
   python scripts/compare_moe_v0_12_voc.py --epochs 50 --batch 16
   python scripts/compare_moe_v0_12_voc.py --epochs 50 --batch 16 --device mps
 """
+
 import argparse
 import json
 import os
@@ -47,9 +48,26 @@ def make_voc_yaml():
         "names:",
     ]
     names = [
-        "aeroplane", "bicycle", "bird", "boat", "bottle", "bus", "car",
-        "cat", "chair", "cow", "diningtable", "dog", "horse", "motorbike",
-        "person", "pottedplant", "sheep", "sofa", "train", "tvmonitor",
+        "aeroplane",
+        "bicycle",
+        "bird",
+        "boat",
+        "bottle",
+        "bus",
+        "car",
+        "cat",
+        "chair",
+        "cow",
+        "diningtable",
+        "dog",
+        "horse",
+        "motorbike",
+        "person",
+        "pottedplant",
+        "sheep",
+        "sofa",
+        "train",
+        "tvmonitor",
     ]
     for i, n in enumerate(names):
         lines.append(f"  {i}: {n}")
@@ -61,10 +79,10 @@ def run_training(version_key, cfg_path, data_yaml, epochs, batch, device, imgsz)
     """Train a single version and return the results dict."""
     from ultralytics import YOLO
 
-    print(f"\n{'='*60}")
+    print(f"\n{'=' * 60}")
     print(f"  Training {version_key} | cfg={cfg_path}")
     print(f"  epochs={epochs} batch={batch} device={device} imgsz={imgsz}")
-    print(f"{'='*60}\n")
+    print(f"{'=' * 60}\n")
 
     model = YOLO(cfg_path)
     name = VERSIONS[version_key]["name"]
@@ -78,7 +96,7 @@ def run_training(version_key, cfg_path, data_yaml, epochs, batch, device, imgsz)
         project=str(ROOT / "runs" / "moe_voc_compare"),
         name=name,
         exist_ok=True,
-        patience=0,           # no early stopping — full epoch range
+        patience=0,  # no early stopping — full epoch range
         cos_lr=True,
         lr0=0.01,
         lrf=0.01,
@@ -95,6 +113,7 @@ def run_training(version_key, cfg_path, data_yaml, epochs, batch, device, imgsz)
     metrics = {}
     if results_csv.exists():
         import csv
+
         with open(results_csv) as f:
             reader = csv.DictReader(f)
             rows = list(reader)
@@ -129,10 +148,7 @@ def run_training(version_key, cfg_path, data_yaml, epochs, batch, device, imgsz)
                 for key in last:
                     if "time" in key.lower():
                         try:
-                            total_time = sum(
-                                float(row[key]) for row in rows
-                                if row.get(key)
-                            )
+                            total_time = sum(float(row[key]) for row in rows if row.get(key))
                             metrics["train_time_hours"] = total_time / 3600.0
                         except (ValueError, TypeError):
                             pass
@@ -161,8 +177,7 @@ def main():
     if not args.skip_v0_6:
         cfg_v0_6 = str(ROOT / "ultralytics/cfg/models" / VERSIONS["v0_6"]["cfg"])
         t0 = time.time()
-        m = run_training("v0_6", cfg_v0_6, data_yaml,
-                         args.epochs, args.batch, args.device, args.imgsz)
+        m = run_training("v0_6", cfg_v0_6, data_yaml, args.epochs, args.batch, args.device, args.imgsz)
         m["wall_time_hours"] = (time.time() - t0) / 3600.0
         all_metrics["v0_6"] = m
 
@@ -170,8 +185,7 @@ def main():
     if not args.skip_v0_12:
         cfg_v0_12 = str(ROOT / "ultralytics/cfg/models" / VERSIONS["v0_12"]["cfg"])
         t0 = time.time()
-        m = run_training("v0_12", cfg_v0_12, data_yaml,
-                         args.epochs, args.batch, args.device, args.imgsz)
+        m = run_training("v0_12", cfg_v0_12, data_yaml, args.epochs, args.batch, args.device, args.imgsz)
         m["wall_time_hours"] = (time.time() - t0) / 3600.0
         all_metrics["v0_12"] = m
 
@@ -181,24 +195,28 @@ def main():
     with open(output_path, "w") as f:
         json.dump(all_metrics, f, indent=2)
 
-    print(f"\n{'='*60}")
+    print(f"\n{'=' * 60}")
     print("  COMPARISON RESULTS")
-    print(f"{'='*60}")
+    print(f"{'=' * 60}")
     print(f"{'Version':<10} {'mAP50':>8} {'mAP50-95':>10} {'P':>8} {'R':>8} {'Time(h)':>8}")
     print("-" * 60)
     for ver, m in all_metrics.items():
-        print(f"{ver:<10} {m.get('mAP50', 0):>8.5f} {m.get('mAP50-95', 0):>10.5f} "
-              f"{m.get('precision', 0):>8.5f} {m.get('recall', 0):>8.5f} "
-              f"{m.get('wall_time_hours', 0):>8.2f}")
+        print(
+            f"{ver:<10} {m.get('mAP50', 0):>8.5f} {m.get('mAP50-95', 0):>10.5f} "
+            f"{m.get('precision', 0):>8.5f} {m.get('recall', 0):>8.5f} "
+            f"{m.get('wall_time_hours', 0):>8.2f}"
+        )
 
     if "v0_6" in all_metrics and "v0_12" in all_metrics:
         d = all_metrics["v0_12"]
         b = all_metrics["v0_6"]
         print("-" * 60)
-        print(f"{'delta':<10} {d.get('mAP50',0)-b.get('mAP50',0):>+8.5f} "
-              f"{d.get('mAP50-95',0)-b.get('mAP50-95',0):>+10.5f} "
-              f"{'':>8} {'':>8} "
-              f"{d.get('wall_time_hours',0)-b.get('wall_time_hours',0):>+8.2f}")
+        print(
+            f"{'delta':<10} {d.get('mAP50', 0) - b.get('mAP50', 0):>+8.5f} "
+            f"{d.get('mAP50-95', 0) - b.get('mAP50-95', 0):>+10.5f} "
+            f"{'':>8} {'':>8} "
+            f"{d.get('wall_time_hours', 0) - b.get('wall_time_hours', 0):>+8.2f}"
+        )
 
     print(f"\nResults saved to: {output_path}")
 

@@ -88,11 +88,9 @@ class MoABlock(nn.Module):
 
         # Three attention head-groups (global head uses a per-block RF seed).
         global_rf_seed = block_index * 7919 + 2 * 65537
-        self.local_head   = _LocalAttnHead(dim, heads_per_group, head_dim, window_size=local_window_size)
-        self.region_head  = _RegionalAttnHead(
-            dim, heads_per_group, head_dim, max_kv_tokens=regional_max_kv_tokens
-        )
-        self.global_head  = _GlobalAttnHead(dim, heads_per_group, head_dim, rf_seed=global_rf_seed)
+        self.local_head = _LocalAttnHead(dim, heads_per_group, head_dim, window_size=local_window_size)
+        self.region_head = _RegionalAttnHead(dim, heads_per_group, head_dim, max_kv_tokens=regional_max_kv_tokens)
+        self.global_head = _GlobalAttnHead(dim, heads_per_group, head_dim, rf_seed=global_rf_seed)
 
         # Router
         self.router = _MoARouter(dim, self.NUM_GROUPS, temperature=temperature)
@@ -170,7 +168,7 @@ class MoABlock(nn.Module):
         B, C, H, W = x.shape
 
         # ── Routing weights ──────────────────────────────────────────────
-        weights, router_logits = self.router(x, return_logits=True)   # [B, 3, H, W]
+        weights, router_logits = self.router(x, return_logits=True)  # [B, 3, H, W]
         exporting = is_export_or_tracing()
         if not exporting and self.training and self.aux_loss_coeff > 0:
             self.last_aux_loss, finite_diagnostics = _moa_router_aux_loss(
@@ -216,7 +214,9 @@ class MoABlock(nn.Module):
             # Re-normalize retained groups per token so sparse inference
             # approximates dense routing without shrinking the activation.
             blend_weights = weights * active.view(1, -1, 1, 1)
-            blend_weights = blend_weights / blend_weights.sum(dim=1, keepdim=True).clamp_min(torch.finfo(weights.dtype).eps)
+            blend_weights = blend_weights / blend_weights.sum(dim=1, keepdim=True).clamp_min(
+                torch.finfo(weights.dtype).eps
+            )
         w_l = blend_weights[:, 0:1]  # [B, 1, H, W]
         w_r = blend_weights[:, 1:2]
         w_g = blend_weights[:, 2:3]

@@ -41,7 +41,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--yaml-out", type=Path, default=Path("/jpfs/huangyidan3/datasets/VisDrone.yaml"))
     parser.add_argument("--overwrite", action="store_true")
     parser.add_argument("--retries", type=int, default=5)
-    parser.add_argument("--skip-download", action="store_true", help="Use existing split directories or zip files only.")
+    parser.add_argument(
+        "--skip-download", action="store_true", help="Use existing split directories or zip files only."
+    )
     return parser.parse_args()
 
 

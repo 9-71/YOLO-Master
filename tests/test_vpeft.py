@@ -71,9 +71,7 @@ def test_semantic_protection_is_case_insensitive_for_reserved_roles_and_names():
     constraint = SemanticProtectionConstraint(exclude_modules=["Custom.Block"])
 
     assert not constraint.is_feasible(NodeInfo(name="model.dfl", semantic_role="DFL"), "lora", 4)
-    assert not constraint.is_feasible(
-        NodeInfo(name="encoder.msdeform", semantic_role="MSDeformAttn"), "lora", 4
-    )
+    assert not constraint.is_feasible(NodeInfo(name="encoder.msdeform", semantic_role="MSDeformAttn"), "lora", 4)
     assert not constraint.is_feasible(NodeInfo(name="custom.block.proj", semantic_role="backbone"), "lora", 4)
 
 
@@ -103,9 +101,7 @@ def test_vpeft_registry_uses_canonical_soft_constraint_names():
     from ultralytics.vpeft import ComputationGraph, ConstraintRegistry, ModuleNode
 
     registry = ConstraintRegistry.default({"soft_constraints": ["budget", "deploy"]})
-    assert registry.hard_constraint_names() == [
-        "C_op", "C_sem", "C_budget", "C_deploy", "C_compat", "C_moe", "C_div"
-    ]
+    assert registry.hard_constraint_names() == ["C_op", "C_sem", "C_budget", "C_deploy", "C_compat", "C_moe", "C_div"]
     assert registry.soft_constraint_names() == ["C_budget", "C_deploy"]
     graph = ComputationGraph(modules=[ModuleNode("backbone.fc", "Linear", 8, 8)])
     values = registry.evaluate_soft(graph, torch.tensor([1.0]), torch.tensor([4]), ["lora"])
@@ -125,9 +121,9 @@ def test_vpeft_ao_budget_accounts_for_per_node_variants():
             ModuleNode("backbone.conv", "Conv2d", 8, 8, kernel_size=3),
         ]
     )
-    decision = AlternatingOptimizationSolver(
-        max_iter=2, rank_min=4, rank_max=4, rank_step=4
-    ).solve(graph, budget=10_000, variant="lora", constraints=ConstraintRegistry.default())
+    decision = AlternatingOptimizationSolver(max_iter=2, rank_min=4, rank_max=4, rank_step=4).solve(
+        graph, budget=10_000, variant="lora", constraints=ConstraintRegistry.default()
+    )
 
     assert len(decision.variants) == graph.n_nodes
     assert decision.variants == ["ia3", "lora"]
@@ -163,6 +159,7 @@ def test_vpeft_ao_budget_dual_penalty_excludes_negative_density_candidates():
         node_features=torch.ones(2, 8),
     )
     solver = AlternatingOptimizationSolver(max_iter=1, rank_min=4, rank_max=4, rank_step=4)
+
     class _SoftPenalty:
         def _node_info_from_graph(self, graph, index):
             return index
@@ -209,9 +206,7 @@ def test_graph_builder_annotates_moe_expert_groups_without_manual_registration()
 
     graph = ComputationGraphBuilder().build(TinyMoE())
     assert {node.annotations["moe_group"] for node in graph.nodes} == {"experts"}
-    mask = ConstraintRegistry.default({"allow_depthwise": True}).get_hard_mask(
-        graph, "lora", candidate_ranks=[4, 8]
-    )
+    mask = ConstraintRegistry.default({"allow_depthwise": True}).get_hard_mask(graph, "lora", candidate_ranks=[4, 8])
     assert mask.tolist() == [True, True]
 
 
@@ -238,9 +233,7 @@ def test_vpeft_differentiable_solver_survives_large_budget_violation():
         node_features=torch.ones(1, 8),
     )
     solver = DifferentiableOptimizationSolver(max_iter=3, rank_min=4, rank_max=8, rank_step=4)
-    decision = solver.solve(
-        graph, budget=1, variant="lora", constraints=ConstraintRegistry.default({"max_params": 1})
-    )
+    decision = solver.solve(graph, budget=1, variant="lora", constraints=ConstraintRegistry.default({"max_params": 1}))
 
     assert decision.status == "REFUSE" and decision.budget_used == 0
     assert all(
@@ -290,9 +283,7 @@ def test_vpeft_marks_all_yolo26_specialized_heads(model_class, config, expected_
     assert {node.annotations["head_family"] for node in head_nodes} == {expected_head}
     mask = ConstraintRegistry.default().get_hard_mask(graph, "lora", candidate_ranks=[4, 8])
     assert not any(
-        bool(mask[index])
-        for index, node in enumerate(graph.nodes)
-        if node.name.startswith(f"model.{head_index}.")
+        bool(mask[index]) for index, node in enumerate(graph.nodes) if node.name.startswith(f"model.{head_index}.")
     )
 
 

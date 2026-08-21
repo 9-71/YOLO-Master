@@ -9,6 +9,7 @@ Tests are designed to validate:
 
 All tests use lightweight dummy models so they run quickly without GPU.
 """
+
 import copy
 
 import pytest
@@ -26,6 +27,7 @@ from ultralytics.nn.peft.molora import (
 # =============================================================================
 # Fixtures
 # =============================================================================
+
 
 class DummyConfig:
     """Minimal config satisfying peft 0.19+ probes (attr access + ``in`` check).
@@ -117,10 +119,12 @@ class TinyTransformer(_PeftCompatibleMixin, nn.Module):
         # can locate the transformer backbone via get_submodule().
         self.transformer_backbone_name = "layers"
         self.embed = nn.Embedding(100, d_model)
-        self.layers = nn.ModuleList([
-            nn.TransformerEncoderLayer(d_model=d_model, nhead=n_heads, dim_feedforward=128, batch_first=True)
-            for _ in range(num_layers)
-        ])
+        self.layers = nn.ModuleList(
+            [
+                nn.TransformerEncoderLayer(d_model=d_model, nhead=n_heads, dim_feedforward=128, batch_first=True)
+                for _ in range(num_layers)
+            ]
+        )
         self.fc = nn.Linear(d_model, 10)
 
     def forward(self, *args, **kwargs):
@@ -188,6 +192,7 @@ def tiny_multi():
 # =============================================================================
 # Test Prefix Tuning
 # =============================================================================
+
 
 @pytest.mark.skipif(not PEFT_AVAILABLE, reason="PEFT not installed")
 @pytest.mark.skip(
@@ -305,6 +310,7 @@ class TestPrefixTuning:
 # Test IA3
 # =============================================================================
 
+
 @pytest.mark.skipif(not PEFT_AVAILABLE, reason="PEFT not installed")
 class TestIA3:
     """Test IA3 (Infused Adapter by Inhibiting and Amplifying Inner Activations)."""
@@ -402,6 +408,7 @@ class TestIA3:
 # Test Multiple Modules (LoRA, IA3, etc.)
 # =============================================================================
 
+
 @pytest.mark.skipif(not PEFT_AVAILABLE, reason="PEFT not installed")
 class TestMultipleModules:
     """Test adapters applied to multiple target modules simultaneously."""
@@ -442,10 +449,7 @@ class TestMultipleModules:
 
     def test_molora_multiple_modules(self, tiny_cnn):
         """MoLoRA applied to multiple Conv2d layers."""
-        cfg = MoLoRAConfig(
-            r=4, alpha=8, num_experts=4, top_k=2,
-            target_modules=["conv1", "conv2", "conv3"]
-        )
+        cfg = MoLoRAConfig(r=4, alpha=8, num_experts=4, top_k=2, target_modules=["conv1", "conv2", "conv3"])
         model = get_peft_molora_model(tiny_cnn, cfg)
         x = torch.randn(2, 3, 8, 8)
         out = model(x)
@@ -459,9 +463,7 @@ class TestMultipleModules:
         from peft import LoraConfig
 
         # Apply LoRA first
-        lora_config = LoraConfig(
-            task_type="SEQ_CLS", r=4, lora_alpha=8, target_modules=["fc1"]
-        )
+        lora_config = LoraConfig(task_type="SEQ_CLS", r=4, lora_alpha=8, target_modules=["fc1"])
         model = get_peft_model(tiny_multi, lora_config)
         # Trying to apply IA3 on top should ideally raise or be handled
         # PEFT may not support this directly, so we just verify the model works
@@ -488,6 +490,7 @@ class TestMultipleModules:
 # Test Unload
 # =============================================================================
 
+
 @pytest.mark.skipif(not PEFT_AVAILABLE, reason="PEFT not installed")
 class TestUnload:
     """Test adapter unloading and state restoration."""
@@ -505,9 +508,7 @@ class TestUnload:
         )
         model = get_peft_model(tiny_multi, config)
         # Store original base weights
-        original_weights = {
-            n: p.clone() for n, p in base_model.named_parameters()
-        }
+        original_weights = {n: p.clone() for n, p in base_model.named_parameters()}
         # Train a step to modify LoRA weights
         x = torch.randn(2, 64)
         out = model(x)
@@ -518,8 +519,7 @@ class TestUnload:
             unloaded = model.unload()
             for n, p in unloaded.named_parameters():
                 if n in original_weights:
-                    assert torch.allclose(p, original_weights[n], atol=1e-6), \
-                        f"Weight {n} not restored after unload"
+                    assert torch.allclose(p, original_weights[n], atol=1e-6), f"Weight {n} not restored after unload"
         except AttributeError:
             pytest.skip("unload() not available in this PEFT version")
 
@@ -534,9 +534,7 @@ class TestUnload:
             feedforward_modules=["fc1", "fc2"],
         )
         model = get_peft_model(tiny_multi, config)
-        original_weights = {
-            n: p.clone() for n, p in base_model.named_parameters()
-        }
+        original_weights = {n: p.clone() for n, p in base_model.named_parameters()}
         x = torch.randn(2, 64)
         _ = model(x)
         try:
@@ -550,10 +548,7 @@ class TestUnload:
     def test_molora_unmerge_restores_base(self, tiny_cnn):
         """MoLoRA unmerge_weights should restore base conv weights."""
         model = tiny_cnn
-        cfg = MoLoRAConfig(
-            r=4, alpha=8, num_experts=4, top_k=2,
-            target_modules=["conv1"]
-        )
+        cfg = MoLoRAConfig(r=4, alpha=8, num_experts=4, top_k=2, target_modules=["conv1"])
         wrapped = get_peft_molora_model(model, cfg)
         # Get original weight
         for m in wrapped.modules():
@@ -609,6 +604,7 @@ class TestUnload:
 # =============================================================================
 # Test Device and Dtype
 # =============================================================================
+
 
 @pytest.mark.skipif(not PEFT_AVAILABLE, reason="PEFT not installed")
 class TestPeftModelDeviceAndDtype:
@@ -680,10 +676,7 @@ class TestPeftModelDeviceAndDtype:
 
     def test_molora_model_device(self, tiny_cnn):
         """MoLoRA model should move to CPU correctly."""
-        cfg = MoLoRAConfig(
-            r=4, alpha=8, num_experts=4, top_k=2,
-            target_modules=["conv1"]
-        )
+        cfg = MoLoRAConfig(r=4, alpha=8, num_experts=4, top_k=2, target_modules=["conv1"])
         model = get_peft_molora_model(tiny_cnn, cfg)
         model = model.to("cpu")
         for p in model.parameters():
@@ -692,10 +685,7 @@ class TestPeftModelDeviceAndDtype:
     def test_molora_injection_inherits_preplaced_base_device(self, tiny_cnn):
         """Experts/router should inherit device when injection follows model placement."""
         model = tiny_cnn.to("cpu")
-        cfg = MoLoRAConfig(
-            r=4, alpha=8, num_experts=4, top_k=2,
-            target_modules=["conv1"]
-        )
+        cfg = MoLoRAConfig(r=4, alpha=8, num_experts=4, top_k=2, target_modules=["conv1"])
         model = get_peft_molora_model(model, cfg)
         layer = model.conv1
         assert layer.base_layer.weight.device.type == "cpu"
@@ -709,10 +699,7 @@ class TestPeftModelDeviceAndDtype:
     def test_molora_injection_after_mps_placement_smoke(self, tiny_cnn):
         """Injecting after MPS placement should not leave new adapter state on CPU."""
         model = tiny_cnn.to("mps")
-        cfg = MoLoRAConfig(
-            r=4, alpha=8, num_experts=4, top_k=2,
-            target_modules=["conv1"]
-        )
+        cfg = MoLoRAConfig(r=4, alpha=8, num_experts=4, top_k=2, target_modules=["conv1"])
         model = get_peft_molora_model(model, cfg)
         layer = model.conv1
         assert all(p.device.type == "mps" for p in layer.experts.parameters())
@@ -721,10 +708,7 @@ class TestPeftModelDeviceAndDtype:
 
     def test_molora_model_dtype(self, tiny_cnn):
         """MoLoRA model should support float16."""
-        cfg = MoLoRAConfig(
-            r=4, alpha=8, num_experts=4, top_k=2,
-            target_modules=["conv1"]
-        )
+        cfg = MoLoRAConfig(r=4, alpha=8, num_experts=4, top_k=2, target_modules=["conv1"])
         model = get_peft_molora_model(tiny_cnn, cfg)
         model = model.half()
         for p in model.parameters():
@@ -782,6 +766,7 @@ class TestPeftModelDeviceAndDtype:
 # MoE-aware Integration Tests
 # =============================================================================
 
+
 class TestMoEAwareIntegration:
     """Integration tests that verify MoE + PEFT interactions."""
 
@@ -791,10 +776,7 @@ class TestMoEAwareIntegration:
         from peft import LoraConfig
 
         # First apply MoLoRA
-        cfg = MoLoRAConfig(
-            r=4, alpha=8, num_experts=4, top_k=2,
-            target_modules=["conv1"]
-        )
+        cfg = MoLoRAConfig(r=4, alpha=8, num_experts=4, top_k=2, target_modules=["conv1"])
         model = get_peft_molora_model(tiny_cnn, cfg)
         # Then try PEFT LoRA - it should skip already-wrapped layers
         peft_config = LoraConfig(
@@ -815,10 +797,7 @@ class TestMoEAwareIntegration:
 
     def test_molora_routing_with_multiple_targets(self, tiny_cnn):
         """MoLoRA should route correctly when multiple layers are adapted."""
-        cfg = MoLoRAConfig(
-            r=4, alpha=8, num_experts=4, top_k=2,
-            target_modules=["conv1", "conv2", "conv3"]
-        )
+        cfg = MoLoRAConfig(r=4, alpha=8, num_experts=4, top_k=2, target_modules=["conv1", "conv2", "conv3"])
         model = get_peft_molora_model(tiny_cnn, cfg)
         x = torch.randn(2, 3, 8, 8)
         model.train()
@@ -832,10 +811,7 @@ class TestMoEAwareIntegration:
 
     def test_molora_aux_loss_with_peft_model(self, tiny_cnn):
         """MoLoRAModel should compute aux loss even when wrapped."""
-        cfg = MoLoRAConfig(
-            r=4, alpha=8, num_experts=4, top_k=2,
-            target_modules=["conv1", "conv2"]
-        )
+        cfg = MoLoRAConfig(r=4, alpha=8, num_experts=4, top_k=2, target_modules=["conv1", "conv2"])
         wrapper = MoLoRAModel(tiny_cnn, cfg)
         x = torch.randn(2, 3, 8, 8)
         wrapper.model.train()

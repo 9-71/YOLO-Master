@@ -3,7 +3,7 @@
 
 Downloads:
   - train2017.zip (19G, 118k images)
-  - val2017.zip (1G, 5k images)  
+  - val2017.zip (1G, 5k images)
   - coco2017labels-segments.zip (~250M, detection + segmentation labels)
 
 Creates:

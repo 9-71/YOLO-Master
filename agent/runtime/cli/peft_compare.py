@@ -22,7 +22,10 @@ class PeftCompareDeps:
 DEFAULT_VARIANTS = [
     {"name": "full_sft", "train": {"lora_r": 0}},
     {"name": "lora_r16", "train": {"lora_type": "lora", "lora_r": 16, "lora_alpha": 32, "lora_use_rslora": True}},
-    {"name": "dora_r16", "train": {"lora_type": "lora", "lora_r": 16, "lora_alpha": 32, "lora_use_dora": True, "lora_use_rslora": True}},
+    {
+        "name": "dora_r16",
+        "train": {"lora_type": "lora", "lora_r": 16, "lora_alpha": 32, "lora_use_dora": True, "lora_use_rslora": True},
+    },
     {"name": "loha_r16", "train": {"lora_type": "loha", "lora_r": 16, "lora_alpha": 32}},
 ]
 
@@ -146,7 +149,10 @@ def run_peft_compare(request: dict[str, Any], deps: PeftCompareDeps) -> dict[str
         val_payload = None
         score = _score_payload(train_payload, rank_metric)
         if run_val and train_payload.get("status") == "ok":
-            val_inputs = {**deepcopy(request.get("inputs", {})), "model": best or request.get("inputs", {}).get("model")}
+            val_inputs = {
+                **deepcopy(request.get("inputs", {})),
+                "model": best or request.get("inputs", {}).get("model"),
+            }
             val_request = deps.normalize_request(
                 {
                     "skill": "yolo.val",

@@ -132,7 +132,13 @@ from .moe import (
 )
 from .mot import C2fMoT, MoTBlock, anneal_mot_temperature, collect_mot_aux_loss
 from .multitask import MultiTaskHead, TaskRouter
-from .latent_mixture import DenseChannelExpert, LatentMixture, LatentRouter, LatentRoutingContext, MultiScaleLatentMixture
+from .latent_mixture import (
+    DenseChannelExpert,
+    LatentMixture,
+    LatentRouter,
+    LatentRoutingContext,
+    MultiScaleLatentMixture,
+)
 
 __all__ = (
     "AIFI",

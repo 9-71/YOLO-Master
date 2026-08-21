@@ -75,7 +75,9 @@ def find_dataset_root(out_dir: Path) -> tuple[Path, str]:
 
 def write_yaml(dataset_root: Path, layout: str, yaml_out: Path) -> None:
     if layout == "split_dirs":
-        test = "VisDrone2019-DET-test-dev/images" if (dataset_root / "VisDrone2019-DET-test-dev/images").exists() else ""
+        test = (
+            "VisDrone2019-DET-test-dev/images" if (dataset_root / "VisDrone2019-DET-test-dev/images").exists() else ""
+        )
         data = {
             "path": str(dataset_root),
             "train": "VisDrone2019-DET-train/images",

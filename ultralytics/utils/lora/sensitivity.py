@@ -107,7 +107,9 @@ class GradientSensitivitySelector:
             keep = min(keep, max(1, int(self.max_layers)))
         selected = [name for name, score in ordered[:keep] if score > 0.0] or [name for name, _ in ordered[:keep]]
         return SensitivityReport(
-            layers=[LayerSensitivity(name=name, score=float(score), selected=name in selected) for name, score in ordered],
+            layers=[
+                LayerSensitivity(name=name, score=float(score), selected=name in selected) for name, score in ordered
+            ],
             selected_targets=selected,
             skipped_targets=[name for name in targets if name not in selected],
             notes=[f"gradient energy over up to {self.num_batches} calibration batches"],

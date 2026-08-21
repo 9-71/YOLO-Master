@@ -38,50 +38,81 @@ from ultralytics.utils.lora.planner import (
 # Paper canonical data points
 # =============================================================================
 
+
 def _make_paper_history_10() -> List[LOVODataPoint]:
     """Return the 10 canonical paper data points (Table 1, no catastrophic)."""
     return [
         # YOLO11s (φ_attn=0, φ_text=0, φ_dw=0)
         LOVODataPoint(
             ArchitectureFingerprint(0.0, 0.0, 0.0, 0.0, 0.25),
-            "lora", 0.0710, model_name="YOLO11s", notes="canonical",
+            "lora",
+            0.0710,
+            model_name="YOLO11s",
+            notes="canonical",
         ),
         LOVODataPoint(
             ArchitectureFingerprint(0.0, 0.0, 0.0, 0.0, 0.25),
-            "dora", 0.0710, model_name="YOLO11s", notes="canonical",
+            "dora",
+            0.0710,
+            model_name="YOLO11s",
+            notes="canonical",
         ),
         LOVODataPoint(
             ArchitectureFingerprint(0.0, 0.0, 0.0, 0.0, 0.25),
-            "loha", 0.0359, model_name="YOLO11s", notes="canonical",
+            "loha",
+            0.0359,
+            model_name="YOLO11s",
+            notes="canonical",
         ),
         LOVODataPoint(
             ArchitectureFingerprint(0.0, 0.0, 0.0, 0.0, 0.25),
-            "lokr", 0.0605, model_name="YOLO11s", notes="canonical",
+            "lokr",
+            0.0605,
+            model_name="YOLO11s",
+            notes="canonical",
         ),
         LOVODataPoint(
             ArchitectureFingerprint(0.0, 0.0, 0.0, 0.0, 0.25),
-            "ia3", 0.0552, model_name="YOLO11s", notes="canonical",
+            "ia3",
+            0.0552,
+            model_name="YOLO11s",
+            notes="canonical",
         ),
         LOVODataPoint(
             ArchitectureFingerprint(0.0, 0.0, 0.0, 0.0, 0.25),
-            "hra", 0.0848, model_name="YOLO11s", notes="canonical",
+            "hra",
+            0.0848,
+            model_name="YOLO11s",
+            notes="canonical",
         ),
         # YOLO12s (φ_attn≈0.45, φ_text=0, φ_dw=0)
         LOVODataPoint(
             ArchitectureFingerprint(0.45, 0.0, 0.0, 0.0, 0.333),
-            "lora", 0.0645, model_name="YOLO12s", notes="canonical",
+            "lora",
+            0.0645,
+            model_name="YOLO12s",
+            notes="canonical",
         ),
         LOVODataPoint(
             ArchitectureFingerprint(0.45, 0.0, 0.0, 0.0, 0.333),
-            "loha", 0.0560, model_name="YOLO12s", notes="canonical",
+            "loha",
+            0.0560,
+            model_name="YOLO12s",
+            notes="canonical",
         ),
         LOVODataPoint(
             ArchitectureFingerprint(0.45, 0.0, 0.0, 0.0, 0.333),
-            "ia3", 0.0548, model_name="YOLO12s", notes="canonical",
+            "ia3",
+            0.0548,
+            model_name="YOLO12s",
+            notes="canonical",
         ),
         LOVODataPoint(
             ArchitectureFingerprint(0.45, 0.0, 0.0, 0.0, 0.333),
-            "hra", 0.0791, model_name="YOLO12s", notes="canonical",
+            "hra",
+            0.0791,
+            model_name="YOLO12s",
+            notes="canonical",
         ),
     ]
 
@@ -89,24 +120,33 @@ def _make_paper_history_10() -> List[LOVODataPoint]:
 def _make_paper_history_full() -> List[LOVODataPoint]:
     """Return the full 12-point matrix including catastrophic cases (Fig. 4)."""
     points = _make_paper_history_10()
-    points.extend([
-        # Catastrophic: RT-DETR-like + LoRA (φ_attn≈0.85)
-        LOVODataPoint(
-            ArchitectureFingerprint(0.85, 0.0, 0.0, 0.0, 0.25),
-            "lora", -0.600, model_name="RT-DETR", notes="catastrophic",
-        ),
-        # Catastrophic: YOLO12s + DoRA no-rs (φ_attn≈0.45)
-        LOVODataPoint(
-            ArchitectureFingerprint(0.45, 0.0, 0.0, 0.0, 0.333),
-            "dora", -0.055, model_name="YOLO12s", notes="catastrophic",
-        ),
-    ])
+    points.extend(
+        [
+            # Catastrophic: RT-DETR-like + LoRA (φ_attn≈0.85)
+            LOVODataPoint(
+                ArchitectureFingerprint(0.85, 0.0, 0.0, 0.0, 0.25),
+                "lora",
+                -0.600,
+                model_name="RT-DETR",
+                notes="catastrophic",
+            ),
+            # Catastrophic: YOLO12s + DoRA no-rs (φ_attn≈0.45)
+            LOVODataPoint(
+                ArchitectureFingerprint(0.45, 0.0, 0.0, 0.0, 0.333),
+                "dora",
+                -0.055,
+                model_name="YOLO12s",
+                notes="catastrophic",
+            ),
+        ]
+    )
     return points
 
 
 # =============================================================================
 # CLI Commands
 # =============================================================================
+
 
 def cmd_benchmark(args: argparse.Namespace) -> int:
     """Run LOVO benchmark against paper claims and print a structured report."""
@@ -278,6 +318,7 @@ def cmd_fit(args: argparse.Namespace) -> int:
 # Argument Parser
 # =============================================================================
 
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="collect_lovo_data",
@@ -291,19 +332,26 @@ def _build_parser() -> argparse.ArgumentParser:
     # ------------------------------------------------------------------
     collect_p = subparsers.add_parser("collect", help="Collect LOVO data points")
     collect_p.add_argument(
-        "--from-paper", action="store_true",
+        "--from-paper",
+        action="store_true",
         help="Use the paper's canonical benchmark data",
     )
     collect_p.add_argument(
-        "--include-catastrophic", action="store_true",
+        "--include-catastrophic",
+        action="store_true",
         help="Include catastrophic data points (default: 10 canonical only)",
     )
     collect_p.add_argument(
-        "--from-dir", type=str, metavar="DIR",
+        "--from-dir",
+        type=str,
+        metavar="DIR",
         help="Scan a directory for training artifacts (future feature)",
     )
     collect_p.add_argument(
-        "--output", "-o", type=str, metavar="PATH",
+        "--output",
+        "-o",
+        type=str,
+        metavar="PATH",
         help="Output JSON file path",
     )
     collect_p.set_defaults(func=cmd_collect)
@@ -313,15 +361,24 @@ def _build_parser() -> argparse.ArgumentParser:
     # ------------------------------------------------------------------
     validate_p = subparsers.add_parser("validate", help="Validate LOVO data")
     validate_p.add_argument(
-        "--input", "-i", type=str, required=True, metavar="PATH",
+        "--input",
+        "-i",
+        type=str,
+        required=True,
+        metavar="PATH",
         help="Input JSON file with LOVO data points",
     )
     validate_p.add_argument(
-        "--threshold", type=float, default=-0.05,
+        "--threshold",
+        type=float,
+        default=-0.05,
         help="Catastrophe detection threshold (default: -0.05)",
     )
     validate_p.add_argument(
-        "--report", "-r", type=str, metavar="PATH",
+        "--report",
+        "-r",
+        type=str,
+        metavar="PATH",
         help="Report output JSON file",
     )
     validate_p.set_defaults(func=cmd_validate)
@@ -331,7 +388,10 @@ def _build_parser() -> argparse.ArgumentParser:
     # ------------------------------------------------------------------
     benchmark_p = subparsers.add_parser("benchmark", help="Run paper benchmark")
     benchmark_p.add_argument(
-        "--report", "-r", type=str, metavar="PATH",
+        "--report",
+        "-r",
+        type=str,
+        metavar="PATH",
         help="Report output JSON file",
     )
     benchmark_p.set_defaults(func=cmd_benchmark)
@@ -341,19 +401,27 @@ def _build_parser() -> argparse.ArgumentParser:
     # ------------------------------------------------------------------
     fit_p = subparsers.add_parser("fit", help="Fit regression coefficients")
     fit_p.add_argument(
-        "--from-paper", action="store_true",
+        "--from-paper",
+        action="store_true",
         help="Use the paper's canonical data for fitting",
     )
     fit_p.add_argument(
-        "--include-catastrophic", action="store_true",
+        "--include-catastrophic",
+        action="store_true",
         help="Include catastrophic data points when --from-paper is set",
     )
     fit_p.add_argument(
-        "--input", "-i", type=str, metavar="PATH",
+        "--input",
+        "-i",
+        type=str,
+        metavar="PATH",
         help="Input JSON file with LOVO data points",
     )
     fit_p.add_argument(
-        "--coefficients", "-c", type=str, metavar="PATH",
+        "--coefficients",
+        "-c",
+        type=str,
+        metavar="PATH",
         help="Output JSON file for fitted coefficients",
     )
     fit_p.set_defaults(func=cmd_fit)

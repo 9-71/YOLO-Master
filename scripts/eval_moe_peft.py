@@ -6,6 +6,7 @@ Produces a structured JSON report with statistical aggregation.
 Usage:
     python scripts/eval_moe_peft.py --config my_config.json --seeds 3
 """
+
 import os
 import sys
 import json
@@ -26,6 +27,7 @@ os.environ.setdefault("YOLO_VERBOSE", "false")
 import torch
 import numpy as np
 from ultralytics.utils import SETTINGS
+
 SETTINGS["wandb"] = False
 
 from ultralytics import YOLO
@@ -52,6 +54,7 @@ def apply_moe_aware_to_model(model, config):
     target_modules = getattr(config, "target_modules", None)
     if target_modules is None or not target_modules:
         from ultralytics.nn.peft.molora import MoLoRAConfigBuilder
+
         target_modules = MoLoRAConfigBuilder.auto_detect_targets(
             model, r=config.r, include_moe=True, only_backbone=False
         )
@@ -75,12 +78,22 @@ def apply_moe_aware_to_model(model, config):
     model.molora_config = config
     model.molora_enabled = True
     from ultralytics.nn.peft.molora.utils import mark_only_molora_as_trainable
+
     mark_only_molora_as_trainable(model)
     return wrapped
 
 
-def run_single(config_dict: Dict[str, Any], seed: int, model_path: str, data_yaml: str,
-               epochs: int, batch: int, imgsz: int, device: str, project_dir: Path) -> Dict[str, Any]:
+def run_single(
+    config_dict: Dict[str, Any],
+    seed: int,
+    model_path: str,
+    data_yaml: str,
+    epochs: int,
+    batch: int,
+    imgsz: int,
+    device: str,
+    project_dir: Path,
+) -> Dict[str, Any]:
     """Run a single training run with a given config and seed."""
     config = MoLoRAMoEAwareConfig(**config_dict)
 
@@ -155,8 +168,7 @@ def aggregate_seeds(records: List[Dict[str, Any]], metric_key: str = "metrics/mA
 
 def main():
     parser = argparse.ArgumentParser(description="Unified MoE-aware PEFT evaluation")
-    parser.add_argument("--config", type=str, default=None,
-                        help="Path to JSON config file with list of config dicts")
+    parser.add_argument("--config", type=str, default=None, help="Path to JSON config file with list of config dicts")
     parser.add_argument("--seeds", type=int, default=1, help="Number of random seeds to run")
     parser.add_argument("--model", type=str, default=DEFAULT_MODEL, help="Model path")
     parser.add_argument("--data", type=str, default=DEFAULT_DATA, help="Dataset yaml")
@@ -174,13 +186,34 @@ def main():
             configs = [configs]
     else:
         # Built-in benchmark configs
-        base = dict(r=8, alpha=16, num_experts=4, top_k=2, router_type="linear",
-                    balance_loss_coef=0.01, z_loss_coef=0.001, use_rslora=True)
+        base = dict(
+            r=8,
+            alpha=16,
+            num_experts=4,
+            top_k=2,
+            router_type="linear",
+            balance_loss_coef=0.01,
+            z_loss_coef=0.001,
+            use_rslora=True,
+        )
         configs = [
             {"name": "molora_baseline", **base, "router_calibration": False, "per_expert_rank": False},
-            {"name": "molora_calib_r4", **base, "router_calibration": True, "router_calib_rank": 4, "per_expert_rank": False},
-            {"name": "molora_freq_rank", **base, "router_calibration": False, "per_expert_rank": True,
-             "rank_allocator_mode": "frequency", "rank_budget_total": 32, "rank_min": 2},
+            {
+                "name": "molora_calib_r4",
+                **base,
+                "router_calibration": True,
+                "router_calib_rank": 4,
+                "per_expert_rank": False,
+            },
+            {
+                "name": "molora_freq_rank",
+                **base,
+                "router_calibration": False,
+                "per_expert_rank": True,
+                "rank_allocator_mode": "frequency",
+                "rank_budget_total": 32,
+                "rank_min": 2,
+            },
         ]
 
     project_dir = HERE / "runs_eval"
@@ -189,13 +222,12 @@ def main():
     all_results = []
     for cfg in configs:
         name = cfg.pop("name", "unnamed")
-        print(f"\n{'='*70}\nConfig: {name}\n{'='*70}")
+        print(f"\n{'=' * 70}\nConfig: {name}\n{'=' * 70}")
         seeds = list(range(args.seeds))
         seed_records = []
         for seed in seeds:
             rec = run_single(
-                cfg.copy(), seed, args.model, args.data,
-                args.epochs, args.batch, args.imgsz, args.device, project_dir
+                cfg.copy(), seed, args.model, args.data, args.epochs, args.batch, args.imgsz, args.device, project_dir
             )
             rec["config_name"] = name
             seed_records.append(rec)
@@ -203,12 +235,14 @@ def main():
         agg = aggregate_seeds(seed_records)
         print(f"[Aggregate] {name}: mean={agg['mean']:.4f} std={agg['std']:.4f} (n={agg['n']})")
 
-        all_results.append({
-            "config_name": name,
-            "config": cfg,
-            "seeds": seed_records,
-            "aggregate": agg,
-        })
+        all_results.append(
+            {
+                "config_name": name,
+                "config": cfg,
+                "seeds": seed_records,
+                "aggregate": agg,
+            }
+        )
 
     # Write final report
     output_path = Path(args.output)

@@ -38,6 +38,7 @@ def _load_stability_checker():
     """Load stability checks only when a suite requests them."""
     try:
         from runtime.cli.stability import StabilityChecker
+
         return StabilityChecker
     except Exception:
         return None
@@ -46,6 +47,7 @@ def _load_stability_checker():
 def _load_snapshot_tools():
     try:
         from runtime.cli.snapshot import PayloadSnapshot, SnapshotDiff, EnvironmentSnapshot
+
         return PayloadSnapshot, SnapshotDiff, EnvironmentSnapshot
     except Exception:
         return None, None, None
@@ -154,13 +156,10 @@ def build_result(
     # Stability checks cover model/query-independent schema, behavior, and ranges.
     # Run them when a case opts in or when a suite includes stability-check.
     # -----------------------------------------------------------------------
-    run_stability = (
-        case.get("executor") != "probe"
-        and (
-            case.get("stability", False)
-            or case.get("suite") == "stability-check"
-            or case.get("suite") in {"quick", "contract", "fast-smoke"}
-        )
+    run_stability = case.get("executor") != "probe" and (
+        case.get("stability", False)
+        or case.get("suite") == "stability-check"
+        or case.get("suite") in {"quick", "contract", "fast-smoke"}
     )
     if run_stability and returncode == 0:
         StabilityChecker = _load_stability_checker()
@@ -170,7 +169,8 @@ def build_result(
             result["stability_checks"] = stab_result["checks"]
             # Only stability regressions fail the validation result.
             has_regression = any(
-                not c["ok"] for c in stab_result["checks"]
+                not c["ok"]
+                for c in stab_result["checks"]
                 if c.get("rule", "").startswith(("schema.", "behavior.", "monotonic."))
             )
             if has_regression:
@@ -184,8 +184,7 @@ def build_result(
         PayloadSnapshot, _, EnvironmentSnapshot = _load_snapshot_tools()
         if PayloadSnapshot is not None:
             skill = str(payload.get("skill", request.get("skill", "")))
-            snap = PayloadSnapshot.capture(payload, skill=skill,
-                                           env=EnvironmentSnapshot.capture())
+            snap = PayloadSnapshot.capture(payload, skill=skill, env=EnvironmentSnapshot.capture())
             snap_name = snap_cfg.get("name", case["name"])
             snap_path = SNAPSHOT_DIR / f"{snap_name}.json"
             snap.save(snap_path)
@@ -203,40 +202,49 @@ def build_result(
                 try:
                     baseline = PayloadSnapshot.load(baseline_path)
                     skill = str(payload.get("skill", request.get("skill", "")))
-                    current = PayloadSnapshot.capture(payload, skill=skill,
-                                                     env=EnvironmentSnapshot.capture())
+                    current = PayloadSnapshot.capture(payload, skill=skill, env=EnvironmentSnapshot.capture())
                     diff = SnapshotDiff.compare(baseline, current)
                     result["snapshot_diff"] = diff.to_dict()
                     if diff.regression_count > 0:
                         result["passed"] = False
-                        result["checks"].append({
+                        result["checks"].append(
+                            {
+                                "kind": "snapshot_regression",
+                                "ok": False,
+                                "detail": diff.summary(),
+                            }
+                        )
+                    else:
+                        result["checks"].append(
+                            {
+                                "kind": "snapshot_regression",
+                                "ok": True,
+                                "detail": f"no regressions, {diff.drift_count} acceptable drifts",
+                            }
+                        )
+                except Exception as exc:
+                    result["checks"].append(
+                        {
                             "kind": "snapshot_regression",
                             "ok": False,
-                            "detail": diff.summary(),
-                        })
-                    else:
-                        result["checks"].append({
-                            "kind": "snapshot_regression",
-                            "ok": True,
-                            "detail": f"no regressions, {diff.drift_count} acceptable drifts",
-                        })
-                except Exception as exc:
-                    result["checks"].append({
-                        "kind": "snapshot_regression",
-                        "ok": False,
-                        "detail": f"snapshot compare error: {exc}",
-                    })
+                            "detail": f"snapshot compare error: {exc}",
+                        }
+                    )
             else:
-                result["checks"].append({
-                    "kind": "snapshot_regression",
-                    "ok": True,
-                    "detail": f"baseline {baseline_path} not found, skipping replay",
-                })
+                result["checks"].append(
+                    {
+                        "kind": "snapshot_regression",
+                        "ok": True,
+                        "detail": f"baseline {baseline_path} not found, skipping replay",
+                    }
+                )
 
     expect = case.get("expect", {})
     if "status" in expect:
         ok = payload.get("status") == expect["status"]
-        result["checks"].append({"kind": "status", "ok": ok, "expected": expect["status"], "actual": payload.get("status")})
+        result["checks"].append(
+            {"kind": "status", "ok": ok, "expected": expect["status"], "actual": payload.get("status")}
+        )
         result["passed"] &= ok
     for path in expect.get("paths", []):
         ok = dotted_get(payload, path) is not None
@@ -286,9 +294,7 @@ def build_result(
         )
         result["passed"] &= ok
     elif returncode != 0 and not (
-        "status" in expect
-        and payload.get("status") == expect["status"]
-        and expect["status"] in {"blocked", "failed"}
+        "status" in expect and payload.get("status") == expect["status"] and expect["status"] in {"blocked", "failed"}
     ):
         result["passed"] = False
     return result
@@ -315,7 +321,9 @@ def run_dispatcher_case(case: dict[str, Any]) -> dict[str, Any]:
             "raw_stdout": stdout,
             "raw_stderr": stderr,
         }
-    return build_result(case, request, payload, elapsed=elapsed, returncode=proc.returncode, stdout=stdout, stderr=stderr)
+    return build_result(
+        case, request, payload, elapsed=elapsed, returncode=proc.returncode, stdout=stdout, stderr=stderr
+    )
 
 
 def run_probe_case(case: dict[str, Any]) -> dict[str, Any]:
@@ -377,7 +385,15 @@ def run_probe_case(case: dict[str, Any]) -> dict[str, Any]:
                 "calls": calls,
             },
         }
-        return build_result(case, request, payload, elapsed=time.perf_counter() - start, returncode=0 if outcome["failed"] is None else 1, stdout=stdout, stderr=stderr)
+        return build_result(
+            case,
+            request,
+            payload,
+            elapsed=time.perf_counter() - start,
+            returncode=0 if outcome["failed"] is None else 1,
+            stdout=stdout,
+            stderr=stderr,
+        )
     if kind == "recovery_no_retry":
         module = load_dispatcher_module()
         classification = module.classify_cli_failure(
@@ -410,7 +426,9 @@ def run_probe_case(case: dict[str, Any]) -> dict[str, Any]:
                 "classification": classification,
             },
         }
-        return build_result(case, request, payload, elapsed=time.perf_counter() - start, returncode=0, stdout=stdout, stderr=stderr)
+        return build_result(
+            case, request, payload, elapsed=time.perf_counter() - start, returncode=0, stdout=stdout, stderr=stderr
+        )
     if kind == "multimodal_stub":
         module = load_dispatcher_module()
         calls: list[dict[str, Any]] = []
@@ -424,8 +442,14 @@ def run_probe_case(case: dict[str, Any]) -> dict[str, Any]:
                             {
                                 "answer": "open-world vlm answer",
                                 "visual_evidence": ["a bus and visible grass are both present"],
-                                "caption": {"short": "A bus near grass", "dense": "A bus occupies the main view while a grassy area appears nearby.", "tags": ["bus", "grass"]},
-                                "global_classification": [{"open_label": "bus", "class_id": 5, "coco_label": "bus", "confidence": 0.96}],
+                                "caption": {
+                                    "short": "A bus near grass",
+                                    "dense": "A bus occupies the main view while a grassy area appears nearby.",
+                                    "tags": ["bus", "grass"],
+                                },
+                                "global_classification": [
+                                    {"open_label": "bus", "class_id": 5, "coco_label": "bus", "confidence": 0.96}
+                                ],
                                 "vlm_detections": [
                                     {
                                         "proposal_id": "ow1",
@@ -447,22 +471,32 @@ def run_probe_case(case: dict[str, Any]) -> dict[str, Any]:
                                     "notes": [],
                                 },
                                 "fusion_hints": {
-                                    "add_open_world_detections": [{"proposal_id": "ow1", "confidence": 0.88, "evidence": "visible grassy patch"}],
+                                    "add_open_world_detections": [
+                                        {"proposal_id": "ow1", "confidence": 0.88, "evidence": "visible grassy patch"}
+                                    ],
                                     "add_vlm_detections": [],
                                     "suppress_yolo_indices": [],
                                     "relabel_yolo": [],
                                     "adjust_boxes": [],
                                 },
                                 "uncertainty": "low",
-                                "recommended_next_actions": ["preserve the open-world region but keep taxonomy matching conservative"],
+                                "recommended_next_actions": [
+                                    "preserve the open-world region but keep taxonomy matching conservative"
+                                ],
                             }
                         ),
                         json.dumps(
                             {
                                 "answer": "open-world refined answer",
                                 "visual_evidence": ["bus remains correct and the grass region is still visible"],
-                                "caption": {"short": "Bus with grass", "dense": "The verification pass agrees that the bus is correct and a grassy area is visible.", "tags": ["bus", "grass"]},
-                                "global_classification": [{"open_label": "bus", "class_id": 5, "coco_label": "bus", "confidence": 0.95}],
+                                "caption": {
+                                    "short": "Bus with grass",
+                                    "dense": "The verification pass agrees that the bus is correct and a grassy area is visible.",
+                                    "tags": ["bus", "grass"],
+                                },
+                                "global_classification": [
+                                    {"open_label": "bus", "class_id": 5, "coco_label": "bus", "confidence": 0.95}
+                                ],
                                 "vlm_detections": [
                                     {
                                         "proposal_id": "ow1",
@@ -484,14 +518,18 @@ def run_probe_case(case: dict[str, Any]) -> dict[str, Any]:
                                     "notes": [],
                                 },
                                 "fusion_hints": {
-                                    "add_open_world_detections": [{"proposal_id": "ow1", "confidence": 0.9, "evidence": "verified grassy patch"}],
+                                    "add_open_world_detections": [
+                                        {"proposal_id": "ow1", "confidence": 0.9, "evidence": "verified grassy patch"}
+                                    ],
                                     "add_vlm_detections": [],
                                     "suppress_yolo_indices": [],
                                     "relabel_yolo": [],
                                     "adjust_boxes": [],
                                 },
                                 "uncertainty": "low",
-                                "recommended_next_actions": ["keep the generic label, but do not force a taxonomy anchor"],
+                                "recommended_next_actions": [
+                                    "keep the generic label, but do not force a taxonomy anchor"
+                                ],
                             }
                         ),
                     ]
@@ -503,8 +541,14 @@ def run_probe_case(case: dict[str, Any]) -> dict[str, Any]:
                             {
                                 "answer": "open-world vlm answer",
                                 "visual_evidence": ["a bus and a traffic cone are both visible"],
-                                "caption": {"short": "A bus on the road near a traffic cone", "dense": "A parked bus occupies most of the frame and a small traffic cone sits nearby.", "tags": ["bus", "traffic cone", "road"]},
-                                "global_classification": [{"open_label": "bus", "class_id": 5, "coco_label": "bus", "confidence": 0.96}],
+                                "caption": {
+                                    "short": "A bus on the road near a traffic cone",
+                                    "dense": "A parked bus occupies most of the frame and a small traffic cone sits nearby.",
+                                    "tags": ["bus", "traffic cone", "road"],
+                                },
+                                "global_classification": [
+                                    {"open_label": "bus", "class_id": 5, "coco_label": "bus", "confidence": 0.96}
+                                ],
                                 "vlm_detections": [
                                     {
                                         "proposal_id": "ow1",
@@ -526,7 +570,9 @@ def run_probe_case(case: dict[str, Any]) -> dict[str, Any]:
                                     "notes": [],
                                 },
                                 "fusion_hints": {
-                                    "add_open_world_detections": [{"proposal_id": "ow1", "confidence": 0.88, "evidence": "visible roadside cone"}],
+                                    "add_open_world_detections": [
+                                        {"proposal_id": "ow1", "confidence": 0.88, "evidence": "visible roadside cone"}
+                                    ],
                                     "add_vlm_detections": [],
                                     "suppress_yolo_indices": [],
                                     "relabel_yolo": [],
@@ -540,8 +586,14 @@ def run_probe_case(case: dict[str, Any]) -> dict[str, Any]:
                             {
                                 "answer": "open-world refined answer",
                                 "visual_evidence": ["bus remains correct and the cone is still visible"],
-                                "caption": {"short": "Bus with roadside cone", "dense": "The verification pass agrees that the bus is correct and a cone-like object is visible.", "tags": ["bus", "cone"]},
-                                "global_classification": [{"open_label": "bus", "class_id": 5, "coco_label": "bus", "confidence": 0.95}],
+                                "caption": {
+                                    "short": "Bus with roadside cone",
+                                    "dense": "The verification pass agrees that the bus is correct and a cone-like object is visible.",
+                                    "tags": ["bus", "cone"],
+                                },
+                                "global_classification": [
+                                    {"open_label": "bus", "class_id": 5, "coco_label": "bus", "confidence": 0.95}
+                                ],
                                 "vlm_detections": [
                                     {
                                         "proposal_id": "ow1",
@@ -563,7 +615,9 @@ def run_probe_case(case: dict[str, Any]) -> dict[str, Any]:
                                     "notes": [],
                                 },
                                 "fusion_hints": {
-                                    "add_open_world_detections": [{"proposal_id": "ow1", "confidence": 0.9, "evidence": "verified roadside cone"}],
+                                    "add_open_world_detections": [
+                                        {"proposal_id": "ow1", "confidence": 0.9, "evidence": "verified roadside cone"}
+                                    ],
                                     "add_vlm_detections": [],
                                     "suppress_yolo_indices": [],
                                     "relabel_yolo": [],
@@ -801,7 +855,9 @@ def run_probe_case(case: dict[str, Any]) -> dict[str, Any]:
         "status": "failed",
         "summary": f"unsupported probe kind: {kind}",
     }
-    return build_result(case, request, payload, elapsed=time.perf_counter() - start, returncode=1, stdout=stdout, stderr=stderr)
+    return build_result(
+        case, request, payload, elapsed=time.perf_counter() - start, returncode=1, stdout=stdout, stderr=stderr
+    )
 
 
 def run_case(case: dict[str, Any]) -> dict[str, Any]:
@@ -844,7 +900,9 @@ def recommend(results: list[dict[str, Any]]) -> list[str]:
     if any(name.startswith("multimodal_") for name in failed_names):
         recs.append("Keep the multimodal blocked-path, fake OpenAI probe, and thinking-with-image contract aligned.")
     if any(check["kind"] == "max_elapsed_sec" and not check["ok"] for r in failures for check in r["checks"]):
-        recs.append("Preserve fast-smoke latency budgets with lazy imports or by moving expensive checks into deep-smoke.")
+        recs.append(
+            "Preserve fast-smoke latency budgets with lazy imports or by moving expensive checks into deep-smoke."
+        )
     if not recs:
         recs.append("Review the failing cases and add more narrow assertions around returned artifacts and paths.")
     return recs

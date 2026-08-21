@@ -31,12 +31,37 @@ from ultralytics.utils.torch_utils import unwrap_model
 
 ADAPTER_TOKENS = ("lora_", "adapter", "modules_to_save", "hada_", "oft_", "boft_", "hra_")
 TRAIN_ARG_KEYS = (
-    "model", "data", "epochs", "batch", "imgsz", "device", "optimizer",
-    "effective_optimizer", "effective_optimizer_lrs", "lr0", "lrf", "warmup_epochs", "nbs", "cos_lr",
-    "lora_type", "lora_r", "lora_alpha", "lora_include_head", "lora_use_rslora", "lora_use_dora",
-    "lora_backend", "lora_lr_mult", "requested_lora_lr_mult", "lora_layer_decay", "requested_lora_layer_decay",
-    "lora_alpha_warmup", "requested_lora_alpha_warmup", "lora_ortho_weight", "requested_lora_ortho_weight",
-    "moe_aux_gain", "mixture_aux_budget",
+    "model",
+    "data",
+    "epochs",
+    "batch",
+    "imgsz",
+    "device",
+    "optimizer",
+    "effective_optimizer",
+    "effective_optimizer_lrs",
+    "lr0",
+    "lrf",
+    "warmup_epochs",
+    "nbs",
+    "cos_lr",
+    "lora_type",
+    "lora_r",
+    "lora_alpha",
+    "lora_include_head",
+    "lora_use_rslora",
+    "lora_use_dora",
+    "lora_backend",
+    "lora_lr_mult",
+    "requested_lora_lr_mult",
+    "lora_layer_decay",
+    "requested_lora_layer_decay",
+    "lora_alpha_warmup",
+    "requested_lora_alpha_warmup",
+    "lora_ortho_weight",
+    "requested_lora_ortho_weight",
+    "moe_aux_gain",
+    "mixture_aux_budget",
 )
 
 
@@ -45,7 +70,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--run-dir", type=Path, required=True, help="Ultralytics run directory containing args.yaml.")
     parser.add_argument("--data", type=str, default=None, help="Dataset YAML override used by optional validation.")
     parser.add_argument("--expected-nc", type=int, default=20, help="Expected number of dataset classes.")
-    parser.add_argument("--device", type=str, default="cpu", help="Device for optional probe/validation, e.g. cpu or 0.")
+    parser.add_argument(
+        "--device", type=str, default="cpu", help="Device for optional probe/validation, e.g. cpu or 0."
+    )
     parser.add_argument("--imgsz", type=int, default=None, help="Image size override for optional inference.")
     parser.add_argument("--batch", type=int, default=32, help="Batch size for optional validation.")
     parser.add_argument("--workers", type=int, default=2, help="Workers for optional validation.")
@@ -53,7 +80,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--rows", type=int, default=5, help="Number of recent results.csv rows to print.")
     parser.add_argument("--probe-forward", action="store_true", help="Run a synthetic forward pass for online and EMA.")
     parser.add_argument("--run-val", action="store_true", help="Run full low-confidence validation for online and EMA.")
-    parser.add_argument("--sample-image", type=Path, default=None, help="Optional real image for prediction diagnostics.")
+    parser.add_argument(
+        "--sample-image", type=Path, default=None, help="Optional real image for prediction diagnostics."
+    )
     parser.add_argument("--output-json", type=Path, default=None, help="Optional path for a machine-readable report.")
     parser.add_argument("--strict", action="store_true", help="Exit with status 2 when a critical finding is detected.")
     return parser.parse_args()
@@ -76,10 +105,7 @@ def stable_copy(source: Path, destination: Path, retries: int = 8, delay: float 
             shutil.copy2(source, destination)
             after = source.stat()
             copied = destination.stat()
-            if (
-                before.st_size == after.st_size == copied.st_size
-                and before.st_mtime_ns == after.st_mtime_ns
-            ):
+            if before.st_size == after.st_size == copied.st_size and before.st_mtime_ns == after.st_mtime_ns:
                 return destination
         except OSError as exc:
             last_error = exc
@@ -151,8 +177,7 @@ def module_diagnostics(module: nn.Module, expected_nc: int) -> tuple[dict[str, A
             "effective_sparse": bool(
                 getattr(child, "use_sparse_inference", True)
                 and getattr(child, "use_top_k", False)
-                and getattr(child, "top_k", getattr(child, "num_experts", 1))
-                < getattr(child, "num_experts", 1)
+                and getattr(child, "top_k", getattr(child, "num_experts", 1)) < getattr(child, "num_experts", 1)
             ),
         }
         for name, child in model.named_modules()
@@ -244,12 +269,7 @@ def optimizer_diagnostics(optimizer: Any) -> dict[str, Any]:
             }
         )
     state_keys = sorted(
-        {
-            key
-            for state in optimizer.get("state", {}).values()
-            if isinstance(state, dict)
-            for key in state
-        }
+        {key for state in optimizer.get("state", {}).values() if isinstance(state, dict) for key in state}
     )
     if any("use_muon" in group for group in raw_groups):
         effective_type = "MuSGD"
@@ -301,10 +321,14 @@ def first_prediction_tensor(output: Any, expected_nc: int) -> torch.Tensor | Non
     collect(output)
     if not candidates:
         return None
-    exact = [value for value in candidates if value.shape[1] == expected_channels or value.shape[-1] == expected_channels]
+    exact = [
+        value for value in candidates if value.shape[1] == expected_channels or value.shape[-1] == expected_channels
+    ]
     if exact:
         return max(exact, key=lambda value: value.numel())
-    valid = [value for value in candidates if value.shape[1] >= expected_channels or value.shape[-1] >= expected_channels]
+    valid = [
+        value for value in candidates if value.shape[1] >= expected_channels or value.shape[-1] >= expected_channels
+    ]
     return min(valid or candidates, key=lambda value: value.shape[1] if value.shape[1] > 1 else value.shape[-1])
 
 
@@ -538,9 +562,11 @@ def main() -> int:
             "ia3",
             "hra",
         }
-        if peft_active and str(train_args.get("optimizer") or "").lower() == "auto" and optimizer_info.get(
-            "effective_type"
-        ) == "MuSGD":
+        if (
+            peft_active
+            and str(train_args.get("optimizer") or "").lower() == "auto"
+            and optimizer_info.get("effective_type") == "MuSGD"
+        ):
             report["findings"].append(
                 {
                     "severity": "critical",
@@ -567,11 +593,7 @@ def main() -> int:
                     report["findings"].append({"severity": "critical", "target": target, "message": critical})
         report["models"] = inspected
 
-        all_es_moe = [
-            (target, item)
-            for target, info in inspected.items()
-            for item in info.get("es_moe_routing", [])
-        ]
+        all_es_moe = [(target, item) for target, info in inspected.items() for item in info.get("es_moe_routing", [])]
         effective_sparse = [(target, item) for target, item in all_es_moe if item["effective_sparse"]]
         if effective_sparse and len(rows) >= 2 and (report["results"].get("last_map50") or 0.0) < 0.01:
             report["findings"].append(
@@ -601,9 +623,7 @@ def main() -> int:
                 }
             )
         thresholded_sparse = [
-            (target, item)
-            for target, item in all_es_moe
-            if item["effective_sparse"] and item["dynamic_threshold"] > 0
+            (target, item) for target, item in all_es_moe if item["effective_sparse"] and item["dynamic_threshold"] > 0
         ]
         if thresholded_sparse:
             report["findings"].append(
@@ -632,7 +652,10 @@ def main() -> int:
             report["online_ema_difference"] = compare_states(online, ema)
             if len(rows) >= 2 and report["online_ema_difference"]["max_difference"] == 0.0:
                 report["findings"].append(
-                    {"severity": "warning", "message": "Online and EMA floating states are exactly identical after training."}
+                    {
+                        "severity": "warning",
+                        "message": "Online and EMA floating states are exactly identical after training.",
+                    }
                 )
 
         if cli.probe_forward:
@@ -685,7 +708,9 @@ def main() -> int:
         print_section("FORWARD PROBE", report["forward_probe"])
     if "runtime_checks" in report:
         print_section("RUNTIME CHECKS", report["runtime_checks"])
-    print_section("FINDINGS", report["findings"] or [{"severity": "info", "message": "No static critical issue found."}])
+    print_section(
+        "FINDINGS", report["findings"] or [{"severity": "info", "message": "No static critical issue found."}]
+    )
 
     if cli.output_json:
         output = cli.output_json.expanduser().resolve()

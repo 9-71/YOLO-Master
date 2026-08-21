@@ -1,4 +1,5 @@
 """Attention heads for Mixture-of-Attention blocks."""
+
 from __future__ import annotations
 import inspect
 import torch
@@ -6,11 +7,17 @@ import torch.nn as nn
 import torch.nn.functional as F
 from typing import Optional
 from ultralytics.nn.modules._numeric import fp_clamp_floor
-from ultralytics.nn.modules.moa._constants import DEFAULT_RF_SEED, LINEAR_ATTN_ACTIVATION_LIMIT, LINEAR_ATTN_BLEND_WINDOW, LINEAR_ATTN_THRESHOLD
+from ultralytics.nn.modules.moa._constants import (
+    DEFAULT_RF_SEED,
+    LINEAR_ATTN_ACTIVATION_LIMIT,
+    LINEAR_ATTN_BLEND_WINDOW,
+    LINEAR_ATTN_THRESHOLD,
+)
 from ultralytics.nn.modules.utils import get_safe_groups as _safe_groups
 
 _DEFAULT_RF_SEED = DEFAULT_RF_SEED
 _fp_min = fp_clamp_floor
+
 
 def _init_conv_weights(module: nn.Module) -> None:
     """Shared Conv2d weight initialisation for MoA blocks.
@@ -24,15 +31,15 @@ def _init_conv_weights(module: nn.Module) -> None:
             if m.bias is not None:
                 nn.init.zeros_(m.bias)
 
-def _flash_attn(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor,
-                scale: float) -> torch.Tensor:
+
+def _flash_attn(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor, scale: float) -> torch.Tensor:
     """Scaled dot-product attention; uses F.sdpa when available (torch ≥ 2.0)."""
     sdpa = getattr(F, "scaled_dot_product_attention", None)
     if callable(sdpa):
         try:
             accepts_scale = "scale" in inspect.signature(sdpa).parameters
         except (TypeError, ValueError):
-            signature_text = (getattr(sdpa, "__text_signature__", None) or getattr(sdpa, "__doc__", "") or "")
+            signature_text = getattr(sdpa, "__text_signature__", None) or getattr(sdpa, "__doc__", "") or ""
             accepts_scale = "scale" in signature_text
         if accepts_scale:
             return sdpa(q, k, v, scale=scale)
@@ -42,6 +49,7 @@ def _flash_attn(q: torch.Tensor, k: torch.Tensor, v: torch.Tensor,
     attn = (q @ k.transpose(-2, -1)) * scale
     attn = attn.softmax(dim=-1)
     return attn @ v
+
 
 def _window_partition_2d(t: torch.Tensor, window_size: int) -> torch.Tensor:
     """Partition ``[B, nh, H, W, hd]`` into ``[B*nh*nW, win², hd]`` windows."""
@@ -82,9 +90,7 @@ def _window_flash_attn(
     """Window-partitioned SDPA on [B, nh, N, hd] tokens (O(N·win²) complexity)."""
     B, nh, n_tokens, hd = q.shape
     if n_tokens != height * width:
-        raise ValueError(
-            f"window attention token count mismatch: N={n_tokens}, expected H*W={height * width}"
-        )
+        raise ValueError(f"window attention token count mismatch: N={n_tokens}, expected H*W={height * width}")
     win = max(1, min(int(window_size), height, width))
 
     # N is already the flattened row-major spatial axis. Transposing N and hd
@@ -108,6 +114,7 @@ def _window_flash_attn(
     out = _window_unpartition_2d(out_w, win, B, nh, hp, wp)
     return out[:, :, :height, :width, :].reshape(B, nh, height * width, hd)
 
+
 class _LocalAttnHead(nn.Module):
     """Local attention head: DW-biased QKV + window-partitioned self-attention.
 
@@ -115,8 +122,7 @@ class _LocalAttnHead(nn.Module):
     (Swin-style), giving true O(N·win²) local context instead of global O(N²) SDPA.
     """
 
-    def __init__(self, dim: int, num_heads: int, head_dim: Optional[int] = None,
-                 window_size: int = 7):
+    def __init__(self, dim: int, num_heads: int, head_dim: Optional[int] = None, window_size: int = 7):
         super().__init__()
         self.num_heads = num_heads
         self.head_dim = head_dim or max(dim // num_heads, 16)
@@ -129,30 +135,29 @@ class _LocalAttnHead(nn.Module):
         # positional encoding (DW 7×7)
         self.pe = nn.Conv2d(inner, inner, 7, padding=3, groups=inner, bias=False)
         self.norm = nn.GroupNorm(_safe_groups(dim, 8), dim)
-        self.scale = self.head_dim ** -0.5
+        self.scale = self.head_dim**-0.5
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         B, C, H, W = x.shape
         N = H * W
         nh, hd = self.num_heads, self.head_dim
 
-        qkv = self.qkv_pw(self.qkv_dw(x))          # [B, 3*inner, H, W]
+        qkv = self.qkv_pw(self.qkv_dw(x))  # [B, 3*inner, H, W]
         inner = nh * hd
-        q, k, v = qkv.split(inner, dim=1)            # each [B, inner, H, W]
+        q, k, v = qkv.split(inner, dim=1)  # each [B, inner, H, W]
 
         # PE on v
         v = v + self.pe(v)
 
         # reshape to [B, nh, N, hd]
         def to_heads(t):
-            return t.flatten(2).view(B, nh, hd, N).transpose(2, 3)   # [B,nh,N,hd]
+            return t.flatten(2).view(B, nh, hd, N).transpose(2, 3)  # [B,nh,N,hd]
 
-        out = _window_flash_attn(
-            to_heads(q), to_heads(k), to_heads(v), self.scale, self.window_size, H, W
-        )
+        out = _window_flash_attn(to_heads(q), to_heads(k), to_heads(v), self.scale, self.window_size, H, W)
         # [B, nh, N, hd] → [B, inner, H, W]
         out = out.transpose(2, 3).reshape(B, inner, H, W)
         return self.norm(self.proj(out))
+
 
 class _RegionalAttnHead(nn.Module):
     """Regional attention head: pooled keys/values (stride-2 downsampling).
@@ -168,8 +173,14 @@ class _RegionalAttnHead(nn.Module):
       - Guard against H=1 or W=1 feature maps (produces empty KV).
     """
 
-    def __init__(self, dim: int, num_heads: int, head_dim: Optional[int] = None,
-                 pool_stride: int = 2, max_kv_tokens: Optional[int] = 4096):
+    def __init__(
+        self,
+        dim: int,
+        num_heads: int,
+        head_dim: Optional[int] = None,
+        pool_stride: int = 2,
+        max_kv_tokens: Optional[int] = 4096,
+    ):
         super().__init__()
         self.num_heads = num_heads
         self.head_dim = head_dim or max(dim // num_heads, 16)
@@ -190,7 +201,7 @@ class _RegionalAttnHead(nn.Module):
         self.kv_proj = nn.Conv2d(dim, inner * 2, 1, bias=False)
         self.proj = nn.Conv2d(inner, dim, 1, bias=False)
         self.norm = nn.GroupNorm(_safe_groups(dim, 8), dim)
-        self.scale = self.head_dim ** -0.5
+        self.scale = self.head_dim**-0.5
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         B, C, H, W = x.shape
@@ -201,7 +212,7 @@ class _RegionalAttnHead(nn.Module):
         # empty spatial KV after pooling. Fall back to identity (full-res KV) in
         # that edge case.
         if min(H, W) <= 1:
-            kv = self.kv_proj(x)                    # conv-only, skip pool
+            kv = self.kv_proj(x)  # conv-only, skip pool
         else:
             stride = self.pool_stride
             if self.max_kv_tokens is not None:
@@ -212,7 +223,7 @@ class _RegionalAttnHead(nn.Module):
             target_h = max(1, H // stride)
             target_w = max(1, W // stride)
             pooled = F.adaptive_avg_pool2d(x, (target_h, target_w))
-            kv = self.kv_proj(pooled)               # [B, 2*inner, H', W']
+            kv = self.kv_proj(pooled)  # [B, 2*inner, H', W']
         H2, W2 = kv.shape[2], kv.shape[3]
 
         # Guard: if pooling collapsed the spatial dim to zero (extreme edge case),
@@ -230,9 +241,10 @@ class _RegionalAttnHead(nn.Module):
         # backward select an incompatible memory-format path.
         q = self.q_proj(x).flatten(2).view(B, nh, hd, H * W).transpose(2, 3).contiguous()
 
-        out = _flash_attn(q, k, v, self.scale)               # [B, nh, N, hd]
+        out = _flash_attn(q, k, v, self.scale)  # [B, nh, N, hd]
         out = out.transpose(2, 3).contiguous().reshape(B, inner, H, W)
         return self.norm(self.proj(out))
+
 
 class _GlobalAttnHead(nn.Module):
     """Global (linear) attention head using random-feature approximation.
@@ -253,8 +265,14 @@ class _GlobalAttnHead(nn.Module):
     # Width of the smooth transition window (avoids hard mode switch).
     _BLEND_WINDOW: int = LINEAR_ATTN_BLEND_WINDOW
 
-    def __init__(self, dim: int, num_heads: int, head_dim: Optional[int] = None,
-                 nb_features: int = 64, rf_seed: int = _DEFAULT_RF_SEED):
+    def __init__(
+        self,
+        dim: int,
+        num_heads: int,
+        head_dim: Optional[int] = None,
+        nb_features: int = 64,
+        rf_seed: int = _DEFAULT_RF_SEED,
+    ):
         super().__init__()
         self.num_heads = num_heads
         self.head_dim = head_dim or max(dim // num_heads, 16)
@@ -264,7 +282,7 @@ class _GlobalAttnHead(nn.Module):
         self.qkv = nn.Conv2d(dim, inner * 3, 1, bias=False)
         self.proj = nn.Conv2d(inner, dim, 1, bias=False)
         self.norm = nn.GroupNorm(_safe_groups(dim, 8), dim)
-        self.scale = self.head_dim ** -0.5
+        self.scale = self.head_dim**-0.5
 
         # Orthogonal random features for the Performer approximation.
         # Per-block seed keeps bases diverse across layers while remaining
@@ -278,7 +296,7 @@ class _GlobalAttnHead(nn.Module):
             gen = torch.Generator().manual_seed(rf_seed)
             rf = torch.randn(self.head_dim, self.head_dim, generator=gen, dtype=torch.float32)
             try:
-                rf, _ = torch.linalg.qr(rf)        # [hd, hd] orthogonal
+                rf, _ = torch.linalg.qr(rf)  # [hd, hd] orthogonal
             except RuntimeError:
                 # Fallback: Gram-Schmidt via SVD if QR fails (rare, but
                 # keeps construction robust on older CUDA / MPS drivers).
@@ -297,8 +315,7 @@ class _GlobalAttnHead(nn.Module):
         eps = _fp_min(1e-6, x.dtype)
         return F.relu(x) + eps
 
-    def _linear_attn(self, q: torch.Tensor, k: torch.Tensor,
-                     v: torch.Tensor) -> torch.Tensor:
+    def _linear_attn(self, q: torch.Tensor, k: torch.Tensor, v: torch.Tensor) -> torch.Tensor:
         """O(N) linear attention via kernel trick.
 
         q, k, v: [B, nh, N, hd]
@@ -307,9 +324,9 @@ class _GlobalAttnHead(nn.Module):
         output_dtype = q.dtype
         if output_dtype in (torch.float16, torch.bfloat16):
             q, k, v = q.float(), k.float(), v.float()
-        rf = self._get_rf(q.device, q.dtype)     # [eff_nb, hd]
+        rf = self._get_rf(q.device, q.dtype)  # [eff_nb, hd]
         eff_nb = rf.shape[0]
-        scale = eff_nb ** -0.5
+        scale = eff_nb**-0.5
 
         # Project to feature space: [B, nh, N, eff_nb]
         # Clamp kernel features to prevent float16 overflow in AMP training.
@@ -328,14 +345,11 @@ class _GlobalAttnHead(nn.Module):
         # raw k_sum can reach ~2.5e8 which overflows to inf in float16.
         k_sum_f32 = k_flat.float().sum(dim=1)
         # numerator: q @ kv → [B*nh, N, hd]
-        numer = (q_flat @ kv).clamp(
-            min=-LINEAR_ATTN_ACTIVATION_LIMIT, max=LINEAR_ATTN_ACTIVATION_LIMIT
-        )
+        numer = (q_flat @ kv).clamp(min=-LINEAR_ATTN_ACTIVATION_LIMIT, max=LINEAR_ATTN_ACTIVATION_LIMIT)
         # denominator: q @ k_sum^T → [B*nh, N, 1]; cast k_sum back to q.dtype for matmul
         denom = (q_flat @ k_sum_f32.to(q_flat.dtype).unsqueeze(-1)).clamp(min=_fp_min(1e-6, q_flat.dtype))
 
         return (numer / denom).reshape(B, nh, N, hd).to(output_dtype)
-
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         B, C, H, W = x.shape
@@ -343,11 +357,11 @@ class _GlobalAttnHead(nn.Module):
         nh, hd = self.num_heads, self.head_dim
         inner = nh * hd
 
-        qkv = self.qkv(x).flatten(2)                        # [B, 3*inner, N]
+        qkv = self.qkv(x).flatten(2)  # [B, 3*inner, N]
         q, k, v = qkv.split(inner, dim=1)
 
         def to_heads(t):
-            return t.view(B, nh, hd, N).transpose(2, 3)     # [B, nh, N, hd]
+            return t.view(B, nh, hd, N).transpose(2, 3)  # [B, nh, N, hd]
 
         q, k, v = to_heads(q), to_heads(k), to_heads(v)
 
@@ -364,5 +378,6 @@ class _GlobalAttnHead(nn.Module):
 
         out = out.transpose(2, 3).reshape(B, inner, H, W)
         return self.norm(self.proj(out))
+
 
 __all__ = ("_GlobalAttnHead", "_LocalAttnHead", "_RegionalAttnHead", "_flash_attn", "_window_flash_attn")

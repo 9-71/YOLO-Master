@@ -52,6 +52,7 @@ import torch.nn as nn
 
 # 关闭 ultralytics 的 wandb 上报
 from ultralytics.utils import SETTINGS
+
 SETTINGS["wandb"] = False
 
 from ultralytics import YOLO
@@ -75,9 +76,8 @@ from ultralytics.nn.modules.moe.scheduler import compute_gini
 
 # 确认加载的是当前仓库的 ultralytics
 import ultralytics
-assert str(REPO_ROOT) in ultralytics.__file__, (
-    f"加载的不是当前仓库的 ultralytics！got {ultralytics.__file__}"
-)
+
+assert str(REPO_ROOT) in ultralytics.__file__, f"加载的不是当前仓库的 ultralytics！got {ultralytics.__file__}"
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # 1. 全局配置
@@ -85,12 +85,12 @@ assert str(REPO_ROOT) in ultralytics.__file__, (
 
 HERE = Path(__file__).parent
 MODEL_PATH = str(REPO_ROOT / "YOLO-Master-EsMoE-N.pt")
-DATA_YAML = "coco128.yaml"          # ultralytics 内置数据集，首次运行自动下载
+DATA_YAML = "coco128.yaml"  # ultralytics 内置数据集，首次运行自动下载
 PROJECT_DIR = HERE / "runs_routing_cl"
 RESULTS_JSON = HERE / "ablation_routing_cl_results.json"
 
 # 训练超参 (消融实验用轻量配置以加速迭代)
-EPOCHS_PER_DOMAIN = 3               # 每个域训练 epoch 数
+EPOCHS_PER_DOMAIN = 3  # 每个域训练 epoch 数
 BATCH = 8
 IMGSZ = 320
 
@@ -110,7 +110,7 @@ sys.stderr.reconfigure(line_buffering=True)
 LORA_R = 8
 LORA_ALPHA = 16
 LORA_DROPOUT = 0.05
-NUM_EXPERTS = 8                     # 使用 8 个专家以支持三域分配
+NUM_EXPERTS = 8  # 使用 8 个专家以支持三域分配
 TOP_K = 2
 
 # 三域配置 (使用 augmentation 参数模拟不同域)
@@ -120,6 +120,7 @@ DOMAINS = ["day", "night", "fog"]
 # ═══════════════════════════════════════════════════════════════════════════════
 # 2. 工具函数
 # ═══════════════════════════════════════════════════════════════════════════════
+
 
 def count_params(m: nn.Module) -> Tuple[int, int]:
     """统计模型总参数量与可训练参数量。"""
@@ -135,15 +136,9 @@ def extract_final_metrics(results) -> Dict[str, float]:
         return final_metrics
 
     if hasattr(results, "results_dict") and results.results_dict:
-        final_metrics = {
-            k: float(v) for k, v in results.results_dict.items()
-            if isinstance(v, (int, float))
-        }
+        final_metrics = {k: float(v) for k, v in results.results_dict.items() if isinstance(v, (int, float))}
     elif hasattr(results, "metrics") and results.metrics:
-        final_metrics = {
-            k: float(v) for k, v in results.metrics.items()
-            if isinstance(v, (int, float))
-        }
+        final_metrics = {k: float(v) for k, v in results.metrics.items() if isinstance(v, (int, float))}
 
     return final_metrics
 
@@ -194,14 +189,16 @@ def collect_molora_routing_stats(model: nn.Module) -> List[Dict[str, Any]]:
         dominant_expert = int(max(range(len(usage_list)), key=usage_list.__getitem__))
         dominant_share = float(usage_list[dominant_expert])
 
-        stats.append({
-            "layer_name": name,
-            "num_experts": module.num_experts,
-            "top_k": module.top_k,
-            "expert_usage": usage_list,
-            "dominant_expert": dominant_expert,
-            "dominant_share": dominant_share,
-        })
+        stats.append(
+            {
+                "layer_name": name,
+                "num_experts": module.num_experts,
+                "top_k": module.top_k,
+                "expert_usage": usage_list,
+                "dominant_expert": dominant_expert,
+                "dominant_share": dominant_share,
+            }
+        )
 
     return stats
 
@@ -225,6 +222,7 @@ def compute_overall_gini(all_stats: List[Dict[str, Any]]) -> float:
 # ═══════════════════════════════════════════════════════════════════════════════
 # 3. 路由诊断收集器 (训练回调)
 # ═══════════════════════════════════════════════════════════════════════════════
+
 
 class RoutingDiagnosticsCollector:
     """
@@ -302,7 +300,7 @@ class RoutingDiagnosticsCollector:
                     module_type="MoLoRALayer",
                     num_experts=s["num_experts"],
                     top_k=s["top_k"],
-                    aux_loss=0.0,          # 回调中不收集 aux_loss
+                    aux_loss=0.0,  # 回调中不收集 aux_loss
                     usage=s["expert_usage"],
                     counts=[0.0] * s["num_experts"],
                     dominant_expert=s["dominant_expert"],
@@ -326,10 +324,7 @@ class RoutingDiagnosticsCollector:
 
             # 检测 collapse (直接基于 stats，因为 RoutingCollapseDetector.diagnose
             # 查找的是 last_routing_snapshot 而非 MoLoRALayer 的 _last_routing_stats)
-            collapsed_layers = [
-                s["layer_name"] for s in stats
-                if s["dominant_share"] >= self.collapse_threshold
-            ]
+            collapsed_layers = [s["layer_name"] for s in stats if s["dominant_share"] >= self.collapse_threshold]
 
             # 汇总当前 epoch
             epoch_summary = {
@@ -374,9 +369,11 @@ class RoutingDiagnosticsCollector:
 # 4. 持续学习管理器
 # ═══════════════════════════════════════════════════════════════════════════════
 
+
 @dataclass
 class DomainConfig:
     """单个域的训练配置。"""
+
     name: str
     epochs: int
     augment_kwargs: Dict[str, Any] = field(default_factory=dict)
@@ -477,9 +474,9 @@ class ContinualLearningManager:
         """
         domain_cfg = self.domains[domain_idx]
         domain_name = domain_cfg.name
-        print(f"\n{'='*78}")
-        print(f"=== CL Stage {domain_idx + 1}/{len(self.domains)}: {domain_name.upper()} {'='*50}")
-        print(f"{'='*78}")
+        print(f"\n{'=' * 78}")
+        print(f"=== CL Stage {domain_idx + 1}/{len(self.domains)}: {domain_name.upper()} {'=' * 50}")
+        print(f"{'=' * 78}")
         print(f"Description: {domain_cfg.description}")
         print(f"Augment    : {domain_cfg.augment_kwargs}")
 
@@ -707,6 +704,7 @@ class ContinualLearningManager:
 # 5. 可视化
 # ═══════════════════════════════════════════════════════════════════════════════
 
+
 def plot_routing_diagnostics(
     epoch_history: List[Dict[str, Any]],
     save_dir: Path,
@@ -720,6 +718,7 @@ def plot_routing_diagnostics(
       3. Collapse 事件统计
     """
     import matplotlib
+
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
@@ -811,6 +810,7 @@ def plot_continual_learning_metrics(
       4. mAP 折线图 (每域在各训练阶段后的表现)
     """
     import matplotlib
+
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
 
@@ -838,8 +838,15 @@ def plot_continual_learning_metrics(
         # 添加数值标注
         for i in range(n_domains):
             for j in range(n_domains):
-                plt.text(j, i, f"{matrix[i, j]:.3f}", ha="center", va="center",
-                        color="black" if matrix[i, j] > 0.5 else "white", fontsize=10)
+                plt.text(
+                    j,
+                    i,
+                    f"{matrix[i, j]:.3f}",
+                    ha="center",
+                    va="center",
+                    color="black" if matrix[i, j] > 0.5 else "white",
+                    fontsize=10,
+                )
         plt.tight_layout()
         path1 = save_dir / "cl_map_heatmap.png"
         plt.savefig(path1, dpi=160)
@@ -858,9 +865,14 @@ def plot_continual_learning_metrics(
         plt.grid(True, alpha=0.3, axis="y")
         for bar in bars:
             height = bar.get_height()
-            plt.text(bar.get_x() + bar.get_width() / 2., height,
-                    f"{height:.4f}", ha="center", va="bottom" if height >= 0 else "top",
-                    fontsize=10)
+            plt.text(
+                bar.get_x() + bar.get_width() / 2.0,
+                height,
+                f"{height:.4f}",
+                ha="center",
+                va="bottom" if height >= 0 else "top",
+                fontsize=10,
+            )
         plt.tight_layout()
         path2 = save_dir / "cl_bwt.png"
         plt.savefig(path2, dpi=160)
@@ -878,8 +890,9 @@ def plot_continual_learning_metrics(
         plt.grid(True, alpha=0.3, axis="y")
         for bar in bars:
             height = bar.get_height()
-            plt.text(bar.get_x() + bar.get_width() / 2., height,
-                    f"{height:.4f}", ha="center", va="bottom", fontsize=10)
+            plt.text(
+                bar.get_x() + bar.get_width() / 2.0, height, f"{height:.4f}", ha="center", va="bottom", fontsize=10
+            )
         plt.tight_layout()
         path3 = save_dir / "cl_forgetting.png"
         plt.savefig(path3, dpi=160)
@@ -915,6 +928,7 @@ def plot_continual_learning_metrics(
 # 6. 主流程
 # ═══════════════════════════════════════════════════════════════════════════════
 
+
 def build_domain_configs() -> List[DomainConfig]:
     """
     构建 Day / Night / Fog 三域配置。
@@ -943,7 +957,7 @@ def build_domain_configs() -> List[DomainConfig]:
                 # 夜间 — 大幅降低亮度, 提高饱和度补偿
                 "hsv_h": 0.01,
                 "hsv_s": 0.9,
-                "hsv_v": 0.1,       # 显著降低亮度
+                "hsv_v": 0.1,  # 显著降低亮度
             },
             description="Night conditions — low brightness, high contrast.",
         ),
@@ -953,8 +967,8 @@ def build_domain_configs() -> List[DomainConfig]:
             augment_kwargs={
                 # 雾天 — 降低饱和度与亮度, 低对比度
                 "hsv_h": 0.005,
-                "hsv_s": 0.3,       # 低饱和度
-                "hsv_v": 0.2,       # 低亮度
+                "hsv_s": 0.3,  # 低饱和度
+                "hsv_v": 0.2,  # 低亮度
             },
             description="Fog conditions — low saturation, low brightness, low contrast.",
         ),
@@ -1031,7 +1045,7 @@ def main() -> None:
         get_peft_molora_model(model.model, molora_cfg)
 
         post_total, post_train = count_params(model.model)
-        print(f"[Post-wrap] total={post_total:,} trainable={post_train:,} ({post_train/post_total*100:.3f}%)")
+        print(f"[Post-wrap] total={post_total:,} trainable={post_train:,} ({post_train / post_total * 100:.3f}%)")
 
         # 注册路由诊断回调
         model.add_callback("on_train_epoch_end", collector.on_train_epoch_end)

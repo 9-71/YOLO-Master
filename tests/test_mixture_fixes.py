@@ -254,7 +254,6 @@ def test_moa_linear_attention_uses_raw_kv_accumulator():
         v_flat = v.reshape(-1, 7, 16)
         kv = k_flat.transpose(1, 2) @ v_flat
         k_sum = k_flat.float().sum(dim=1)
-        expected = ((q_flat @ kv).clamp(-1e4, 1e4)
-                    / (q_flat @ k_sum.to(q_flat.dtype).unsqueeze(-1)).clamp_min(1e-6))
+        expected = (q_flat @ kv).clamp(-1e4, 1e4) / (q_flat @ k_sum.to(q_flat.dtype).unsqueeze(-1)).clamp_min(1e-6)
         expected = expected.reshape_as(actual)
     assert torch.allclose(actual, expected, atol=1e-5, rtol=1e-5)

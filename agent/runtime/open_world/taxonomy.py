@@ -145,7 +145,11 @@ def open_world_policy_enabled(multimodal_params: dict[str, Any]) -> bool:
 
 
 def compact_open_world_profile(multimodal_params: dict[str, Any], user_prompt: str = "") -> str:
-    explicit = str(multimodal_params.get("compact_open_world_profile") or multimodal_params.get("open_world_profile") or "").strip().lower()
+    explicit = (
+        str(multimodal_params.get("compact_open_world_profile") or multimodal_params.get("open_world_profile") or "")
+        .strip()
+        .lower()
+    )
     if explicit in {"detect_classify", "detect-classify", "classification"}:
         return "detect_classify"
     if explicit in {"caption_misses", "caption-misses", "misses"}:
@@ -198,7 +202,9 @@ def apply_open_world_assist_profile_defaults(multimodal_params: dict[str, Any]) 
     return updated
 
 
-def provider_prefers_compact_open_world_schema(provider_cfg: dict[str, Any], prompt_template: Any, multimodal_params: dict[str, Any]) -> bool:
+def provider_prefers_compact_open_world_schema(
+    provider_cfg: dict[str, Any], prompt_template: Any, multimodal_params: dict[str, Any]
+) -> bool:
     template_name = str(prompt_template or "")
     if template_name != "vlm_open_world_detection":
         return False
@@ -208,13 +214,19 @@ def provider_prefers_compact_open_world_schema(provider_cfg: dict[str, Any], pro
     return any(token in model_name for token in ("qwen-vl", "qwen_vl", "qwenvl"))
 
 
-def effective_prompt_template_name(provider_cfg: dict[str, Any], prompt_template: Any, multimodal_params: dict[str, Any], user_prompt: str = "") -> str | None:
+def effective_prompt_template_name(
+    provider_cfg: dict[str, Any], prompt_template: Any, multimodal_params: dict[str, Any], user_prompt: str = ""
+) -> str | None:
     template_name = str(prompt_template or "")
     if not template_name:
         return None
     if provider_prefers_compact_open_world_schema(provider_cfg, prompt_template, multimodal_params):
         profile = compact_open_world_profile(multimodal_params, user_prompt)
-        return "vlm_open_world_caption_misses_compact" if profile == "caption_misses" else "vlm_open_world_detect_classify_compact"
+        return (
+            "vlm_open_world_caption_misses_compact"
+            if profile == "caption_misses"
+            else "vlm_open_world_detect_classify_compact"
+        )
     return str(prompt_template)
 
 
@@ -226,7 +238,9 @@ def default_multimodal_max_output_tokens(
     structured_output: bool,
     user_prompt: str = "",
 ) -> int:
-    effective_template = str(effective_prompt_template_name(provider_cfg, prompt_template, multimodal_params, user_prompt) or "")
+    effective_template = str(
+        effective_prompt_template_name(provider_cfg, prompt_template, multimodal_params, user_prompt) or ""
+    )
     if effective_template in {
         "vlm_open_world_detection_compact",
         "vlm_open_world_detect_classify_compact",
@@ -343,7 +357,9 @@ def _wordnet_hypernym_candidates(label: str) -> list[dict[str, Any]]:
     return candidates or static_candidates()
 
 
-def resolve_open_world_taxonomy_candidates(label_info: dict[str, Any], multimodal_params: dict[str, Any]) -> dict[str, Any]:
+def resolve_open_world_taxonomy_candidates(
+    label_info: dict[str, Any], multimodal_params: dict[str, Any]
+) -> dict[str, Any]:
     datasets = multimodal_params.get("open_world_taxonomy_datasets") or ["lvis", "v3det"]
     dataset_list = [str(item).strip().lower() for item in as_list(datasets) if str(item).strip()]
     topk = max(1, int(multimodal_params.get("open_world_taxonomy_topk", 5) or 5))
@@ -429,7 +445,18 @@ def canonicalize_open_world_label(label: Any, multimodal_params: dict[str, Any])
         canonical = canonical[:-2]
     elif canonical.endswith("s") and canonical[:-1] not in {"grass"} and len(canonical) > 4:
         singular = canonical[:-1]
-        if singular in aliases.values() or singular in {"meatball", "pineapple", "giraffe", "tree", "log", "broccoli", "almond", "flower arrangement", "dried fruit", "bento box"}:
+        if singular in aliases.values() or singular in {
+            "meatball",
+            "pineapple",
+            "giraffe",
+            "tree",
+            "log",
+            "broccoli",
+            "almond",
+            "flower arrangement",
+            "dried fruit",
+            "bento box",
+        }:
             canonical = singular
     category = "generic" if canonical in OPEN_WORLD_GENERIC_LABELS else "object"
     status = "aliased" if canonical != normalized else "normalized"
@@ -471,7 +498,9 @@ def resolve_open_world_stats_policy(label_info: dict[str, Any], multimodal_param
     }
 
 
-def normalize_open_world_prediction_items(items: list[dict[str, Any]], multimodal_params: dict[str, Any]) -> list[dict[str, Any]]:
+def normalize_open_world_prediction_items(
+    items: list[dict[str, Any]], multimodal_params: dict[str, Any]
+) -> list[dict[str, Any]]:
     normalized: list[dict[str, Any]] = []
     for item in items:
         if not isinstance(item, dict):
@@ -548,11 +577,23 @@ def build_open_world_comparison_entry(
     effective_prompt_template: str | None = None,
 ) -> dict[str, Any]:
     yolo_labels = [item.get("label") for item in normalize_detection_boxes(detections) if item.get("label")]
-    raw_open_world = fusion_preview.get("open_world_predictions_preview", []) if isinstance(fusion_preview, dict) else []
-    normalized_open_world = normalize_open_world_prediction_items(raw_open_world if isinstance(raw_open_world, list) else [], multimodal_params)
+    raw_open_world = (
+        fusion_preview.get("open_world_predictions_preview", []) if isinstance(fusion_preview, dict) else []
+    )
+    normalized_open_world = normalize_open_world_prediction_items(
+        raw_open_world if isinstance(raw_open_world, list) else [], multimodal_params
+    )
     cross_check = verdict.get("yolo_cross_check", {}) if isinstance(verdict, dict) else {}
-    possible_misses = normalize_possible_miss_items(cross_check.get("possible_misses"), multimodal_params) if isinstance(cross_check, dict) else []
-    false_positives = normalize_possible_miss_items(cross_check.get("false_positives"), multimodal_params) if isinstance(cross_check, dict) else []
+    possible_misses = (
+        normalize_possible_miss_items(cross_check.get("possible_misses"), multimodal_params)
+        if isinstance(cross_check, dict)
+        else []
+    )
+    false_positives = (
+        normalize_possible_miss_items(cross_check.get("false_positives"), multimodal_params)
+        if isinstance(cross_check, dict)
+        else []
+    )
     fusion_summary = fusion_preview.get("summary", {}) if isinstance(fusion_preview, dict) else {}
     return {
         "image": str(image_path) if image_path is not None else None,
@@ -593,7 +634,9 @@ def aggregate_open_world_comparison(entries: list[dict[str, Any]]) -> dict[str, 
             best = taxonomy.get("best") if isinstance(taxonomy, dict) else None
             if isinstance(best, dict) and best.get("dataset"):
                 dataset = str(best["dataset"])
-                taxonomy_dataset_counts["open_world_predictions"][dataset] = taxonomy_dataset_counts["open_world_predictions"].get(dataset, 0) + 1
+                taxonomy_dataset_counts["open_world_predictions"][dataset] = (
+                    taxonomy_dataset_counts["open_world_predictions"].get(dataset, 0) + 1
+                )
                 taxonomy_label = best.get("normalized_name") or best.get("name")
                 if taxonomy_label:
                     taxonomy_label_counts[str(taxonomy_label)] = taxonomy_label_counts.get(str(taxonomy_label), 0) + 1
@@ -613,7 +656,9 @@ def aggregate_open_world_comparison(entries: list[dict[str, Any]]) -> dict[str, 
             best = taxonomy.get("best") if isinstance(taxonomy, dict) else None
             if isinstance(best, dict) and best.get("dataset"):
                 dataset = str(best["dataset"])
-                taxonomy_dataset_counts["possible_misses"][dataset] = taxonomy_dataset_counts["possible_misses"].get(dataset, 0) + 1
+                taxonomy_dataset_counts["possible_misses"][dataset] = (
+                    taxonomy_dataset_counts["possible_misses"].get(dataset, 0) + 1
+                )
             else:
                 taxonomy_unmatched["possible_misses"] += 1
         for item in entry.get("false_positives", []) or []:
@@ -627,7 +672,9 @@ def aggregate_open_world_comparison(entries: list[dict[str, Any]]) -> dict[str, 
             best = taxonomy.get("best") if isinstance(taxonomy, dict) else None
             if isinstance(best, dict) and best.get("dataset"):
                 dataset = str(best["dataset"])
-                taxonomy_dataset_counts["false_positives"][dataset] = taxonomy_dataset_counts["false_positives"].get(dataset, 0) + 1
+                taxonomy_dataset_counts["false_positives"][dataset] = (
+                    taxonomy_dataset_counts["false_positives"].get(dataset, 0) + 1
+                )
             else:
                 taxonomy_unmatched["false_positives"] += 1
         perturb = entry.get("perturbation", {}) or {}
@@ -666,7 +713,9 @@ def box_iou_xyxy(box_a: list[float] | tuple[float, ...], box_b: list[float] | tu
     return 0.0 if denom <= 0 else round(inter_area / denom, 4)
 
 
-def merge_verified_open_world_candidates(entries: list[dict[str, Any]], *, iou_threshold: float = 0.7) -> list[dict[str, Any]]:
+def merge_verified_open_world_candidates(
+    entries: list[dict[str, Any]], *, iou_threshold: float = 0.7
+) -> list[dict[str, Any]]:
     merged: list[dict[str, Any]] = []
     for entry in entries:
         for candidate in entry.get("open_world_predictions", []) or []:
@@ -687,8 +736,16 @@ def merge_verified_open_world_candidates(entries: list[dict[str, Any]], *, iou_t
                 continue
             candidate_score = float(candidate.get("confidence") or 0.0)
             existing_score = float(match.get("confidence") or 0.0)
-            candidate_matched = parse_bool(candidate.get("taxonomy", {}).get("matched"), False) if isinstance(candidate.get("taxonomy"), dict) else False
-            existing_matched = parse_bool(match.get("taxonomy", {}).get("matched"), False) if isinstance(match.get("taxonomy"), dict) else False
+            candidate_matched = (
+                parse_bool(candidate.get("taxonomy", {}).get("matched"), False)
+                if isinstance(candidate.get("taxonomy"), dict)
+                else False
+            )
+            existing_matched = (
+                parse_bool(match.get("taxonomy", {}).get("matched"), False)
+                if isinstance(match.get("taxonomy"), dict)
+                else False
+            )
             if candidate_matched and not existing_matched:
                 merged[merged.index(match)] = dict(candidate)
             elif candidate_score > existing_score:

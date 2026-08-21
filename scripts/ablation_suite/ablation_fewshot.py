@@ -61,6 +61,7 @@ import torch.nn as nn
 
 # 关闭 ultralytics 的 wandb 上报
 from ultralytics.utils import SETTINGS
+
 SETTINGS["wandb"] = False
 
 from ultralytics import YOLO
@@ -88,9 +89,8 @@ from ultralytics.nn.modules.moe.diagnostics import (
 
 # 确认加载的是当前仓库的 ultralytics
 import ultralytics
-assert str(REPO_ROOT) in ultralytics.__file__, (
-    f"加载的不是当前仓库的 ultralytics！got {ultralytics.__file__}"
-)
+
+assert str(REPO_ROOT) in ultralytics.__file__, f"加载的不是当前仓库的 ultralytics！got {ultralytics.__file__}"
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # 1. 全局配置
@@ -98,10 +98,10 @@ assert str(REPO_ROOT) in ultralytics.__file__, (
 
 HERE = Path(__file__).parent
 MODEL_PATH = str(REPO_ROOT / "YOLO-Master-EsMoE-N.pt")
-DATA_YAML = "coco128.yaml"          # ultralytics 内置数据集，首次运行自动下载
+DATA_YAML = "coco128.yaml"  # ultralytics 内置数据集，首次运行自动下载
 PROJECT_DIR = HERE / "runs_fewshot_ablation"
 RESULTS_JSON = HERE / "ablation_fewshot_results.json"
-TEMP_ROOT = HERE / ".temp_kshot"    # K-shot 临时数据集目录
+TEMP_ROOT = HERE / ".temp_kshot"  # K-shot 临时数据集目录
 
 # 训练超参 (few-shot 场景下使用更多 epoch 以补偿数据不足)
 EPOCHS = 20
@@ -109,8 +109,8 @@ BATCH = 8
 IMGSZ = 320
 
 # Few-shot 配置
-K_SHOTS = [1, 5, 10]                # K-shot 采样数量
-SEEDS = [42, 123, 456]              # 随机种子，用于统计稳定性
+K_SHOTS = [1, 5, 10]  # K-shot 采样数量
+SEEDS = [42, 123, 456]  # 随机种子，用于统计稳定性
 METHODS = ["full", "lora", "molora"]
 
 # 设备选择: MPS优先 → CUDA → CPU
@@ -134,6 +134,7 @@ LORA_DROPOUT = 0.05
 # ═══════════════════════════════════════════════════════════════════════════════
 # 2. K-shot 数据集采样工具
 # ═══════════════════════════════════════════════════════════════════════════════
+
 
 def prepare_coco128() -> Dict[str, Any]:
     """
@@ -196,9 +197,7 @@ def create_kshot_subset(
             all_images = [Path(line.strip()) for line in fh if line.strip()]
 
     if len(all_images) < k:
-        raise ValueError(
-            f"K-shot 采样失败: 请求 K={k}，但训练集仅有 {len(all_images)} 张图像。"
-        )
+        raise ValueError(f"K-shot 采样失败: 请求 K={k}，但训练集仅有 {len(all_images)} 张图像。")
 
     # 随机采样 K 张（不放回）
     selected = rng.sample(all_images, k)
@@ -297,6 +296,7 @@ def cleanup_temp_datasets() -> None:
 # 3. 工具函数
 # ═══════════════════════════════════════════════════════════════════════════════
 
+
 def count_params(m: nn.Module) -> Tuple[int, int]:
     """统计模型总参数量与可训练参数量。"""
     total = sum(p.numel() for p in m.parameters())
@@ -326,15 +326,9 @@ def extract_final_metrics(results) -> Dict[str, float]:
         return final_metrics
 
     if hasattr(results, "results_dict") and results.results_dict:
-        final_metrics = {
-            k: float(v) for k, v in results.results_dict.items()
-            if isinstance(v, (int, float))
-        }
+        final_metrics = {k: float(v) for k, v in results.results_dict.items() if isinstance(v, (int, float))}
     elif hasattr(results, "metrics") and results.metrics:
-        final_metrics = {
-            k: float(v) for k, v in results.metrics.items()
-            if isinstance(v, (int, float))
-        }
+        final_metrics = {k: float(v) for k, v in results.metrics.items() if isinstance(v, (int, float))}
 
     return final_metrics
 
@@ -367,8 +361,7 @@ def run_moe_diagnostics(model: YOLO, data_yaml: str, batch: int = 8) -> Dict[str
         # 序列化 usage_stats（转换为 JSON-safe 格式）
         diag["usage_stats"] = {
             layer_name: {
-                str(eid): {"hits": stats.hits, "avg_weight": stats.avg_weight}
-                for eid, stats in experts.items()
+                str(eid): {"hits": stats.hits, "avg_weight": stats.avg_weight} for eid, stats in experts.items()
             }
             for layer_name, experts in tracker.usage_stats.items()
         }
@@ -378,12 +371,8 @@ def run_moe_diagnostics(model: YOLO, data_yaml: str, batch: int = 8) -> Dict[str
         detector = RoutingCollapseDetector(collapse_threshold=0.8, dead_threshold=0.05)
         diagnosis = detector.diagnose(model.model)
         diag["collapse"] = any(d.get("collapsed", False) for d in diagnosis.values())
-        diag["dead_experts"] = {
-            name: d.get("dead_experts", []) for name, d in diagnosis.items()
-        }
-        diag["max_usage"] = {
-            name: d.get("max_usage", 0.0) for name, d in diagnosis.items()
-        }
+        diag["dead_experts"] = {name: d.get("dead_experts", []) for name, d in diagnosis.items()}
+        diag["max_usage"] = {name: d.get("max_usage", 0.0) for name, d in diagnosis.items()}
 
         # 3. collect_moe_diagnostics — 结构化快照
         snapshots = collect_moe_diagnostics(model.model, collapse_threshold=0.8)
@@ -399,6 +388,7 @@ def run_moe_diagnostics(model: YOLO, data_yaml: str, batch: int = 8) -> Dict[str
 # ═══════════════════════════════════════════════════════════════════════════════
 # 4. PEFT 应用器
 # ═══════════════════════════════════════════════════════════════════════════════
+
 
 def apply_full_finetuning(model: YOLO) -> YOLO:
     """
@@ -471,12 +461,14 @@ def apply_molora(model: YOLO, config: Optional[Dict[str, Any]] = None) -> YOLO:
 # 5. 实验变体定义与执行逻辑
 # ═══════════════════════════════════════════════════════════════════════════════
 
+
 @dataclass
 class ExperimentSpec:
     """单个 few-shot 实验的配置规格。"""
-    method: str                              # full | lora | molora
-    k: int                                   # K-shot 数量
-    seed: int                                # 随机种子
+
+    method: str  # full | lora | molora
+    k: int  # K-shot 数量
+    seed: int  # 随机种子
     epochs: int = EPOCHS
     batch: int = BATCH
     imgsz: int = IMGSZ
@@ -486,6 +478,7 @@ class ExperimentSpec:
 @dataclass
 class CommonTrainKwargs:
     """公共训练参数字典模板。"""
+
     epochs: int = EPOCHS
     imgsz: int = IMGSZ
     device: str = DEVICE
@@ -493,9 +486,9 @@ class CommonTrainKwargs:
     exist_ok: bool = True
     verbose: bool = False
     workers: int = 2
-    patience: int = 0          # 不早停
-    plots: bool = False        # 不生成 val 图，加速
-    save: bool = False         # 不保留 checkpoint，节省磁盘
+    patience: int = 0  # 不早停
+    plots: bool = False  # 不生成 val 图，加速
+    save: bool = False  # 不保留 checkpoint，节省磁盘
 
     def to_dict(self, name: str, data_yaml: str, batch: int) -> Dict[str, Any]:
         return {
@@ -534,9 +527,9 @@ def run_experiment(spec: ExperimentSpec, data_yaml: Path) -> Dict[str, Any]:
     Returns:
         结构化结果字典，包含 metrics / timing / params / diagnostics / error。
     """
-    print(f"\n{'='*78}")
-    print(f"=== K={spec.k:2d} | Method={spec.method.upper():8s} | Seed={spec.seed:3d} {'='*35}")
-    print(f"{'='*78}")
+    print(f"\n{'=' * 78}")
+    print(f"=== K={spec.k:2d} | Method={spec.method.upper():8s} | Seed={spec.seed:3d} {'=' * 35}")
+    print(f"{'=' * 78}")
     print(f"Description: {spec.description}")
     print(f"Data YAML  : {data_yaml}")
 
@@ -560,7 +553,7 @@ def run_experiment(spec: ExperimentSpec, data_yaml: Path) -> Dict[str, Any]:
         # ── 5.1 加载模型 ──
         model = YOLO(MODEL_PATH)
         base_total, base_train = count_params(model.model)
-        print(f"[Pre-train]  total={base_total:,}  trainable={base_train:,}  ({base_train/base_total*100:.2f}%)")
+        print(f"[Pre-train]  total={base_total:,}  trainable={base_train:,}  ({base_train / base_total * 100:.2f}%)")
 
         # ── 5.2 应用 PEFT ──
         if spec.method == "full":
@@ -575,7 +568,7 @@ def run_experiment(spec: ExperimentSpec, data_yaml: Path) -> Dict[str, Any]:
         # ── 5.3 训练前统计 ──
         post_total, post_train = count_params(model.model)
         sig = detect_adapter_signature(model.model)
-        print(f"[Post-wrap]  total={post_total:,}  trainable={post_train:,}  ({post_train/post_total*100:.2f}%)")
+        print(f"[Post-wrap]  total={post_total:,}  trainable={post_train:,}  ({post_train / post_total * 100:.2f}%)")
         print(f"[Adapter]    {sig}")
 
         # ── 5.4 训练 ──
@@ -589,13 +582,15 @@ def run_experiment(spec: ExperimentSpec, data_yaml: Path) -> Dict[str, Any]:
         )
 
         if spec.method == "lora":
-            train_kwargs.update({
-                "lora_type": "lora",
-                "lora_r": LORA_R,
-                "lora_alpha": LORA_ALPHA,
-                "lora_backend": "peft",
-                "lora_dropout": LORA_DROPOUT,
-            })
+            train_kwargs.update(
+                {
+                    "lora_type": "lora",
+                    "lora_r": LORA_R,
+                    "lora_alpha": LORA_ALPHA,
+                    "lora_backend": "peft",
+                    "lora_dropout": LORA_DROPOUT,
+                }
+            )
 
         results = model.train(**train_kwargs)
 
@@ -645,6 +640,7 @@ def run_experiment(spec: ExperimentSpec, data_yaml: Path) -> Dict[str, Any]:
 # 6. 汇总与报告
 # ═══════════════════════════════════════════════════════════════════════════════
 
+
 def compute_summary(all_records: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """
     按 (K, method) 聚合多次运行的结果，计算均值与标准差。
@@ -678,14 +674,8 @@ def compute_summary(all_records: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         }
 
         if ok_records:
-            map50_vals = [
-                r["final_metrics"].get("metrics/mAP50(B)", float("nan"))
-                for r in ok_records
-            ]
-            map50_95_vals = [
-                r["final_metrics"].get("metrics/mAP50-95(B)", float("nan"))
-                for r in ok_records
-            ]
+            map50_vals = [r["final_metrics"].get("metrics/mAP50(B)", float("nan")) for r in ok_records]
+            map50_95_vals = [r["final_metrics"].get("metrics/mAP50-95(B)", float("nan")) for r in ok_records]
             elapsed_vals = [r["elapsed_sec"] for r in ok_records]
             pct_vals = [r.get("trainable_pct", 0.0) for r in ok_records]
 
@@ -700,15 +690,17 @@ def compute_summary(all_records: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
             met, set_ = _mean_std(elapsed_vals)
             mpct, _ = _mean_std(pct_vals)
 
-            entry.update({
-                "mAP50_mean": m50,
-                "mAP50_std": s50,
-                "mAP50_95_mean": m95,
-                "mAP50_95_std": s95,
-                "elapsed_mean": met,
-                "elapsed_std": set_,
-                "trainable_pct_mean": mpct,
-            })
+            entry.update(
+                {
+                    "mAP50_mean": m50,
+                    "mAP50_std": s50,
+                    "mAP50_95_mean": m95,
+                    "mAP50_95_std": s95,
+                    "elapsed_mean": met,
+                    "elapsed_std": set_,
+                    "trainable_pct_mean": mpct,
+                }
+            )
 
         summary.append(entry)
 
@@ -745,8 +737,7 @@ def print_summary_table(all_records: List[Dict[str, Any]], summary: List[Dict[st
     print("  DETAILED RESULTS")
     print("=" * 100)
     header = (
-        f"{'K':>3} {'Method':>8} {'Seed':>5} {'OK':>3} "
-        f"{'Trainable%':>10} {'mAP50':>10} {'mAP50-95':>10} {'Time(s)':>8}"
+        f"{'K':>3} {'Method':>8} {'Seed':>5} {'OK':>3} {'Trainable%':>10} {'mAP50':>10} {'mAP50-95':>10} {'Time(s)':>8}"
     )
     print(header)
     print("-" * 100)
@@ -774,12 +765,24 @@ def print_summary_table(all_records: List[Dict[str, Any]], summary: List[Dict[st
     print(header2)
     print("-" * 100)
     for s in summary:
-        m50_str = f"{s['mAP50_mean']:.4f}±{s['mAP50_std']:.4f}" if isinstance(s.get('mAP50_mean'), (int, float)) and s['mAP50_mean'] == s['mAP50_mean'] else "N/A"
-        m95_str = f"{s['mAP50_95_mean']:.4f}±{s['mAP50_95_std']:.4f}" if isinstance(s.get('mAP50_95_mean'), (int, float)) and s['mAP50_95_mean'] == s['mAP50_95_mean'] else "N/A"
-        t_str = f"{s['elapsed_mean']:.1f}±{s['elapsed_std']:.1f}" if isinstance(s.get('elapsed_mean'), (int, float)) and s['elapsed_mean'] == s['elapsed_mean'] else "N/A"
+        m50_str = (
+            f"{s['mAP50_mean']:.4f}±{s['mAP50_std']:.4f}"
+            if isinstance(s.get("mAP50_mean"), (int, float)) and s["mAP50_mean"] == s["mAP50_mean"]
+            else "N/A"
+        )
+        m95_str = (
+            f"{s['mAP50_95_mean']:.4f}±{s['mAP50_95_std']:.4f}"
+            if isinstance(s.get("mAP50_95_mean"), (int, float)) and s["mAP50_95_mean"] == s["mAP50_95_mean"]
+            else "N/A"
+        )
+        t_str = (
+            f"{s['elapsed_mean']:.1f}±{s['elapsed_std']:.1f}"
+            if isinstance(s.get("elapsed_mean"), (int, float)) and s["elapsed_mean"] == s["elapsed_mean"]
+            else "N/A"
+        )
         print(
             f"{s['k']:>3} {s['method']:>8} {s['runs']:>5} "
-            f"{s['success_rate']*100:>5.0f}% "
+            f"{s['success_rate'] * 100:>5.0f}% "
             f"{s.get('trainable_pct_mean', 0.0):>10.3f} "
             f"{m50_str:>14} {m95_str:>14} {t_str:>10}"
         )
@@ -789,6 +792,7 @@ def print_summary_table(all_records: List[Dict[str, Any]], summary: List[Dict[st
 # ═══════════════════════════════════════════════════════════════════════════════
 # 7. 主流程
 # ═══════════════════════════════════════════════════════════════════════════════
+
 
 def main():
     """
@@ -806,6 +810,7 @@ def main():
 
     # 注册退出清理
     import atexit
+
     atexit.register(cleanup_temp_datasets)
 
     # 获取 COCO128 数据集信息
@@ -827,10 +832,12 @@ def main():
                     "lora": f"Standard LoRA (r={LORA_R}, alpha={LORA_ALPHA})",
                     "molora": f"MoLoRA (E=4, K=2, r={LORA_R})",
                 }.get(method, "")
-                specs.append((
-                    ExperimentSpec(method=method, k=k, seed=seed, description=desc),
-                    data_yaml,
-                ))
+                specs.append(
+                    (
+                        ExperimentSpec(method=method, k=k, seed=seed, description=desc),
+                        data_yaml,
+                    )
+                )
 
     total = len(specs)
     print(f"\n[Plan] 共 {total} 个实验待运行 ({len(K_SHOTS)} K × {len(SEEDS)} seeds × {len(METHODS)} methods)")
@@ -845,10 +852,15 @@ def main():
         # 实时落盘：单个失败不丢之前结果
         try:
             RESULTS_JSON.write_text(
-                json.dumps({
-                    "records": all_records,
-                    "summary": compute_summary(all_records),
-                }, indent=2, ensure_ascii=False, default=str),
+                json.dumps(
+                    {
+                        "records": all_records,
+                        "summary": compute_summary(all_records),
+                    },
+                    indent=2,
+                    ensure_ascii=False,
+                    default=str,
+                ),
                 encoding="utf-8",
             )
         except Exception as e:
@@ -861,27 +873,32 @@ def main():
     # 最终保存带 summary 的完整结果
     try:
         RESULTS_JSON.write_text(
-            json.dumps({
-                "records": all_records,
-                "summary": summary,
-                "config": {
-                    "model": MODEL_PATH,
-                    "data": DATA_YAML,
-                    "device": DEVICE,
-                    "epochs": EPOCHS,
-                    "batch": BATCH,
-                    "imgsz": IMGSZ,
-                    "k_shots": K_SHOTS,
-                    "seeds": SEEDS,
-                    "methods": METHODS,
+            json.dumps(
+                {
+                    "records": all_records,
+                    "summary": summary,
+                    "config": {
+                        "model": MODEL_PATH,
+                        "data": DATA_YAML,
+                        "device": DEVICE,
+                        "epochs": EPOCHS,
+                        "batch": BATCH,
+                        "imgsz": IMGSZ,
+                        "k_shots": K_SHOTS,
+                        "seeds": SEEDS,
+                        "methods": METHODS,
+                    },
                 },
-            }, indent=2, ensure_ascii=False, default=str),
+                indent=2,
+                ensure_ascii=False,
+                default=str,
+            ),
             encoding="utf-8",
         )
     except Exception as e:
         print(f"[WARN] 最终结果写入失败: {e}")
 
-    print(f"\n{'='*78}")
+    print(f"\n{'=' * 78}")
     print(f"全部 {total} 个实验运行完毕。")
     print(f"详细结果 JSON: {RESULTS_JSON}")
     print(f"训练日志目录: {PROJECT_DIR}")

@@ -57,6 +57,7 @@ if any(os.environ.get(name) not in (None, "", "-1") for name in ("RANK", "LOCAL_
 import torch.nn as nn
 
 from ultralytics.utils import SETTINGS
+
 SETTINGS["wandb"] = False
 
 from ultralytics import YOLO
@@ -77,9 +78,8 @@ from ultralytics.nn.peft.molora import (
 from ultralytics.nn.peft.molora.model import _parent_child_name, _get_submodule
 
 import ultralytics
-assert str(REPO_ROOT) in ultralytics.__file__, (
-    f"加载的不是当前仓库的 ultralytics！got {ultralytics.__file__}"
-)
+
+assert str(REPO_ROOT) in ultralytics.__file__, f"加载的不是当前仓库的 ultralytics！got {ultralytics.__file__}"
 
 # 统一接口规范
 from full_ablation_spec import (
@@ -120,6 +120,7 @@ LORA_DROPOUT = 0.05
 # ═══════════════════════════════════════════════════════════════════════════════
 # 2. 工具函数
 # ═══════════════════════════════════════════════════════════════════════════════
+
 
 def count_params(m: nn.Module) -> Tuple[int, int]:
     """统计模型总参数量与可训练参数量。"""
@@ -191,15 +192,9 @@ def extract_final_metrics(results) -> Dict[str, float]:
         return final_metrics
 
     if hasattr(results, "results_dict") and results.results_dict:
-        final_metrics = {
-            k: float(v) for k, v in results.results_dict.items()
-            if isinstance(v, (int, float))
-        }
+        final_metrics = {k: float(v) for k, v in results.results_dict.items() if isinstance(v, (int, float))}
     elif hasattr(results, "metrics") and results.metrics:
-        final_metrics = {
-            k: float(v) for k, v in results.metrics.items()
-            if isinstance(v, (int, float))
-        }
+        final_metrics = {k: float(v) for k, v in results.metrics.items() if isinstance(v, (int, float))}
 
     return final_metrics
 
@@ -288,6 +283,7 @@ def measure_latency(model: nn.Module, imgsz: int = 640, device: str = DEVICE, ru
 # ═══════════════════════════════════════════════════════════════════════════════
 # 3. PEFT 应用器
 # ═══════════════════════════════════════════════════════════════════════════════
+
 
 def apply_standard_peft(model: YOLO, train_kwargs: Dict[str, Any]) -> YOLO:
     """
@@ -443,6 +439,7 @@ def apply_molora_router_calibration(model: YOLO, config: Dict[str, Any]) -> YOLO
 # 4. 单变体执行逻辑
 # ═══════════════════════════════════════════════════════════════════════════════
 
+
 def run_variant(
     variant: VariantConfig,
     dataset: DatasetConfig,
@@ -453,9 +450,9 @@ def run_variant(
     运行单个消融实验变体，返回 ExperimentResult 结构。
     所有错误被 try/except 隔离，失败时 ok=False 继续后续实验。
     """
-    print(f"\n{'='*78}")
-    print(f"=== Variant: {variant.name.upper()} {'='*55}")
-    print(f"{'='*78}")
+    print(f"\n{'=' * 78}")
+    print(f"=== Variant: {variant.name.upper()} {'=' * 55}")
+    print(f"{'=' * 78}")
     print(f"Dataset    : {dataset.name} ({dataset.description})")
     print(f"Description: {variant.description}")
     print(f"PEFT type  : {variant.peft_type}")
@@ -478,7 +475,7 @@ def run_variant(
         # ── 4.1 加载模型 ──
         model = YOLO(MODEL_PATH)
         base_total, base_train = count_params(model.model)
-        print(f"[Pre-train]  total={base_total:,}  trainable={base_train:,}  ({base_train/base_total*100:.2f}%)")
+        print(f"[Pre-train]  total={base_total:,}  trainable={base_train:,}  ({base_train / base_total * 100:.2f}%)")
 
         # ── 4.2 应用 PEFT ──
         if variant.peft_type == "full":
@@ -503,12 +500,14 @@ def run_variant(
         sig = detect_adapter_signature(model.model)
         molora_diag = collect_molora_diagnostics(model.model)
 
-        print(f"[Post-wrap]  total={post_total:,}  trainable={post_train:,}  ({post_train/post_total*100:.2f}%)")
+        print(f"[Post-wrap]  total={post_total:,}  trainable={post_train:,}  ({post_train / post_total * 100:.2f}%)")
         print(f"[Adapter]    {sig}")
         if molora_diag.get("molora_enabled"):
-            print(f"[MoLoRA]     enabled={molora_diag['molora_enabled']}, "
-                  f"router_calib={molora_diag['router_calib_present']}, "
-                  f"ranks={molora_diag['per_expert_ranks']}")
+            print(
+                f"[MoLoRA]     enabled={molora_diag['molora_enabled']}, "
+                f"router_calib={molora_diag['router_calib_present']}, "
+                f"ranks={molora_diag['per_expert_ranks']}"
+            )
             if molora_diag.get("router_types"):
                 print(f"[Router]     types={molora_diag['router_types']}")
 
@@ -602,6 +601,7 @@ def run_variant(
 # ═══════════════════════════════════════════════════════════════════════════════
 # 5. 控制台输出与汇总
 # ═══════════════════════════════════════════════════════════════════════════════
+
 
 def print_header(variants: List[VariantConfig], dataset: DatasetConfig, measure_latency_flag: bool):
     """打印实验环境信息。"""
@@ -702,6 +702,7 @@ def save_results(records: List[ExperimentResult]) -> bool:
 # 6. 主流程
 # ═══════════════════════════════════════════════════════════════════════════════
 
+
 def main():
     parser = argparse.ArgumentParser(
         description="YOLO-Master Full Ablation Experiment",
@@ -784,7 +785,7 @@ def main():
     # ── 最终汇总 ──
     print_summary_table(all_records)
 
-    print(f"\n{'='*78}")
+    print(f"\n{'=' * 78}")
     print(f"全部 {total} 个变体运行完毕。")
     print(f"  - 数据集    : {dataset.name}")
     print(f"  - 成功      : {sum(1 for r in all_records if r.ok)}")

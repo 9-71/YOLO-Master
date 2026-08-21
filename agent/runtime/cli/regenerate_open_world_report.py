@@ -54,7 +54,9 @@ def report_bucket_text(item: dict[str, Any]) -> str:
 
 def enrich_record(module: Any, record: dict[str, Any], multimodal_params: dict[str, Any]) -> dict[str, Any]:
     open_world_predictions = module.normalize_open_world_prediction_items(
-        record.get("open_world_predictions_preview", []) if isinstance(record.get("open_world_predictions_preview"), list) else [],
+        record.get("open_world_predictions_preview", [])
+        if isinstance(record.get("open_world_predictions_preview"), list)
+        else [],
         multimodal_params,
     )
     possible_misses = module.normalize_possible_miss_items(record.get("possible_misses"), multimodal_params)
@@ -130,14 +132,20 @@ def render_markdown(report: dict[str, Any]) -> str:
             image = item.get("image") or "-"
             open_world = item.get("open_world_predictions", [])
             misses = item.get("possible_misses", [])
-            ow_labels = ", ".join(
-                f"{entry.get('canonical_open_label') or entry.get('open_label') or entry.get('label')}[{best_taxonomy_text(entry)}|{report_bucket_text(entry)}]"
-                for entry in open_world
-            ) or "-"
-            miss_labels = ", ".join(
-                f"{entry.get('canonical_label') or entry.get('label')}[{best_taxonomy_text(entry)}|{report_bucket_text(entry)}]"
-                for entry in misses
-            ) or "-"
+            ow_labels = (
+                ", ".join(
+                    f"{entry.get('canonical_open_label') or entry.get('open_label') or entry.get('label')}[{best_taxonomy_text(entry)}|{report_bucket_text(entry)}]"
+                    for entry in open_world
+                )
+                or "-"
+            )
+            miss_labels = (
+                ", ".join(
+                    f"{entry.get('canonical_label') or entry.get('label')}[{best_taxonomy_text(entry)}|{report_bucket_text(entry)}]"
+                    for entry in misses
+                )
+                or "-"
+            )
             lines.append(f"- `{image}`: open-world=`{ow_labels}`; possible-misses=`{miss_labels}`")
         lines.append("")
 
@@ -178,7 +186,12 @@ def main() -> int:
     args.md_out.parent.mkdir(parents=True, exist_ok=True)
     args.json_out.write_text(json.dumps(report, ensure_ascii=False, indent=2), encoding="utf-8")
     args.md_out.write_text(render_markdown(report), encoding="utf-8")
-    print(json.dumps({"status": "ok", "json_out": str(args.json_out.resolve()), "md_out": str(args.md_out.resolve())}, ensure_ascii=False))
+    print(
+        json.dumps(
+            {"status": "ok", "json_out": str(args.json_out.resolve()), "md_out": str(args.md_out.resolve())},
+            ensure_ascii=False,
+        )
+    )
     return 0
 
 

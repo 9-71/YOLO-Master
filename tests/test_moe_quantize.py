@@ -27,4 +27,3 @@ def test_onnx_routing_nodes_are_excluded_from_quantization(monkeypatch):
     )
     monkeypatch.setattr(onnx, "load", lambda _: SimpleNamespace(graph=graph))
     assert module._onnx_routing_nodes("model.onnx") == ["router/Conv"]
-

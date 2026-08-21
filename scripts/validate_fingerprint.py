@@ -139,8 +139,7 @@ def _load_model(path: str) -> nn.Module:
     model = _extract_module(ckpt)
     if model is None:
         raise RuntimeError(
-            f"Could not extract nn.Module from {path}. "
-            "Checkpoint may be a raw state_dict without model class."
+            f"Could not extract nn.Module from {path}. Checkpoint may be a raw state_dict without model class."
         )
     return model
 
@@ -169,10 +168,7 @@ def _count_modules(model: nn.Module) -> dict:
 
         if is_conv:
             total_conv += 1
-            if (
-                module.in_channels == module.out_channels
-                == module.groups
-            ):
+            if module.in_channels == module.out_channels == module.groups:
                 dw_count += 1
             elif module.groups > 1:
                 group_count += 1
@@ -256,11 +252,7 @@ def main():
         phi_attn_match = "✅" if phi_attn_dev <= 0.1 else "❌"
 
         decision_str = decision.status if decision else "ERROR"
-        decision_match = (
-            "✅"
-            if decision and decision.status == spec["expected_decision"]
-            else "❌"
-        )
+        decision_match = "✅" if decision and decision.status == spec["expected_decision"] else "❌"
 
         results.append(
             {
@@ -277,29 +269,24 @@ def main():
                 "decision": decision_str,
                 "expected_decision": spec["expected_decision"],
                 "decision_match": decision_match,
-                "predicted_delta": (
-                    decision.predicted_delta if decision else None
-                ),
-                "recommended_rank": (
-                    decision.recommended_rank if decision else None
-                ),
-                "recommended_variant": (
-                    decision.recommended_variant if decision else None
-                ),
-                "refusal_reason": (
-                    decision.refusal_reason if decision else None
-                ),
+                "predicted_delta": (decision.predicted_delta if decision else None),
+                "recommended_rank": (decision.recommended_rank if decision else None),
+                "recommended_variant": (decision.recommended_variant if decision else None),
+                "refusal_reason": (decision.refusal_reason if decision else None),
                 "counts": counts,
             }
         )
 
-        print(f"  fingerprint: φ_attn={fp.phi_attn:.4f}, φ_text={fp.phi_text:.4f}, "
-              f"φ_dw={fp.phi_dw:.4f}, φ_group={fp.phi_group:.4f}, φ_linear={fp.phi_linear:.4f}")
-        print(f"  module counts: conv={counts['total_conv']}, linear={counts['total_linear']}, "
-              f"attn_raw={counts['attn_raw']}, attn_container={counts['attn_container']}, "
-              f"attn_leaf={counts['attn_leaf']}")
-        print(f"  planner decision: {decision_str}"
-              f" (expected: {spec['expected_decision']}) {decision_match}")
+        print(
+            f"  fingerprint: φ_attn={fp.phi_attn:.4f}, φ_text={fp.phi_text:.4f}, "
+            f"φ_dw={fp.phi_dw:.4f}, φ_group={fp.phi_group:.4f}, φ_linear={fp.phi_linear:.4f}"
+        )
+        print(
+            f"  module counts: conv={counts['total_conv']}, linear={counts['total_linear']}, "
+            f"attn_raw={counts['attn_raw']}, attn_container={counts['attn_container']}, "
+            f"attn_leaf={counts['attn_leaf']}"
+        )
+        print(f"  planner decision: {decision_str} (expected: {spec['expected_decision']}) {decision_match}")
         if decision and decision.predicted_delta is not None:
             print(f"  predicted ΔmAP: {decision.predicted_delta:.4f}")
         if decision and decision.recommended_rank is not None:
@@ -367,13 +354,9 @@ def main():
     lines.append("")
     lines.append("Summary:")
     all_match = all(
-        r.get("phi_attn_match") == "✅" and r.get("decision_match") == "✅"
-        for r in results
-        if "error" not in r
+        r.get("phi_attn_match") == "✅" and r.get("decision_match") == "✅" for r in results if "error" not in r
     )
-    lines.append(
-        f"  All φ_attn and planner decisions match paper claims: {'✅ YES' if all_match else '❌ NO'}"
-    )
+    lines.append(f"  All φ_attn and planner decisions match paper claims: {'✅ YES' if all_match else '❌ NO'}")
     lines.append("")
     lines.append("Root-Cause Analysis:")
     lines.append("")

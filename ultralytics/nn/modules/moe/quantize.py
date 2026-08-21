@@ -21,12 +21,16 @@ import torch.nn as nn
 from ultralytics.utils import LOGGER
 
 
-
 # Layers that should retain FP16 or higher precision during quantization
 _SENSITIVE_LAYERS = (
-    "routing", "router", "gate", "se_gate",
-    "moe_loss_fn", "balance_loss_coeff",
-    "complexity_estimator", "static_net",
+    "routing",
+    "router",
+    "gate",
+    "se_gate",
+    "moe_loss_fn",
+    "balance_loss_coeff",
+    "complexity_estimator",
+    "static_net",
 )
 
 
@@ -74,7 +78,9 @@ def _onnx_routing_nodes(onnx_path: str | Path) -> list[str]:
         LOGGER.warning(f"[Quantize] Could not inspect ONNX graph for routing nodes: {exc}")
         return []
     tokens = tuple(token.lower() for token in _SENSITIVE_LAYERS)
-    return sorted({node.name for node in graph.node if node.name and any(token in node.name.lower() for token in tokens)})
+    return sorted(
+        {node.name for node in graph.node if node.name and any(token in node.name.lower() for token in tokens)}
+    )
 
 
 def quantize_moe_model(
@@ -99,8 +105,7 @@ def quantize_moe_model(
     plan = get_quantization_plan(model)
     routing_params = sum(1 for v in plan.values() if v == "fp16")
     expert_params = sum(1 for v in plan.values() if v == "int8")
-    LOGGER.info(f"[Quantize] Plan: {routing_params} routing params (fp16), "
-          f"{expert_params} expert/other params (int8)")
+    LOGGER.info(f"[Quantize] Plan: {routing_params} routing params (fp16), {expert_params} expert/other params (int8)")
 
     if backend == "onnx":
         return _quantize_onnx(model, calibration_loader, output_path, dynamic_quantize)
@@ -125,10 +130,13 @@ def _quantize_onnx(
 
     # Export model
     import io
+
     buffer = io.BytesIO()
     dummy = torch.randn(1, 3, 640, 640)
     torch.onnx.export(
-        model, dummy, buffer,
+        model,
+        dummy,
+        buffer,
         input_names=["images"],
         output_names=["output0"],
         opset=13,
@@ -156,7 +164,8 @@ def _quantize_onnx(
         # Dynamic quantization (weight-only, no calibration needed)
         # Exclude routing nodes from quantization
         quantize_dynamic(
-            str(temp_path), str(output_path),
+            str(temp_path),
+            str(output_path),
             weight_type=QuantType.QInt8,
             nodes_to_exclude=excluded_nodes,
         )
@@ -188,7 +197,8 @@ def _quantize_onnx(
 
         reader = _CalibReader(calibration_loader)
         quantize_static(
-            str(temp_path), str(output_path),
+            str(temp_path),
+            str(output_path),
             calibration_data_reader=reader,
             nodes_to_exclude=excluded_nodes,
         )
@@ -213,6 +223,7 @@ def _quantize_torch(model: nn.Module, plan: dict[str, str]) -> nn.Module:
 
     if non_routing_linears:
         from torch.quantization import quantize_dynamic
+
         q_model = quantize_dynamic(model, {nn.Linear}, dtype=torch.qint8)
         LOGGER.info(f"[Quantize] Torch dynamic quantization applied to {len(non_routing_linears)} Linear layers")
         return q_model
@@ -228,10 +239,7 @@ def estimate_size_reduction(model: nn.Module) -> dict[str, float]:
         Dict with fp32_size_mb, estimated_int8_size_mb, reduction_pct.
     """
     total_params = sum(p.numel() for p in model.parameters())
-    routing_params = sum(
-        p.numel() for name, p in model.named_parameters()
-        if _is_routing_layer(name)
-    )
+    routing_params = sum(p.numel() for name, p in model.named_parameters() if _is_routing_layer(name))
     expert_params = total_params - routing_params
 
     # FP32: 4 bytes/param, FP16: 2 bytes/param, INT8: 1 byte/param

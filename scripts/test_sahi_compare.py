@@ -2,7 +2,7 @@ import os
 import sys
 
 # Add project root to path (at the beginning!) to ensure local ultralytics is used
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 import cv2
 import glob
@@ -13,7 +13,7 @@ from ultralytics.utils import ASSETS
 
 # Configure environment: Ensure local project root is prioritized in sys.path
 # to avoid conflicts with installed site-packages.
-project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), ".."))
 sys.path.insert(0, project_root)
 
 try:
@@ -30,7 +30,7 @@ def run_comparison():
     """
 
     # --- Configuration & Resource Initialization ---
-    model_ckpt = os.path.join(project_root, 'yolo_master_n.pt')
+    model_ckpt = os.path.join(project_root, "yolo_master_n.pt")
     fallback_path = "/Users/gatilin/PycharmProjects/ultralytics-8.3.240-v251220/ckpts/yolo-master.pt"
 
     model_path = model_ckpt if os.path.exists(model_ckpt) else fallback_path
@@ -64,7 +64,8 @@ def run_comparison():
         print(f"Benchmarking Inference Pipeline: {fname}")
 
         frame = cv2.imread(img_path)
-        if frame is None: continue
+        if frame is None:
+            continue
 
         # --- Stage 1: Standard Inference (Low-Resolution Baseline) ---
         # Purpose: Benchmark speed at low spatial resolution (224px)
@@ -88,11 +89,11 @@ def run_comparison():
             try:
                 res_full = legacy_sahi.predict_standard(img_path, conf_thres=0.25)
                 f_boxes, f_scores, f_cls, meta_full = res_full
-                full_sahi_latency = meta_full.get('inference_time', 0)
+                full_sahi_latency = meta_full.get("inference_time", 0)
 
                 # Render slicing grid (Spatial Partitions)
                 overlay = vis_full_sahi.copy()
-                for sx1, sy1, sx2, sy2 in meta_full.get('slices', []):
+                for sx1, sy1, sx2, sy2 in meta_full.get("slices", []):
                     cv2.rectangle(overlay, (int(sx1), int(sy1)), (int(sx2), int(sy2)), (200, 200, 200), 1)
                 cv2.addWeighted(overlay, 0.3, vis_full_sahi, 0.7, 0, vis_full_sahi)
 
@@ -111,16 +112,16 @@ def run_comparison():
         sparse_latency = time.perf_counter() - t_start
 
         vis_sparse = frame.copy()
-        meta_sparse = getattr(sparse_res, 'sparse_sahi_metadata', {})
+        meta_sparse = getattr(sparse_res, "sparse_sahi_metadata", {})
 
         # Render Active Slices (ROIs identified by Objectness Mask)
-        if 'slices' in meta_sparse:
+        if "slices" in meta_sparse:
             overlay = vis_sparse.copy()
-            for sx1, sy1, sx2, sy2 in meta_sparse['slices']:
+            for sx1, sy1, sx2, sy2 in meta_sparse["slices"]:
                 cv2.rectangle(overlay, (int(sx1), int(sy1)), (int(sx2), int(sy2)), (0, 255, 255), 2)
             cv2.addWeighted(overlay, 0.3, vis_sparse, 0.7, 0, vis_sparse)
 
-        sources = meta_sparse.get('final_sources', [0] * len(sparse_res.boxes))
+        sources = meta_sparse.get("final_sources", [0] * len(sparse_res.boxes))
         for i, box in enumerate(sparse_res.boxes):
             pts = box.xyxy[0].cpu().numpy().astype(int)
             src_id = sources[i] if i < len(sources) else 0
@@ -128,15 +129,22 @@ def run_comparison():
             color = (255, 0, 0) if src_id == 0 else (0, 0, 255)
             label = f"{'[G]' if src_id == 0 else '[S]'} {class_map[int(box.cls[0])]} {float(box.conf[0]):.2f}"
             cv2.rectangle(vis_sparse, (pts[0], pts[1]), (pts[2], pts[3]), color, 2)
-            cv2.putText(vis_sparse, label, (pts[0], max(pts[1] - 5, 20) + (15 if src_id == 1 else 0)), 0, 0.5,
-                        (255, 255, 255), 1)
+            cv2.putText(
+                vis_sparse,
+                label,
+                (pts[0], max(pts[1] - 5, 20) + (15 if src_id == 1 else 0)),
+                0,
+                0.5,
+                (255, 255, 255),
+                1,
+            )
         cv2.putText(vis_sparse, f"Sparse SAHI | Objs: {len(sparse_res.boxes)}", (15, 30), 0, 0.6, (0, 0, 255), 2)
 
         # --- Stage 4: Objectness Mask Visualization ---
         # Purpose: Visualize the Spatial Probability Distribution of target objects
         vis_mask = frame.copy()
-        if 'objectness_map' in meta_sparse and meta_sparse['objectness_map'] is not None:
-            obj_map = meta_sparse['objectness_map']
+        if "objectness_map" in meta_sparse and meta_sparse["objectness_map"] is not None:
+            obj_map = meta_sparse["objectness_map"]
             # Feature Normalization for Heatmap Generation
             norm_map = (obj_map / (obj_map.max() + 1e-6) * 255).astype(np.uint8)
             heatmap = cv2.applyColorMap(norm_map, cv2.COLORMAP_JET)
@@ -158,8 +166,9 @@ def run_comparison():
         header = np.zeros((70, canvas_w, 3), dtype=np.uint8)
         footer = np.zeros((60, canvas_w, 3), dtype=np.uint8)
 
-        cv2.putText(header, f"Inference Comparison: {fname} | Project YOLO-Master", (30, 45), 0, 0.8, (255, 255, 255),
-                    2)
+        cv2.putText(
+            header, f"Inference Comparison: {fname} | Project YOLO-Master", (30, 45), 0, 0.8, (255, 255, 255), 2
+        )
 
         # Align latency metrics with respective viewports
         x_offsets = [0] + list(np.cumsum([v.shape[1] for v in processed_views]))

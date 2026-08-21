@@ -7,6 +7,7 @@ Compares:
 Usage:
     python scripts/ablation_moe_peft_e2_router_calibration.py
 """
+
 import os
 import sys
 import json
@@ -24,6 +25,7 @@ os.environ.setdefault("YOLO_VERBOSE", "false")
 
 import torch
 from ultralytics.utils import SETTINGS
+
 SETTINGS["wandb"] = False
 
 from ultralytics import YOLO
@@ -56,6 +58,7 @@ def apply_moe_aware_to_model(model, config):
     target_modules = getattr(config, "target_modules", None)
     if target_modules is None or not target_modules:
         from ultralytics.nn.peft.molora import MoLoRAConfigBuilder
+
         target_modules = MoLoRAConfigBuilder.auto_detect_targets(
             model, r=config.r, include_moe=True, only_backbone=False
         )
@@ -80,12 +83,13 @@ def apply_moe_aware_to_model(model, config):
     model.molora_config = config
     model.molora_enabled = True
     from ultralytics.nn.peft.molora.utils import mark_only_molora_as_trainable
+
     mark_only_molora_as_trainable(model)
     return wrapped
 
 
 def run_variant(name: str, config: MoLoRAMoEAwareConfig):
-    print(f"\n{'='*70}\n=== Variant: {name.upper()} {'='*40}\n{'='*70}")
+    print(f"\n{'=' * 70}\n=== Variant: {name.upper()} {'=' * 40}\n{'=' * 70}")
 
     t0 = time.time()
     model = YOLO(MODEL_PATH)
@@ -97,8 +101,7 @@ def run_variant(name: str, config: MoLoRAMoEAwareConfig):
 
     # Verify calibration presence
     has_calib = any(
-        hasattr(m, "router_calibration") and m.router_calibration is not None
-        for m in model.model.modules()
+        hasattr(m, "router_calibration") and m.router_calibration is not None for m in model.model.modules()
     )
     print(f"[Calibration] Present={has_calib}")
 
@@ -202,9 +205,11 @@ def main():
     print("-" * 100)
     for r in all_records:
         m = r["final_metrics"].get("metrics/mAP50-95(B)", float("nan"))
-        print(f"{r['name']:<18} {'Y' if r['ok'] else 'N':<3} "
-              f"{r['params_trainable']:>11,} {r['trainable_pct']:>7.3f} "
-              f"{'Y' if r['has_calibration'] else 'N':>6} {m if isinstance(m, float) else '':>10}")
+        print(
+            f"{r['name']:<18} {'Y' if r['ok'] else 'N':<3} "
+            f"{r['params_trainable']:>11,} {r['trainable_pct']:>7.3f} "
+            f"{'Y' if r['has_calibration'] else 'N':>6} {m if isinstance(m, float) else '':>10}"
+        )
     print("=" * 100)
     print(f"\n详细结果: {RESULTS_JSON}")
 

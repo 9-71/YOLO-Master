@@ -36,22 +36,30 @@ MODEL_LABELS = {
 
 
 def run(cmd: list[str], desc: str = "") -> int:
-    print(f"\n{'='*60}")
+    print(f"\n{'=' * 60}")
     print(f"  {desc}")
     print(f"  $ {' '.join(cmd)}")
-    print(f"{'='*60}")
+    print(f"{'=' * 60}")
     return subprocess.run(cmd, cwd=str(ROOT)).returncode
 
 
 def step_check_build(args: argparse.Namespace) -> Path:
     """验证 4 个模型 YAML 可解析 + 输出 FLOPs/Params"""
     out = ROOT / "runs/mot_ablation/build_summary.csv"
-    rc = run([
-        "python", "scripts/compare_mot_ablation.py",
-        "--check-build", "--models", *MODELS,
-        "--imgsz", str(args.imgsz),
-        "--device", args.device,
-    ], "Step 1/5: 模型配置校验")
+    rc = run(
+        [
+            "python",
+            "scripts/compare_mot_ablation.py",
+            "--check-build",
+            "--models",
+            *MODELS,
+            "--imgsz",
+            str(args.imgsz),
+            "--device",
+            args.device,
+        ],
+        "Step 1/5: 模型配置校验",
+    )
     if rc != 0:
         raise SystemExit(rc)
     return out
@@ -60,14 +68,24 @@ def step_check_build(args: argparse.Namespace) -> Path:
 def step_benchmark(args: argparse.Namespace) -> Path:
     """CPU/GPU 延迟 Benchmark"""
     out = ROOT / f"runs/mot_ablation/latency_{args.device}_{args.imgsz}.csv"
-    rc = run([
-        "python", "scripts/compare_mot_ablation.py",
-        "--benchmark", "--models", *MODELS,
-        "--imgsz", str(args.imgsz),
-        "--warmup", str(args.warmup),
-        "--reps", str(args.reps),
-        "--device", args.device,
-    ], "Step 2/5: 延迟 Benchmark")
+    rc = run(
+        [
+            "python",
+            "scripts/compare_mot_ablation.py",
+            "--benchmark",
+            "--models",
+            *MODELS,
+            "--imgsz",
+            str(args.imgsz),
+            "--warmup",
+            str(args.warmup),
+            "--reps",
+            str(args.reps),
+            "--device",
+            args.device,
+        ],
+        "Step 2/5: 延迟 Benchmark",
+    )
     if rc != 0:
         raise SystemExit(rc)
     return out
@@ -75,27 +93,38 @@ def step_benchmark(args: argparse.Namespace) -> Path:
 
 def step_train(args: argparse.Namespace) -> int:
     """训练 4 个模型变体"""
-    return run([
-        "python", "scripts/compare_mot_ablation.py",
-        "--train", "--models", *MODELS,
-        "--data", str(args.data),
-        "--epochs", str(args.epochs),
-        "--imgsz", str(args.imgsz),
-        "--batch", str(args.batch),
-        "--device", args.device,
-        "--workers", "0",
-        "--patience", str(args.patience),
-        "--plots",
-        "--exist-ok",
-        "--resume",
-    ], f"Step 3/5: 训练 {len(MODELS)} 个模型变体 ({args.epochs} epochs each)")
+    return run(
+        [
+            "python",
+            "scripts/compare_mot_ablation.py",
+            "--train",
+            "--models",
+            *MODELS,
+            "--data",
+            str(args.data),
+            "--epochs",
+            str(args.epochs),
+            "--imgsz",
+            str(args.imgsz),
+            "--batch",
+            str(args.batch),
+            "--device",
+            args.device,
+            "--workers",
+            "0",
+            "--patience",
+            str(args.patience),
+            "--plots",
+            "--exist-ok",
+            "--resume",
+        ],
+        f"Step 3/5: 训练 {len(MODELS)} 个模型变体 ({args.epochs} epochs each)",
+    )
 
 
 def step_routing_analysis(args: argparse.Namespace) -> int:
     """路由可解释性分析"""
-    model_path = args.checkpoint or (
-        ROOT / "runs/mot_ablation/v10_mot/weights/best.pt"
-    )
+    model_path = args.checkpoint or (ROOT / "runs/mot_ablation/v10_mot/weights/best.pt")
     if not Path(model_path).exists():
         print(f"\n  ⚠️  Checkpoint 不存在: {model_path}")
         print("  先运行训练，或通过 --checkpoint 指定已有权重")
@@ -111,23 +140,39 @@ def step_routing_analysis(args: argparse.Namespace) -> int:
     else:
         image_dir_flag = ["--image-dir", str(image_dir)]
 
-    return run([
-        "python", "scripts/diagnose_mot_routing.py",
-        "--model", str(model_path),
-        "--imgsz", str(args.imgsz),
-        "--batch", str(args.batch),
-        "--max-images", str(args.max_images),
-        "--device", args.device,
-    ] + synthetic_flag + image_dir_flag,
-        "Step 4/5: 路由可解释性分析")
+    return run(
+        [
+            "python",
+            "scripts/diagnose_mot_routing.py",
+            "--model",
+            str(model_path),
+            "--imgsz",
+            str(args.imgsz),
+            "--batch",
+            str(args.batch),
+            "--max-images",
+            str(args.max_images),
+            "--device",
+            args.device,
+        ]
+        + synthetic_flag
+        + image_dir_flag,
+        "Step 4/5: 路由可解释性分析",
+    )
 
 
 def step_summary(args: argparse.Namespace) -> int:
     """生成汇总对比表"""
-    return run([
-        "python", "scripts/compare_mot_ablation.py",
-        "--summary-only", "--models", *MODELS,
-    ], "Step 5/5: 生成汇总 CSV")
+    return run(
+        [
+            "python",
+            "scripts/compare_mot_ablation.py",
+            "--summary-only",
+            "--models",
+            *MODELS,
+        ],
+        "Step 5/5: 生成汇总 CSV",
+    )
 
 
 def print_results_summary() -> None:
@@ -141,7 +186,7 @@ def print_results_summary() -> None:
             rows = list(csv.DictReader(f))
         print("\n📊 模型对比")
         print(f"  {'模型':<18} {'Params':>10} {'GFLOPs':>10}")
-        print(f"  {'─'*18} {'─'*10} {'─'*10}")
+        print(f"  {'─' * 18} {'─' * 10} {'─' * 10}")
         for r in rows:
             print(f"  {r['label']:<18} {float(r['params_m']):>8.2f}M {float(r['flops_g']):>8.2f}")
 
@@ -152,11 +197,13 @@ def print_results_summary() -> None:
             rows = list(csv.DictReader(f))
         print("\n📈 训练结果")
         print(f"  {'模型':<18} {'Epoch':>6} {'mAP50':>8} {'mAP50-95':>8} {'NaN':>6} {'发散':>6}")
-        print(f"  {'─'*18} {'─'*6} {'─'*8} {'─'*8} {'─'*6} {'─'*6}")
+        print(f"  {'─' * 18} {'─' * 6} {'─' * 8} {'─' * 8} {'─' * 6} {'─' * 6}")
         for r in rows:
-            print(f"  {r.get('label','')[:18]:<18} {r.get('epoch', '-'):>6} "
-                  f"{r.get('metrics/mAP50(B)', '-'):>8} {r.get('metrics/mAP50-95(B)', '-'):>8} "
-                  f"{r.get('nan_detected', '-'):>6} {r.get('loss_diverged', '-'):>6}")
+            print(
+                f"  {r.get('label', '')[:18]:<18} {r.get('epoch', '-'):>6} "
+                f"{r.get('metrics/mAP50(B)', '-'):>8} {r.get('metrics/mAP50-95(B)', '-'):>8} "
+                f"{r.get('nan_detected', '-'):>6} {r.get('loss_diverged', '-'):>6}"
+            )
 
     # Routing analysis
     routing_csv = project / "routing/mot_routing_scenarios.csv"
@@ -181,8 +228,7 @@ def print_results_summary() -> None:
 
 
 def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description=__doc__,
-                                formatter_class=argparse.RawDescriptionHelpFormatter)
+    p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--device", default="0", help="GPU device (0) or cpu")
     p.add_argument("--data", default="ultralytics/cfg/datasets/coco128.yaml")
     p.add_argument("--epochs", type=int, default=50)
@@ -237,9 +283,9 @@ def main() -> int:
     # 5. Summary
     step_summary(args)
 
-    print("\n" + "="*60)
+    print("\n" + "=" * 60)
     print("  ✅ Issue #54 全流程完成！")
-    print("="*60)
+    print("=" * 60)
     print_results_summary()
 
     print(f"\n📁 所有输出在: {ROOT / 'runs/mot_ablation/'}")

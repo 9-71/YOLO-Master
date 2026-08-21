@@ -8,7 +8,6 @@ Verifies:
   - PEFTPlannerError inherits YOLOMasterError
 """
 
-
 from ultralytics.utils.errors import (
     YOLOMasterError,
     PEFTPlannerError,
@@ -72,14 +71,15 @@ class TestShapeMismatchError:
 
     def test_attributes_preserved(self):
         from ultralytics.utils.errors import ShapeMismatchError
-        err = ShapeMismatchError(expected=(1, 64, 16, 16), actual=(1, 32, 16, 16),
-                                  context="router")
+
+        err = ShapeMismatchError(expected=(1, 64, 16, 16), actual=(1, 32, 16, 16), context="router")
         assert err.expected == (1, 64, 16, 16)
         assert err.actual == (1, 32, 16, 16)
         assert err.context == "router"
 
     def test_inherits_yolomaster(self):
         from ultralytics.utils.errors import ShapeMismatchError
+
         assert issubclass(ShapeMismatchError, YOLOMasterError)
 
 
@@ -88,4 +88,5 @@ class TestMoERouterError:
 
     def test_inherits_yolomaster(self):
         from ultralytics.utils.errors import MoERouterError
+
         assert issubclass(MoERouterError, YOLOMasterError)

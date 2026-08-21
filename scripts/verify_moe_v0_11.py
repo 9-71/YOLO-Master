@@ -12,6 +12,7 @@ drop-in successor of v0.6:
      the host / desync across ranks (the v0.3 crash mode)
   6. full DetectionModel(v0_11) train step vs v0_6 (loss is finite)
 """
+
 from __future__ import annotations
 
 import copy
@@ -51,8 +52,10 @@ def test_forward_backward():
         assert gp is not None and torch.isfinite(gp).all(), "expert_prior got no/nan grad"
         assert gn_w is not None and torch.isfinite(gn_w).all(), "stat_norm got no/nan grad"
         assert torch.isfinite(x.grad).all(), "non-finite input grad"
-        print(f"  ne={ne:<2} split={sr}: out={tuple(out.shape)} aux={aux.item():.4f} "
-              f"|dprior|={gp.abs().mean().item():.3e} backend={blk.expert_backend} OK")
+        print(
+            f"  ne={ne:<2} split={sr}: out={tuple(out.shape)} aux={aux.item():.4f} "
+            f"|dprior|={gp.abs().mean().item():.3e} backend={blk.expert_backend} OK"
+        )
 
 
 def test_eval_finite():
@@ -75,7 +78,7 @@ def test_ema_deepcopy():
     n0 = sum(p.numel() for p in blk.parameters())
     n1 = sum(p.numel() for p in clone.parameters())
     assert n0 == n1, "param count changed after deepcopy"
-    print(f"  deepcopy OK ({n0/1e3:.1f}K params preserved)")
+    print(f"  deepcopy OK ({n0 / 1e3:.1f}K params preserved)")
 
 
 def test_ddp_safety():
@@ -100,12 +103,14 @@ def test_ddp_safety():
 def test_detection_model():
     print("== full DetectionModel train step (v0_6 vs v0_11) ==")
     from ultralytics.nn.tasks import DetectionModel
+
     for tag, cfg in [
         ("v0_6", "ultralytics/cfg/models/master/exp/yolo-master-v0_6.yaml"),
         ("v0_11", "ultralytics/cfg/models/master/exp/yolo-master-v0_11.yaml"),
     ]:
         from ultralytics.cfg import get_cfg
         from ultralytics.utils import DEFAULT_CFG
+
         torch.manual_seed(0)
         model = DetectionModel(str(ROOT / cfg), ch=3, nc=20, verbose=False)
         model.args = get_cfg(DEFAULT_CFG)
