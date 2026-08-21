@@ -17,6 +17,7 @@ ROOT = Path(__file__).resolve().parents[1]
     [
         "ultralytics/cfg/models/26/yolo26-master-n.yaml",
         "ultralytics/cfg/models/26/yolo26.yaml",
+        "ultralytics/cfg/models/master/v0_15/det/yolo-master-tiny.yaml",
         "ultralytics/cfg/models/master/v0_10/det/yolo-master-moa-n.yaml",
         "ultralytics/cfg/models/master/v0_10/det/yolo-master-mot-n.yaml",
         "ultralytics/cfg/models/master/v0_8/det/yolo-master-moe-mot-shared-n.yaml",
