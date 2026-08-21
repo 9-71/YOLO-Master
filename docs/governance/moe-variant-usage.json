@@ -21,6 +21,7 @@
         "MultiHeadRouterMoE",
         "OptimalHybridGateMoE",
         "RefinedLowRankHybridAdaptiveGateMoE",
+        "SharedExpertMoE",
         "UltimateOptimizedMoE",
         "UltraOptimizedMoE",
         "VisualEnhancedAdaptiveGateMoE"
