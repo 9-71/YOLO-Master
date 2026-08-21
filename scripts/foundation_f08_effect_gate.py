@@ -377,6 +377,8 @@ def summarize_run(run_dir: Path, *, imgsz: int, device: str) -> dict[str, Any]:
 
 def _train_one(spec: dict[str, Any]) -> dict[str, Any]:
     """Train one arm, resuming from its last checkpoint when present."""
+    import pickle
+
     import torch
     from ultralytics import YOLO
 
@@ -399,7 +401,23 @@ def _train_one(spec: dict[str, Any]) -> dict[str, Any]:
     resume_checkpoint = next((path for path in checkpoints if path.is_file()), None)
     model = YOLO(str(resume_checkpoint) if resume_checkpoint else spec["model"])
     overrides = dict(spec["overrides"])
+    # A healthy snapshot taken before the first epoch has ``epoch=-1``.  It is
+    # useful as an initialization checkpoint, but Ultralytics rejects
+    # ``resume`` when the computed start epoch is zero.  Only resume a
+    # checkpoint whose recorded epoch leaves at least one epoch to run.
+    should_resume = False
     if resume_checkpoint:
+        try:
+            checkpoint = torch.load(resume_checkpoint, map_location="cpu", weights_only=False)
+            checkpoint_epoch = int(checkpoint.get("epoch", -1)) if isinstance(checkpoint, dict) else -1
+            total_epochs = int(overrides["epochs"])
+            should_resume = 0 < checkpoint_epoch + 1 < total_epochs
+        except (OSError, RuntimeError, TypeError, ValueError, pickle.UnpicklingError):
+            # Let YOLO surface malformed checkpoints through normal model
+            # loading; do not turn an optional resume optimization into a
+            # separate failure mode.
+            should_resume = False
+    if should_resume:
         overrides["resume"] = str(resume_checkpoint)
     started = time.perf_counter()
     model.train(**overrides)
@@ -414,7 +432,7 @@ def _train_one(spec: dict[str, Any]) -> dict[str, Any]:
             "foundation_loss": spec["foundation_loss"],
             "foundation_loss_weight": spec["foundation_loss_weight"],
             "elapsed_s": round(time.perf_counter() - started, 4),
-            "resumed_from_last": resume_checkpoint is not None,
+            "resumed_from_last": should_resume,
             "resume_checkpoint": str(resume_checkpoint) if resume_checkpoint else None,
             "status": "completed",
         }
@@ -520,7 +538,13 @@ def run_effect_gate(
         if changed or missing:
             raise ValueError("Cannot resume with a changed or truncated plan")
         records = list(previous.get("records") or [])
-        interrupted = list(previous.get("interrupted_runs") or [])
+        interrupted = []
+        seen_interrupted = set()
+        for item in previous.get("interrupted_runs") or []:
+            name = str(item.get("name"))
+            if name not in seen_interrupted:
+                interrupted.append(item)
+                seen_interrupted.add(name)
     elif output.exists() and not resume:
         raise ValueError(f"Report already exists; pass --resume to continue: {output}")
     completed = {str(record.get("name")) for record in records}
@@ -530,6 +554,7 @@ def run_effect_gate(
         try:
             record = runner(spec)
         except KeyboardInterrupt:
+            interrupted = [item for item in interrupted if item.get("name") != spec["name"]]
             interrupted.append(
                 {
                     "name": spec["name"],

@@ -111,14 +111,32 @@ def test_run_effect_gate_persists_interruption_for_resume(tmp_path):
     assert resumed["interrupted_runs"] == []
 
 
+def test_run_effect_gate_deduplicates_repeated_interruption_records(tmp_path):
+    plan = build_run_plan(dataset="subset.yaml", project=str(tmp_path / "runs"), seeds=[0], imgsz=128)
+    output = tmp_path / "report.json"
+
+    def interrupt(_spec):
+        raise KeyboardInterrupt
+
+    for resume in (False, True):
+        try:
+            run_effect_gate(plan[:1], output, data_contract={}, runner=interrupt, resume=resume)
+        except KeyboardInterrupt:
+            pass
+
+    payload = json.loads(output.read_text())
+    assert [item["name"] for item in payload["interrupted_runs"]] == ["b0-s0"]
+
+
 def test_train_one_resumes_from_last_healthy_checkpoint(tmp_path, monkeypatch):
+    import torch
     import ultralytics
 
     plan = build_run_plan(dataset="subset.yaml", project=str(tmp_path / "runs"), seeds=[0], imgsz=128)
     spec = plan[0]
     healthy = Path(spec["project"]) / spec["name"] / "weights" / "last_healthy.pt"
     healthy.parent.mkdir(parents=True)
-    healthy.write_bytes(b"checkpoint")
+    torch.save({"epoch": 0}, healthy)
     captured = {}
 
     class DummyYOLO:
@@ -135,6 +153,34 @@ def test_train_one_resumes_from_last_healthy_checkpoint(tmp_path, monkeypatch):
     assert captured["source"] == str(healthy)
     assert captured["resume"] == str(healthy)
     assert result["resumed_from_last"] is True
+    assert result["resume_checkpoint"] == str(healthy)
+
+
+def test_train_one_uses_epoch_minus_one_checkpoint_as_initial_weights(tmp_path, monkeypatch):
+    import torch
+    import ultralytics
+
+    plan = build_run_plan(dataset="subset.yaml", project=str(tmp_path / "runs"), seeds=[0], imgsz=128)
+    spec = plan[0]
+    healthy = Path(spec["project"]) / spec["name"] / "weights" / "last_healthy.pt"
+    healthy.parent.mkdir(parents=True)
+    torch.save({"epoch": -1}, healthy)
+    captured = {}
+
+    class DummyYOLO:
+        def __init__(self, source):
+            captured["source"] = source
+            self.trainer = type("Trainer", (), {"save_dir": Path(spec["project"]) / spec["name"]})()
+
+        def train(self, **overrides):
+            captured["resume"] = overrides.get("resume")
+
+    monkeypatch.setattr(ultralytics, "YOLO", DummyYOLO)
+    monkeypatch.setattr(f08, "summarize_run", lambda *args, **kwargs: {"observed": {}})
+    result = f08._train_one(spec)
+    assert captured["source"] == str(healthy)
+    assert captured["resume"] is None
+    assert result["resumed_from_last"] is False
     assert result["resume_checkpoint"] == str(healthy)
 
 
