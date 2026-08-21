@@ -92,7 +92,7 @@ YOLO-Master（Tencent Youtu Lab，CVPR 2026，arXiv 2512.23273）是基于 Ultra
 |:--|:--|:--|:--|
 | **ES-MoE** | 论文核心，compute-on-demand 主力 | ★★★★★ | → 稳定 |
 | **统一路由基础设施** | routing_protocol + mixture_loss，五类 aux loss 收口 | ★★★★★ | → 稳定，隐形骨架 |
-| **MoA / MoT** | 即插即用注意力/架构路由 | ★★★☆ / ★★★ | → 维持，性价比未闭环，建议冻结新投入 |
+| **MoA / MoT** | 即插即用注意力/架构路由 | ★★★☆ / ★★★ | ⚠️ 当日修正：MoT 稀疏调度遥测契约曾断裂（9 个先验红测，见第十六节），已修复；性价比未闭环，建议冻结新投入 |
 | **LoRA 内核** | 纯配置激活低成本微调 | ★★★★☆ | → 稳定 |
 | **MoLoRA** | MoE 思想进 PEFT | ★★★★ | → 三硬伤修复后稳定，门禁守护中 |
 | **V-PEFT Planner** | GATv2+PPO+MIP 适配器规划 | ★★★☆ → **需重评** | ⬆ **已承载 arXiv 2608.07051 论文声明**，可复现性优先级应从 P2 升至 P1 |
@@ -201,3 +201,58 @@ python agent/scripts/validate_yolo_master_skill.py --suite quick --summary-only 
 | Foundation | `ultralytics/nn/foundation/`、`ultralytics/nn/foundation_distill_model.py`、`cfg/experiments/foundation/` |
 | 发布说明 | `docs/release-notes/v26.08.md`、`docs/release-notes/foundation-v0.1.0-alpha.md` |
 | 历史报告 | `reports/yolo_master_deep_analysis_20260716.md`、`reports/yolo_master_moe_moa_mot_peft_analysis_20260723.md`、`reports/yolo_master_deep_analysis_20260819.md` |
+
+---
+
+## 十六、Phase 1 执行记录与新发现 P1 修复（2026-08-21 晚）
+
+> 触发：本报告第七节的 Phase 1 建议获用户批准后当日执行。执行中产生一个前两份报告均未发现的重要修正。
+
+### 16.1 新发现 P1（已修复）——MoT 稀疏调度遥测契约断裂 + warmup 计数器空转
+
+**发现路径**：清理 `mot/block.py` 的 3 个 F841（`dispatch_policy` / `routing_metrics` / `warmup_step` 计算后从未使用）时，删除后触发 9 个测试失败；用 `git stash` 在 HEAD 原始代码上复跑确认——**失败是先验存在的**（`test_mot_sparse_parity` ×6、`test_mot_scene_aware_router`、`test_compare_mot_ablation`、`test_p0_system_gates`），此前各轮验证（含 0819 报告）从未运行 `test_mot_sparse_parity.py`，构成报告盲区。
+
+**根因（两层）**：
+
+1. `_last_dispatch_stats` 只写入 `mode`/`expert_calls`/`selected_samples` 三个键，而测试契约（即设计意图）要求 `policy`/`sparsity_ratio`/`experts_per_sample`/`ddp_fallback_reason` 等 16 个字段——三个"死变量"正是为遥测准备却**从未接线**的原料；
+2. 更严重：`_sparse_train_step` 计数器注册为 persistent buffer 但**从未在任何路径递增**——意味着 `sparse_train=True` 的配置在真实训练中 warmup 永远不会完成，稀疏训练调度**永远不会激活**。这是功能级 bug，不只是遥测缺失。
+
+**修复**（commit `e183ea4`）：`_blend_experts` 中接通完整 dispatch stats（策略、稀疏度、DDP 契约四字段、warmup 步数），训练前向末尾 `_sparse_train_step.add_(1)`。验证：MoT/MoA 范围 **242 passed**（修复前 233 passed + 9 failed）。
+
+**教训**：F841 在核心代码中不应机械删除——"计算了但没使用"在高风险区往往是未完成接线的信号。建议后续把 `-k "mot or moa"` 纳入常态门禁范围。
+
+### 16.2 提交清单（当日 6 个语义化提交）
+
+| Commit | 内容 |
+|:--|:--|
+| `740d23e`（用户方） | README 官宣 YOLO-PEFT 论文 + star-history 工作流与生成器 |
+| `58fbfee` | fix(foundation): F08 effect gate resume 加固（epoch=-1 快照不误 resume、interrupted 去重） |
+| `5ecbcb2` | docs(reports): 本报告 + 犀牛鸟评审入库 |
+| `67fb290` | docs: 删除过时的上游 README.zh-CN.md |
+| `aeb7d87` | chore(gitignore): 根目录散落产物、`.qoder/`、`agent/logs/`、foundation 本地运行记录排除 |
+| `e183ea4` | fix(mot): 稀疏调度遥测接通 + warmup 计数器修复 + lint 债务清零 |
+| `7a168b4` | style: ruff format 全量重排（158 文件，纯机械无行为变更；103 + 436 测试复验通过） |
+
+### 16.3 Lint 收口终态
+
+| 指标 | 0819 报告 | 本日早间 | 收口后 |
+|:--|:--|:--|:--|
+| `ruff check` errors | 439 | 277 | **0** |
+| `ruff format` 待重排 | 159 | 161 | **0**（630 文件全合规） |
+
+收口方式：E402×185 / E701·E702×67 / scripts 的 F841 按 0819 报告建议改为 `pyproject.toml` **per-file-ignores 显式声明**（research/smoke 脚本的 sys.path bootstrap 与紧凑风格属刻意偏离）；核心代码中的 F841×4、E741、F401 真实修复。
+
+### 16.4 修复后复验
+
+| 验证项 | 结果 |
+|:--|:--|
+| CI P0/P1 门禁 + master 配置 + MoLoRA + MoE 边界 | ✅ 67 passed |
+| MoT/MoA 全范围 | ✅ 242 passed（含 9 个原红测） |
+| MoT/MoA/Foundation 合并范围（格式化后） | ✅ 436 passed |
+| CI 门禁 + MoE + V-PEFT（格式化后） | ✅ 103 passed |
+
+### 16.5 遗留事项
+
+1. `README_reproduce.md` 在工作区处于已删除状态（含犀牛鸟复现实验记录），**保留未提交**，待用户确认意图。
+2. 全部提交停留在本地 `main`，未 push。
+3. 本日修复后，**主干已无任何已知红灯测试**（在已运行的门禁范围内）；建议下一轮跑一次全量 `pytest tests/ -n auto` 作为 v26.08.1 候选基线。
