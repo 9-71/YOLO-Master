@@ -132,6 +132,38 @@ def check_network(timeout: float = 3.0) -> list[dict]:
     return results
 
 
+def check_cli_installation() -> dict:
+    """Verify the ``yolo`` CLI resolves to THIS workspace, not a stale editable install.
+
+    CLI subprocess tests spawn the globally installed ``yolo`` entry point; if a
+    different workspace's editable install shadows this repo, test_cli results
+    validate the wrong codebase (observed 2026-08-22: CLI resolved to the
+    v260720 workspace).
+    """
+    import importlib.metadata
+
+    try:
+        result = subprocess.run(["yolo", "version"], capture_output=True, text=True, timeout=60)
+        version = result.stdout.strip() if result.returncode == 0 else None
+    except (OSError, subprocess.TimeoutExpired):
+        version = None
+    location, editable_source = "", ""
+    try:
+        dist = importlib.metadata.distribution("ultralytics")
+        location = str(dist.locate_file(""))
+        direct = dist.read_text("direct_url.json")
+        if direct:
+            editable_source = json.loads(direct).get("url", "")
+    except Exception:
+        pass
+    return {
+        "yolo_version": version,
+        "install_location": location,
+        "editable_source": editable_source,
+        "points_to_this_repo": str(ROOT) in location or str(ROOT) in editable_source,
+    }
+
+
 def run_blocked_tests(python: str) -> int:
     """Run the baseline-excluded test files; only call when network is green."""
     cmd = [python, "-m", "pytest", *BLOCKED_TEST_FILES, "-q", "-p", "no:cacheprovider", "-n", "4", "--timeout=300"]
@@ -150,6 +182,7 @@ def main() -> int:
         "corrupt_weights": find_corrupt_weights(),
         "dataset_problems": check_datasets(),
         "network": check_network(),
+        "cli_installation": check_cli_installation(),
     }
     network_ok = all(item["reachable"] for item in report["network"])
     report["network_ok"] = network_ok
@@ -162,6 +195,14 @@ def main() -> int:
     for item in report["network"]:
         status = "ok" if item["reachable"] else f"unreachable ({item.get('error', '')})"
         print(f"  NET {item['host']}: {status}")
+    cli = report["cli_installation"]
+    if cli["points_to_this_repo"]:
+        print(f"  CLI install: ok ({cli['yolo_version']})")
+    else:
+        print(
+            f"  CLI install: WARNING — global yolo CLI resolves outside this repo: {cli['editable_source'] or cli['install_location']}"
+        )
+        print("    test_cli subprocess results validate the installed package, not this workspace.")
 
     if args.fix and report["corrupt_weights"]:
         if not network_ok:
@@ -174,9 +215,12 @@ def main() -> int:
             report["fix_applied"] = True
             report["corrupt_weights"] = find_corrupt_weights()
 
-    blockers = bool(report["corrupt_weights"] or report["dataset_problems"] or not network_ok)
-    report["baseline_ready"] = not blockers
-    print(f"baseline_ready: {report['baseline_ready']}")
+    blockers = bool(report["corrupt_weights"] or not network_ok)
+    # Dataset gaps only affect parametrized test_python cases, not the blocked
+    # test files gated by --run-blocked; report them as warnings instead.
+    report["baseline_ready"] = not blockers and not report["dataset_problems"]
+    report["run_blocked_ready"] = not blockers
+    print(f"baseline_ready: {report['baseline_ready']}  run_blocked_ready: {report['run_blocked_ready']}")
 
     if args.json:
         args.json.parent.mkdir(parents=True, exist_ok=True)
