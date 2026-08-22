@@ -1,0 +1,62 @@
+{
+  "corrupt_weights": [
+    {
+      "path": "/Users/gatilin/PycharmProjects/YOLO-Master-v260819-latest/weights/yolo11n.pt",
+      "size_bytes": 5283840
+    },
+    {
+      "path": "/Users/gatilin/PycharmProjects/YOLO-Master-v260819-latest/weights/yolo26s-obb.pt",
+      "size_bytes": 1714379
+    },
+    {
+      "path": "/Users/gatilin/PycharmProjects/YOLO-Master-v260819-latest/weights/yoloe-11s-seg.pt",
+      "size_bytes": 2679946
+    },
+    {
+      "path": "/Users/gatilin/PycharmProjects/YOLO-Master-v260819-latest/weights/yolov8s-world.pt",
+      "size_bytes": 5053434
+    }
+  ],
+  "dataset_problems": [
+    {
+      "yaml": "ultralytics/cfg/datasets/coco-multitask.yaml",
+      "issue": "images_missing",
+      "missing": [
+        "/Users/gatilin/PycharmProjects/YOLO-Master-v260819-latest/coco/train2017.txt",
+        "/Users/gatilin/PycharmProjects/YOLO-Master-v260819-latest/coco/val2017.txt"
+      ]
+    },
+    {
+      "yaml": "ultralytics/cfg/datasets/coco8.yaml",
+      "issue": "images_missing",
+      "missing": [
+        "/Users/gatilin/PycharmProjects/YOLO-Master-v260819-latest/coco8/images/train",
+        "/Users/gatilin/PycharmProjects/YOLO-Master-v260819-latest/coco8/images/val"
+      ]
+    },
+    {
+      "yaml": "ultralytics/cfg/datasets/coco128.yaml",
+      "issue": "images_missing",
+      "missing": [
+        "/Users/gatilin/PycharmProjects/YOLO-Master-v260819-latest/coco128/images/train2017",
+        "/Users/gatilin/PycharmProjects/YOLO-Master-v260819-latest/coco128/images/train2017"
+      ]
+    }
+  ],
+  "network": [
+    {
+      "host": "github.com",
+      "reachable": true
+    },
+    {
+      "host": "objects.githubusercontent.com",
+      "reachable": true
+    },
+    {
+      "host": "raw.githubusercontent.com",
+      "reachable": true
+    }
+  ],
+  "network_ok": true,
+  "baseline_ready": false
+}

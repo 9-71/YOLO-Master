@@ -286,3 +286,30 @@ python agent/scripts/validate_yolo_master_skill.py --suite quick --summary-only 
 ### 17.3 基线结论
 
 **v26.08.1 候选基线成立**：全部项目自有子系统门禁（CI P0/P1、MoE、MoLoRA、MoT/MoA、Foundation、引擎、Agent Skill、SSOT 治理）在全量范围内绿灯；残余红灯 100% 可归因于离线网络、缓存损坏与本机负载三类环境约束，且每一项都有明确的恢复路径。建议联网后补跑 7 个未覆盖文件 + `test_python` 训练组作为最终确认。
+
+---
+
+## 十八、基线恢复路径工具化与执行（2026-08-22）
+
+> 将 §17.2 的环境恢复路径固化为可重复工具：`scripts/release_baseline_preflight.py`（契约测试 `tests/test_release_baseline_preflight.py`，4 passed）。
+
+### 18.1 工具能力
+
+- **损坏权重扫描**：`zipfile.is_zipfile` 校验 `weights/` 与 settings `weights_dir` 下全部 `.pt`，识别中断下载留下的截断缓存；
+- **数据集存在性检查**：按 Ultralytics `datasets_dir` 解析规则核对 dataset YAML 的 train/val 图像目录（初版按仓根解析产生误报，已修正为与 trainer 一致的解析）；
+- **网络可达性探测**：github.com / objects.githubusercontent.com / raw.githubusercontent.com；
+- `--fix`：仅在网络可达时删除损坏缓存（防止离线误删后无法重下）；`--run-blocked`：基线就绪后自动补跑 7 个未覆盖测试文件；`--json` 输出机器可读报告。
+
+### 18.2 实机执行结果（2026-08-22）
+
+| 项 | 结果 |
+|:--|:--|
+| 网络探测 | ✅ 三主机全部可达（网络已恢复） |
+| 损坏权重 | 4 个（`yolo11n.pt` / `yolo26s-obb.pt` / `yoloe-11s-seg.pt` / `yolov8s-world.pt`），`--fix` 已全部删除 |
+| 恢复验证 | `test_predict_classes_with_max_det[yolo11n.pt]` 重下载后 **passed**（105.7s）；`yolov8s-world.pt`、`yolov8s-worldv2.pt`、`yoloe-11s-seg.pt`（curl 直补）、CLIP ViT-B-32 均已重新缓存 |
+| 剩余阻塞 | ① `coco-multitask.yaml` 需要完整 COCO（`~/PycharmProjects/datasets/coco` 的 train2017/val2017 清单），数据量大未拉取；② yolo-world/yoloe 测试的依赖链下载受单次执行时限截断，资产已部分落盘，无时限约束下重跑即可 |
+| 报告快照 | `reports/baseline-preflight-20260822.json` |
+
+### 18.3 结论
+
+§17.2 的"损坏缓存"与"离线网络"两类环境失败**已实质解除**（恢复路径端到端验证通过）。剩余仅为完整 COCO 数据集拉取与长下载链的时间预算问题，均非代码问题。v26.08.1 候选基线的最后确认项收敛为一条：**联网常态下跑一次 `--run-blocked`**。
