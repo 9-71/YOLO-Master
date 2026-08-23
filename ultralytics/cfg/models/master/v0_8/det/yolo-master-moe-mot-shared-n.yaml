@@ -37,7 +37,7 @@ head:
   # P5 → P4
   - [-1, 1, nn.Upsample, [None, 2, "nearest"]]
   - [[-1, 8], 1, Concat, [1]]            # cat backbone P4
-  - [-1, 2, C2fMoT, [512, 8, 2, 7, 4, 2.0, 1.0, 0.01, 0.5]]   # 13
+  - [-1, 2, C2fMoT, [512, 8, 2, 7, 4, 2.0, 1.0, 0.01, 0.5, False, False, null, 0.0, 0, "dynamic", 0, True]]   # 13
 
   # P4 → P3
   - [-1, 1, nn.Upsample, [None, 2, "nearest"]]
@@ -47,11 +47,11 @@ head:
   # P3 → P4 bottom-up
   - [-1, 1, Conv, [256, 3, 2]]
   - [[-1, 13], 1, Concat, [1]]           # cat head P4
-  - [-1, 2, C2fMoT, [512, 8, 2, 7, 4, 2.0, 0.8, 0.01, 0.5]]   # 19
+  - [-1, 2, C2fMoT, [512, 8, 2, 7, 4, 2.0, 0.8, 0.01, 0.5, False, False, null, 0.0, 0, "dynamic", 0, True]]   # 19
 
   # P4 → P5 bottom-up
   - [-1, 1, Conv, [512, 3, 2]]
   - [[-1, 10], 1, Concat, [1]]           # cat backbone P5
-  - [-1, 2, C2fMoT, [512, 8, 2, 7, 4, 2.0, 0.8, 0.01, 0.5]]   # 22
+  - [-1, 2, C2fMoT, [512, 8, 2, 7, 4, 2.0, 0.8, 0.01, 0.5, False, False, null, 0.0, 0, "dynamic", 0, True]]   # 22
 
   - [[16, 19, 22], 1, Detect, [nc]]      # Detect(P3, P4, P5)

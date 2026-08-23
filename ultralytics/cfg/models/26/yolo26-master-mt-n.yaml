@@ -47,28 +47,30 @@ backbone:
 
 # ── MoT-Enhanced Multi-Task Neck ─────────────────────────────────────────
 # C2fMoT blocks replace standard C3k2 blocks for adaptive multi-task
-# representation learning. Args: [c1, c2, n, num_heads, top_k, window_size,
-#                                  n_points, mlp_ratio, temperature, balance_coeff]
+# representation learning. Args: [c2, num_heads, top_k, window_size,
+#   n_points, mlp_ratio, temperature, balance_coeff, e, sparse_train,
+#   scene_aware_router, scene_hidden_dim, scene_consistency_coeff,
+#   sparse_train_warmup_steps, scene_inference_mode, local_attn_window, export_masked]
 head:
   # P5 → P4 upsampling
   - [-1, 1, nn.Upsample, [None, 2, "nearest"]]   # 11
   - [[-1, 6], 1, Concat, [1]]                     # 12: cat backbone P4
-  - [-1, 2, C2fMoT, [512, 8, 2, 7, 4, 2.0, 1.0, 0.01]]  # 13: MoT-adapted P4
+  - [-1, 2, C2fMoT, [512, 8, 2, 7, 4, 2.0, 1.0, 0.01, 0.5, False, False, null, 0.0, 0, "dynamic", 0, True]]  # 13: MoT-adapted P4
 
   # P4 → P3 upsampling
   - [-1, 1, nn.Upsample, [None, 2, "nearest"]]   # 14
   - [[-1, 4], 1, Concat, [1]]                     # 15: cat backbone P3
-  - [-1, 2, C2fMoT, [256, 4, 2, 7, 4, 2.0, 0.8, 0.01]]  # 16: MoT-adapted P3 (detection scale)
+  - [-1, 2, C2fMoT, [256, 4, 2, 7, 4, 2.0, 0.8, 0.01, 0.5, False, False, null, 0.0, 0, "dynamic", 0, True]]  # 16: MoT-adapted P3 (detection scale)
 
   # P3 → P4 downsampling
   - [-1, 1, Conv, [256, 3, 2]]                    # 17
   - [[-1, 13], 1, Concat, [1]]                    # 18: cat MoT P4
-  - [-1, 2, C2fMoT, [512, 8, 2, 7, 4, 2.0, 0.8, 0.01]]  # 19: MoT-adapted P4
+  - [-1, 2, C2fMoT, [512, 8, 2, 7, 4, 2.0, 0.8, 0.01, 0.5, False, False, null, 0.0, 0, "dynamic", 0, True]]  # 19: MoT-adapted P4
 
   # P4 → P5 downsampling
   - [-1, 1, Conv, [512, 3, 2]]                    # 20
   - [[-1, 10], 1, Concat, [1]]                    # 21: cat backbone P5
-  - [-1, 2, C2fMoT, [1024, 8, 1, 7, 4, 2.0, 0.8, 0.01]]  # 22: MoT-adapted P5 (classify scale)
+  - [-1, 2, C2fMoT, [1024, 8, 1, 7, 4, 2.0, 0.8, 0.01, 0.5, False, False, null, 0.0, 0, "dynamic", 0, True]]  # 22: MoT-adapted P5 (classify scale)
 
   # ── Unified Multi-Task Head ────────────────────────────────────────────
   # Input: [P3, P4, P5] from layers 16, 19, 22
