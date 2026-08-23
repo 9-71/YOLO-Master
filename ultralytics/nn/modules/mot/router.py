@@ -87,6 +87,7 @@ class _MoTRouter(FP32RouterMixin, nn.Module):
         scene_aware: bool = False,
         scene_hidden_dim: Optional[int] = None,
         scene_inference_mode: str = "dynamic",
+        export_masked: bool = False,
     ):
         super().__init__()
         if num_experts < 1:
@@ -102,6 +103,10 @@ class _MoTRouter(FP32RouterMixin, nn.Module):
         self.num_experts = num_experts
         self.top_k = top_k
         self.use_spatial = use_spatial
+        # When True, exported graphs rebuild the renormalized Top-K weights with
+        # static traceable ops so the artifact matches the eager sparse path
+        # numerically; when False (default), exports use dense softmax blending.
+        self.export_masked = bool(export_masked)
         # Register temperature as a buffer so checkpoint save/restore
         # preserves annealing progress (Python float would be lost).
         self.register_buffer("temperature", torch.tensor(max(temperature, 0.1)), persistent=True)
@@ -266,6 +271,20 @@ class _MoTRouter(FP32RouterMixin, nn.Module):
         # PyTorch 2.9 legacy-exporter alias-analysis failure on bool scatter_.
         exporting = torch.jit.is_tracing() or torch.onnx.is_in_onnx_export()
         if exporting:
+            if self.export_masked and self.top_k < self.num_experts:
+                # Export-time parity with the eager sparse path: rebuild the
+                # renormalized Top-K weights using only static, traceable ops
+                # (broadcast-compare mask instead of scatter_, which trips the
+                # PyTorch 2.9 legacy exporter's alias analysis on bool masks).
+                # The exported graph stays dense (every expert runs), but its
+                # weights equal the sparse path's, so artifact outputs match
+                # eager sparse execution numerically.
+                _, topk_idx = weights.topk(self.top_k, dim=1)
+                expert_range = torch.arange(self.num_experts, device=weights.device).view(1, -1, 1, 1)
+                mask = torch.zeros_like(weights)
+                for k in range(self.top_k):
+                    mask = mask + (expert_range == topk_idx[:, k : k + 1]).to(weights.dtype)
+                weights = stable_normalize(weights * mask.clamp(max=1.0), dim=1)
             indices = None
         # Top-K mask
         elif self.top_k < self.num_experts:

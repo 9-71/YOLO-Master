@@ -55,3 +55,27 @@ def test_mixture_onnx_roundtrip(module, sample):
     report = validate_export_roundtrip(module, sample, "onnx", reference=_export_semantics_reference(module))
     assert report["passed"] is True
     assert report["max_abs_error"] <= 1e-4
+
+
+def test_mot_export_masked_matches_sparse_eager():
+    """MoT with ``export_masked=True`` must export artifacts matching the eager sparse path.
+
+    The masked export path rebuilds renormalized Top-K weights with static
+    traceable ops, so the exported graph (dense compute) is numerically equal
+    to eager sparse dispatch — no reference override needed.
+    """
+    torch.manual_seed(0)
+    block = MoTBlock(32, num_heads=2, top_k=1, export_masked=True).eval()
+    assert block.export_capabilities()["export_router_weights"] == "masked_topk"
+    sample = torch.randn(1, 32, 8, 8)
+    for fmt in ("torchscript", "onnx"):
+        if fmt == "onnx":
+            pytest.importorskip("onnx")
+            pytest.importorskip("onnxruntime")
+        report = validate_export_roundtrip(block, sample, fmt)
+        assert report["passed"] is True, f"{fmt}: max_abs_error={report['max_abs_error']}"
+        assert report["max_abs_error"] <= 1e-4
+
+
+if __name__ == "__main__":
+    raise SystemExit(pytest.main([__file__, "-q"]))

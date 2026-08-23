@@ -74,6 +74,7 @@ class MoTBlock(nn.Module):
         sparse_train_warmup_steps: int = 0,
         scene_inference_mode: str = "dynamic",
         local_attn_window: int = 0,
+        export_masked: bool = False,
     ):
         super().__init__()
         if not 1 <= top_k <= self.NUM_EXPERTS:
@@ -139,6 +140,7 @@ class MoTBlock(nn.Module):
             scene_aware=scene_aware_router,
             scene_hidden_dim=scene_hidden_dim,
             scene_inference_mode=scene_inference_mode,
+            export_masked=export_masked,
         )
 
         # Final output norm & projection
@@ -206,6 +208,7 @@ class MoTBlock(nn.Module):
             ddp_sparse_train_safe=ddp_sparse_safe,
             ddp_contract_source=self._ddp_contract_source,
             ddp_fallback_reason=ddp_fallback_reason,
+            export_router_weights="masked_topk" if self.router.export_masked else "dense_softmax",
             sparse_export_limitation=(
                 "MoT eager execution supports Top-K sparse dispatch; ONNX and TorchScript tracing use dense blending "
                 "because expert selection is data-dependent."
