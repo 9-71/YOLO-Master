@@ -42,15 +42,29 @@ def validate_export_roundtrip(
     atol: float = 1e-4,
     rtol: float = 1e-3,
     opset: int = 17,
+    reference: nn.Module | None = None,
 ) -> dict[str, Any]:
-    """Export, reload, execute, and numerically compare a module artifact."""
+    """Export, reload, execute, and numerically compare a module artifact.
+
+    Args:
+        reference: Optional module used to compute the eager baseline instead
+            of ``module``. Use when the exported graph intentionally encodes
+            different semantics than eager execution — e.g. MoT with
+            ``top_k < num_experts`` runs sparse Top-K dispatch eagerly but
+            falls back to dense softmax blending under tracing/ONNX (see
+            ``MoTBlock.export_capabilities``). The reference should then be a
+            copy of ``module`` configured for the export-equivalent eager path
+            (``top_k = NUM_EXPERTS``), so the roundtrip validates artifact
+            fidelity against the function the export graph actually encodes.
+    """
     module = module.cpu().eval()
+    reference_module = module if reference is None else reference.cpu().eval()
     input_tuple = inputs if isinstance(inputs, tuple) else (inputs,)
     input_tuple = tuple(value.detach().cpu() for value in input_tuple)
     # Stateful heads cache anchors during the eager baseline. no_grad keeps
     # those tensors usable by the subsequent ONNX trace, unlike inference_mode.
     with torch.no_grad():
-        eager = _tensor_outputs(module(*input_tuple))
+        eager = _tensor_outputs(reference_module(*input_tuple))
     if not eager:
         raise RuntimeError("Export validation requires at least one tensor output.")
 

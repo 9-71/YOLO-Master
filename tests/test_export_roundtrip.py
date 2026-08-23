@@ -1,3 +1,5 @@
+import copy
+
 import pytest
 import torch
 from torch import nn
@@ -7,6 +9,20 @@ from ultralytics.nn.modules.moe.modules import OptimizedMOE
 from ultralytics.nn.modules.mot import MoTBlock
 from ultralytics.nn.peft.molora.layer import MoLoRALayer
 from ultralytics.utils.export_validation import validate_export_roundtrip
+
+
+def _export_semantics_reference(module: nn.Module) -> nn.Module | None:
+    """Return an eager reference matching the module's documented export semantics.
+
+    MoT with ``top_k < NUM_EXPERTS`` runs sparse Top-K dispatch eagerly but
+    exports dense softmax blending (data-dependent expert selection cannot be
+    traced); the roundtrip must therefore compare against the dense eager path.
+    """
+    if isinstance(module, MoTBlock) and module.top_k < module.NUM_EXPERTS:
+        reference = copy.deepcopy(module)
+        reference.top_k = reference.NUM_EXPERTS
+        return reference
+    return None
 
 
 @pytest.mark.parametrize(
@@ -19,7 +35,7 @@ from ultralytics.utils.export_validation import validate_export_roundtrip
     ],
 )
 def test_mixture_torchscript_roundtrip(module, sample):
-    report = validate_export_roundtrip(module, sample, "torchscript")
+    report = validate_export_roundtrip(module, sample, "torchscript", reference=_export_semantics_reference(module))
     assert report["passed"] is True
     assert report["artifact_bytes"] > 0
 
@@ -36,6 +52,6 @@ def test_mixture_torchscript_roundtrip(module, sample):
 def test_mixture_onnx_roundtrip(module, sample):
     pytest.importorskip("onnx")
     pytest.importorskip("onnxruntime")
-    report = validate_export_roundtrip(module, sample, "onnx")
+    report = validate_export_roundtrip(module, sample, "onnx", reference=_export_semantics_reference(module))
     assert report["passed"] is True
     assert report["max_abs_error"] <= 1e-4

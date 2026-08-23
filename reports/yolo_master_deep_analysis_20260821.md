@@ -350,3 +350,40 @@ python agent/scripts/validate_yolo_master_skill.py --suite quick --summary-only 
 2. **环境级（有恢复路径）**：完整 COCO 未拉取（multitask 参数化用例）、`flatc` 未安装（executorch）、全局 CLI editable 指向旧仓（待决策）、DINOv3 下载带宽（test_distill）。
 
 即：**本仓代码在当前门禁范围内无活跃回归**；上述 4 项环境项均有明确的一行恢复命令，且 preflight 工具会在每次运行时报备状态。
+
+---
+
+## 二十、MoT 导出数值分叉根因与修复（2026-08-23）
+
+### 20.1 根因（一句话版）
+
+**不是数值 bug，是测试不变量错误**：MoT 的导出语义（文档化设计）与 roundtrip 测试的断言对象不一致。
+
+具体链路：
+
+1. `router.py:267-269`：ONNX/TorchScript 导出时路由器**刻意跳过 Top-K**，直接输出全量 softmax 权重（稀疏 Top-K 的专家选择是数据依赖控制流，不可 trace；且会触发 PyTorch 2.9 legacy exporter 的 bool scatter_ 别名分析失败）；
+2. `block.py` 导出分支据此做 dense softmax 混合（所有专家留在图中）；
+3. 而 eager eval 走的是 `stable_normalize` 重归一化的 Top-1 稀疏分发（选中专家权重=1.0）；
+4. 因此 eager-sparse 与 export-dense 计算的是**两个不同的函数**：`expert_top(x)` vs `Σ softmax_i·expert_i(x)`。随机初始化的路由器 softmax 接近均匀，两者差异 ~0.003，必然超出 1e-4 容差。
+
+`export_capabilities()` 早已文档化此限制（"ONNX and TorchScript tracing use dense blending because expert selection is data-dependent"），但测试断言的是"导出产物 == eager-sparse 输出"这个不成立的不变量。该测试自 7cddb8a 引入后因从未在门禁中运行而长期隐性失败（直到 08-22 全量补跑才暴露）。
+
+### 20.2 修复（保持导出语义不变，修正验证对象）
+
+- `ultralytics/utils/export_validation.py`：`validate_export_roundtrip` 新增可选 `reference` 参数——当导出图刻意编码与 eager 不同的语义时，用 reference 模块（导出等价配置）计算 eager 基线，roundtrip 回归其本职：**验证导出产物对"导出图实际编码的函数"的保真度**。
+- `tests/test_export_roundtrip.py`：新增 `_export_semantics_reference()`——MoTBlock 且 top_k < NUM_EXPERTS 时，deepcopy 并置 `top_k = NUM_EXPERTS`（eval 下即 dense 路径，与导出语义逐点一致）作为 reference。
+
+### 20.3 验证
+
+| 项 | 结果 |
+|:--|:--|
+| `test_export_roundtrip.py` | ✅ **8 passed**（修复前 6 passed / 2 failed） |
+| 导出相关套件（mixture_matrix / mixture_export / moe_export_governance / capability_matrix） | ✅ 49 passed / 1 skipped |
+| MoT/MoA 全范围 | ✅ 242 passed |
+| ruff check / format | ✅ 干净 |
+
+### 20.4 遗留说明
+
+eager-sparse 与 export-dense 的**语义差距本身**仍是部署侧的认知负担（导出模型 ≠ eager 稀疏模型，精度可能略有差异）——这是数据依赖控制流不可 trace 的固有约束，当前以文档化处理。若未来要消除差距，方向是导出期固化路由决策（如 Gumbel 硬采样导出或 LUT 化），属研究项而非缺陷项。
+
+**至此主干在已覆盖门禁范围内无任何已知红灯（代码级与环境级均有归属）。**
