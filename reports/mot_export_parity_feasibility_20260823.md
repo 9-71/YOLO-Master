@@ -48,6 +48,7 @@ weights = stable_normalize(weights * mask.clamp(max=1.0), dim=1)
 | `test_mot_export_masked_matches_sparse_eager`（torchscript + onnx） | ✅ passed（无需 reference 覆盖，直接与 eager-sparse 比较） |
 | MoT/MoA 全范围回归 | ✅ 243 passed（含新增用例） |
 | 默认行为（export_masked=False） | 不变，既有的 reference 机制继续守护 dense 语义 roundtrip |
+| 配置线默认接线（commit 6b4f4c1） | ✅ 9 个 master MoT YAML 默认 `export_masked=True`；`tests/test_mot_export_masked_configs.py` 10 用例 passed；MoT/MoA 范围 253 passed |
 
 ## 五、开销与限制
 
@@ -58,7 +59,7 @@ weights = stable_normalize(weights * mask.clamp(max=1.0), dim=1)
 ## 六、建议
 
 1. **v26.09 将 `export_masked` 默认置 True**（本周期 opt-in 浸泡后）——对齐应该是默认行为，dense-softmax 导出作为遗留兼容保留一个版本周期后在 release note 中标注弃用。
-2. master 配置线中 MoT 变体（`yolo-master-mot-*.yaml`）的导出文档补充一句：导出产物与 eager 稀疏路径位级一致（当 export_masked 开启）。
+2. ~~master 配置线中 MoT 变体（`yolo-master-mot-*.yaml`）的导出文档补充一句：导出产物与 eager 稀疏路径位级一致（当 export_masked 开启）。~~ **已落地（commit 6b4f4c1，2026-08-23）**：`C2fMoT` 新增 `export_masked` 透传参数，全部 9 个 master MoT YAML（`26/` 与 `master/v0_8`、`master/v0_10` 的 mot / moa-mot / moe-mot-shared / mot-scene / mt 变体）默认开启 `export_masked=True`，位级对齐从模块能力升级为产品默认；配置级回归见 `tests/test_mot_export_masked_configs.py`（10 用例，含 config-built C2fMoT 的 trace-vs-eager 一致性断言）。
 3. MoA/MoE 家族若有同类 eager-sparse/export-dense 分叉，复用同一 `_export_semantics_reference` + masked 模式（当前它们的 roundtrip 已通过，无需动作）。
 
 ## 七、结论
