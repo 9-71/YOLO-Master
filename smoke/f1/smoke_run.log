@@ -1,0 +1,37 @@
+﻿
+=======================================================
+  [INIT] F1 Smoke Test Suite (Multi-Scenario Verification)
+=======================================================
+
+[Case 1] Contract Parsing & E2E Real Inference Execution...
+  [StateMachine] Job job_20260824_f1_001 transitioned to: RUNNING
+Results saved to [1mD:\Projects\YOLO-Master\runs\detect\runs\predict\job_20260824_f1_001[0m
+  [Executor] Real inference executed on device=0. Detected count: 6
+  [Artifacts] Verified artifacts (1 files) at: ['D:\\Projects\\YOLO-Master\\runs\\detect\\runs\\predict\\job_20260824_f1_001\\bus.jpg']
+  [StateMachine] Job job_20260824_f1_001 transitioned to: COMPLETED
+  [PASS] in 3.59s
+
+[Case 2] Security Constraint Defense (Shell Attempt)...
+  [StateMachine] Job smoke-sec-002 transitioned to: FAILED
+  [PASS] (Shell execution blocked)
+
+[Case 3] Security Constraint Defense (Path Traversal)...
+  [StateMachine] Job smoke-sec-003 transitioned to: FAILED
+  [PASS] (Path traversal blocked)
+
+[Case 4] State Machine Guard (COMPLETED -> RUNNING)...
+  [PASS] (Illegal transition prevented)
+
+[Case 5] State Machine Guard (PENDING -> COMPLETED)...
+  [PASS] (Skip prevented)
+
+=======================================================
+Smoke Test Execution Summary:
+  - E2E Happy Path (Real Predict)       [PASS] (Time: 3.59s, Artifacts: 1)
+  - Security Defense (Shell)            [PASS] (ErrorCode: SEC_ERR_001)
+  - Security Defense (Path Traversal)   [PASS] (ErrorCode: SEC_ERR_001)
+  - State Guard (COMPLETED->RUNNING)    [PASS] (Prevented illegal transition)
+  - State Guard (PENDING->COMPLETED)    [PASS] (Prevented skip to terminal)
+=======================================================
+>>> ALL F1 SMOKE SCENARIOS PASSED SUCCESSFULLY! <<<
+

@@ -1,0 +1,37 @@
+﻿{
+  "job_id": "job_20260824_f1_001",
+  "task_type": "predict",
+  "status": "pending",
+  "metadata": {
+    "created_at": "2026-08-24T14:30:00Z",
+    "created_by": "user_001",
+    "description": "Bus detection smoke verification and contract schema validation",
+    "priority": "normal",
+    "tags": ["smoke", "f1", "baseline"]
+  },
+  "params": {
+    "model_path": "yolov8n.pt",
+    "data_source": "ultralytics/assets/bus.jpg",
+    "conf_threshold": 0.25,
+    "device": "0"
+  },
+  "output": {
+    "output_dir": "runs/predict/job_20260824_f1_001",
+    "save_images": true,
+    "save_labels": false,
+    "save_logs": true,
+    "artifacts": []
+  },
+  "security_constraints": {
+    "path_whitelisted": true,
+    "allow_shell": false,
+    "allowed_paths": [".", "ultralytics/assets", "runs/predict", "ckpts"]
+  },
+  "runtime_tracking": {
+    "stream_logs": true,
+    "timeout_seconds": 300,
+    "cancellable": true,
+    "cancel_requested": false
+  },
+  "error": null
+}
