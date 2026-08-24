@@ -18,6 +18,7 @@ from PIL import Image
 
 import ultralytics.data.build as data_build
 from tests import CFG, MODEL, MODELS, SOURCE, SOURCES_LIST, TASK_MODEL_DATA
+from tests.dataset_fixtures import tiny_coco_multitask_yaml
 from ultralytics import RTDETR, YOLO
 from ultralytics.cfg import get_cfg
 from ultralytics.data.build import build_dataloader, load_inference_source
@@ -530,10 +531,12 @@ def test_track_stream(model, tmp_path):
 
 
 @pytest.mark.parametrize("task,weight,data", TASK_MODEL_DATA)
-def test_val(task: str, weight: str, data: str) -> None:
+def test_val(task: str, weight: str, data: str, tmp_path) -> None:
     """Test the validation mode of the YOLO model."""
     if IS_RASPBERRYPI and task == "semantic":
         skip_rpi_semantic()
+    if task == "multitask":
+        data = tiny_coco_multitask_yaml(tmp_path / "mt_data")
     model = YOLO(weight)
     for plots in {True, False}:  # Test both cases i.e. plots=True and plots=False
         metrics = model.val(data=data, imgsz=32, plots=plots)
@@ -1626,6 +1629,8 @@ def test_grayscale(task: str, model: str, data: str, tmp_path) -> None:
         skip_rpi_semantic()
     if task == "classify":  # not support grayscale classification yet
         return
+    if task == "multitask":
+        data = tiny_coco_multitask_yaml(tmp_path / "mt_data")
     grayscale_data = tmp_path / f"{Path(data).stem}-grayscale.yaml"
     data = check_det_dataset(data)
     data["channels"] = 1  # add additional channels key for grayscale
