@@ -46,10 +46,12 @@ int main(int argc, char** argv) {
     bool slicing_masks = false, cw_nms = false;
     float sigma = 0.1f;
 
-    app.add_option("-m,--model", model, "model: .onnx file, or ncnn dir / .param")->required();
+    app.add_option("-m,--model", model,
+                   "model: .onnx, .mnn, .engine/.trt, ncnn directory, or .param file")->required();
     app.add_option("-s,--source", source, "image / directory / video / dataset.yaml")->required();
     app.add_option("-b,--backend", backend, "auto|onnx|ncnn|mnn|trt")->default_str("auto");
-    app.add_option("-d,--device", device, "cpu|cuda|trt|coreml (backend-dependent; trt=TensorRT EP, coreml=Apple CoreML EP)")->default_str("cpu");
+    app.add_option("-d,--device", device,
+                   "backend-dependent: cpu, cuda, vulkan, opencl, trt, or coreml")->default_str("cpu");
     app.add_option("--classes", classes_opt, "auto|visdrone|sku (auto = from model metadata)")->default_str("auto");
     app.add_option("--imgsz", imgsz, "inference size (0 = from model / 640)");
     app.add_option("--conf", conf, "confidence threshold")->capture_default_str();

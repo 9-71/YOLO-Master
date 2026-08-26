@@ -244,11 +244,11 @@ Run the executable, pointing it at a model and a source (image, directory, video
                   --conf 0.25 --out out
 ```
 
-The backend is inferred from the model (`.onnx` → ONNX Runtime, an NCNN directory → NCNN), and class names and input size are read from the model metadata. Common options:
+The backend is inferred from the model (`.onnx` → ONNX Runtime, an NCNN directory or `.param` → NCNN, `.mnn` → MNN, `.engine`/`.trt` → TensorRT), and class names and input size are read from model metadata. Common options:
 
 ```text
---backend      auto | onnx | ncnn        (default: auto-detect)
---device       cpu | cuda                (ONNX backend; falls back to CPU)
+--backend      auto | onnx | ncnn | mnn | trt (default: auto-detect)
+--device       backend-dependent: cpu, cuda, vulkan, opencl, trt, coreml
 --conf         confidence threshold      (default 0.25; lower for dense scenes)
 --iou          NMS IoU threshold         (default 0.50)
 --multi-label  one detection per class >= conf per anchor (matches Ultralytics val mAP)
@@ -256,7 +256,7 @@ The backend is inferred from the model (`.onnx` → ONNX Runtime, an NCNN direct
 --out          dir for annotated outputs  --no-save / --quiet
 ```
 
-See `cpp/run_tests.sh` for the 16-test robustness battery.
+See `cpp/run_tests.sh` for the 18-test robustness battery.
 
 ## 🤖 Jetson Orin (Native TensorRT)
 
