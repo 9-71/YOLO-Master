@@ -2,7 +2,7 @@
 
 <img alt="C++" src="https://img.shields.io/badge/C++-17-blue.svg?style=flat&logo=c%2B%2B"> <img alt="Onnx-runtime" src="https://img.shields.io/badge/OnnxRuntime-717272.svg?logo=Onnx&logoColor=white"> <img alt="NCNN" src="https://img.shields.io/badge/NCNN-Tencent-blue.svg"> <img alt="MNN" src="https://img.shields.io/badge/MNN-Alibaba-orange.svg"> <img alt="TensorRT" src="https://img.shields.io/badge/TensorRT-NVIDIA-76B900.svg"> <img alt="Core ML" src="https://img.shields.io/badge/CoreML-Apple-black.svg"> <img alt="Linux" src="https://img.shields.io/badge/Linux-FCC624.svg?logo=linux&logoColor=black"> <img alt="Windows" src="https://img.shields.io/badge/Windows-0078D6.svg?logo=windows&logoColor=white"> <img alt="macOS" src="https://img.shields.io/badge/macOS-000000.svg?logo=apple&logoColor=white"> <img alt="Jetson" src="https://img.shields.io/badge/Jetson%20Orin-76B900.svg?logo=nvidia&logoColor=white">
 
-This project provides a universal inference runtime for [YOLO-Master](https://github.com/Tencent/YOLO-Master) object-detection models, leveraging, [ONNX Runtime](https://onnxruntime.ai/), [NCNN](https://github.com/Tencent/ncnn), [MNN](https://github.com/alibaba/mnn), [TensorRT](https://github.com/nvidia/tensorrt), and [CoreML (NEW!)](https://github.com/apple/coremltools) backends. It runs on almost every platform: Linux, Windows (10/11), Jetson, and MacOS; supports CPU, [NVIDIA CUDA](https://developer.nvidia.com/cuda-toolkit), and [Apple Metal Performance Shaders](https://developer.apple.com/documentation/metalperformanceshaders). It's capable of auto-detecting the model format, class names, and input size -- designed for real-time, end-to-end edge deployment in some of the most challenging tasks (VisDrone, SKU-110K, AI-TOD-v2, etc.).
+This project provides a cross-platform inference runtime for [YOLO-Master](https://github.com/Tencent/YOLO-Master) object-detection models using [ONNX Runtime](https://onnxruntime.ai/), [NCNN](https://github.com/Tencent/ncnn), [MNN](https://github.com/alibaba/mnn), [TensorRT](https://github.com/nvidia/tensorrt), and [Core ML](https://github.com/apple/coremltools) backends. The supported targets are Linux, Windows 10/11, Jetson, and macOS, with CPU, [NVIDIA CUDA](https://developer.nvidia.com/cuda-toolkit), and [Apple Metal Performance Shaders](https://developer.apple.com/documentation/metalperformanceshaders) execution where available. The runtime can infer the model format and read class names and input size from model metadata.
 
 <img width="900" alt="edge_deployment_architecture_light" src="https://github.com/user-attachments/assets/9c5e6739-b4a2-4747-991f-f7e1d9552bfa" />
 
@@ -27,23 +27,23 @@ Full notes: [Release Page](https://github.com/skywalker-lt/yolo-master-edge/rele
 ## ✨ Update (27-07-2026): YOLO-Master Windows 10/11 Runner (**GUI**) on ONNX/ncnn/MNN backends with **GPU Acceleration**
 **Download the [CPU runner](https://github.com/skywalker-lt/yolo-master-edge/releases/download/v1.0.0-windows/YOLO-Master-Windows-1.0.0.zip) / [CUDA runner](https://github.com/skywalker-lt/yolo-master-edge/releases/download/v1.0.0-windows/YOLO-Master-Windows-CUDA-1.0.0.zip).**
 
-Now the Windows C++ edge runner has an improved backend and dedicated GUI! **YOLO-Master Windows Runner GUI** provides a refined C++ edge inference backend that bundles [ONNX](https://onnxruntime.ai/), [ncnn](https://github.com/Tencent/ncnn) and [MNN](https://github.com/alibaba/MNN) with **GPU acceleration**, + a polished frontend built with [Dear ImGui](https://github.com/ocornut/imgui) with all functionalities from the MacOS Core ML Runner below. It also bundles a default `YOLO-Master-v0.1-seg-N` segmentation model as the Mac runner. 
+Now the Windows C++ edge runner has an improved backend and dedicated GUI. **YOLO-Master Windows Runner GUI** provides a C++ edge inference backend that bundles [ONNX](https://onnxruntime.ai/), [ncnn](https://github.com/Tencent/ncnn), and [MNN](https://github.com/alibaba/MNN) with **GPU acceleration**, together with a [Dear ImGui](https://github.com/ocornut/imgui) frontend. It also bundles a default `YOLO-Master-v0.1-seg-N` segmentation model for the macOS runner.
 
 <img width="400" alt="48 2" src="https://github.com/user-attachments/assets/fa96097b-1014-46c0-8692-2c3656f4f763" />  <img width="400" alt="50 2" src="https://github.com/user-attachments/assets/db1e2194-584e-4898-b2b3-e7370fa325c5" />
 <img width="800" alt="49 2" src="https://github.com/user-attachments/assets/6a438094-b352-4f59-bb55-9e3c600837ad" />
 
 - **Three Backends in One App** ONNX, ncnn, and MNN all ship in single executable. Inference backends can be switched with a single click.
-- **GPU Acceleration for All Backends** up to **4x speedup** with CUDA-accelerated inference on consumer devices. (please refer to the inference speed comparison table in [Relases](https://github.com/skywalker-lt/yolo-master-edge/releases/tag/v1.0.0-windows)) 
+- **GPU Acceleration for All Backends** up to **4x speedup** with CUDA-accelerated inference on consumer devices. (See the inference speed comparison table in the [Releases](https://github.com/skywalker-lt/yolo-master-edge/releases/tag/v1.0.0-windows).)
 
 Please check our [Release Page](https://github.com/skywalker-lt/yolo-master-edge/releases/tag/v1.0.0-windows) for more details.
 
 ---
 
-## 🍎 Update (17-07-2026): YOLO-Master CoreML Runner for MacOS (GUI)
+## 🍎 Update (17-07-2026): YOLO-Master Core ML Runner for macOS (GUI)
 
 **[Download](https://github.com/skywalker-lt/yolo-master-edge/releases/download/v1.0.0-macos/YOLO-Master-CoreML-Runner-1.0.0.zip) and try it now!**
 
-Alongside the Linxu and Windows C++ runtime, we now provide a native, user-friendly macOS runner, **YOLO-Master CoreML Runner** — a [SwiftUI](https://developer.apple.com/xcode/swiftui/) frontend over an Apple [Core ML](https://developer.apple.com/documentation/coreml) backend for on-device [YOLO-Master](https://github.com/Tencent/YOLO-Master) inference, no command line required. It ships with a default `YOLO-Master-v0.1-seg-N` segmentation model, so it runs out of the box. 
+Alongside the Linux and Windows C++ runtimes, this project provides a native macOS runner, **YOLO-Master Core ML Runner**: a [SwiftUI](https://developer.apple.com/xcode/swiftui/) frontend over an Apple [Core ML](https://developer.apple.com/documentation/coreml) backend for on-device [YOLO-Master](https://github.com/Tencent/YOLO-Master) inference. It ships with a default `YOLO-Master-v0.1-seg-N` segmentation model for an immediate smoke test.
 
 <img width="400" alt="Screenshot1" src="https://github.com/user-attachments/assets/d1747b4d-0961-458e-99c5-2a9870b8df96" /> <img width="400" alt="Screenshot2" src="https://github.com/user-attachments/assets/5f71d80a-6238-49bd-a230-95ccd4020d29" /> 
 <img width="400" alt="Screenshot3" src="https://github.com/user-attachments/assets/9cc60636-b795-4326-992c-06239a77db55" /> <img width="400" alt="Screenshot4" src="https://github.com/user-attachments/assets/b5ee48bb-52dc-4ff7-b0bd-f2461b34ad7c" />
@@ -51,7 +51,7 @@ Alongside the Linxu and Windows C++ runtime, we now provide a native, user-frien
 - **Detection & Segmentation:** Runs both bounding-box detectors and instance-segmentation models, with anti-aliased mask overlays and a Masks / Boxes / Both toggle.
 - **Images, Video & Live Camera:** Infers single images, whole folders (batch), and MP4 video, plus a low-latency **live webcam** mode with a real-time FPS / ms-per-frame readout.
 - **⭐️ Real-Time Tuning:** Confidence, IoU, box style, labels, and letterbox/stretch preprocessing are all adjustable live:  the forward pass is cached, so tuning re-draws without re-inferring.
-- **Signed & Notarized:** A **universal** (Apple Silicon + Intel) bundle, **Developer-ID signed and notarized by Apple**: it installs by a simple double-click on any Mac with MacOS 14+.
+- **Signed & Notarized:** A **universal** (Apple Silicon + Intel) bundle, **Developer-ID signed and notarized by Apple**; it installs by double-clicking on macOS 14+.
 
 For more details, please check the [Release](https://github.com/skywalker-lt/yolo-master-edge/releases/tag/v1.0.0-macos) page.
 
@@ -62,8 +62,8 @@ For more details, please check the [Release](https://github.com/skywalker-lt/yol
 - **Universal CLI Binary for Linux and Windows:** A single executable integrates **ONNX Runtime**, **NCNN** and **MNN** backends; the backend, class names, and input size are auto-detected from the model — no recompilation or any dataset YAML needed at runtime.
 - **Verified Accuracy:** Reproduces the PyTorch original to **< 0.5%** mAP50-95 across ONNX / NCNN / MNN, and **< 1.0%** under INT8 quantization, on 548 VisDrone validation images.
 - **Deployment-Friendly:** Cross-platform [CMake](https://cmake.org/) build producing **self-contained and relocatable bundles** for Linux x86_64 and Windows 10/11 — installable by unzip, no dependencies on the target.
-- **GUI:** On Windows 10/11 and MacOS, there are user-friendly GUI runners which integarates all functions of the CLI bundles and supports GPU acceleration.
-- **GPU Acceleration:** Supports FP32 CPU inference & [NVIDIA CUDA](https://developer.nvidia.com/cuda-toolkit) GPU acceleration through the ONNX Runtime CUDA Execution Provider on both Linux and Windows, on Windows via NCNN's [Vulkan](https://vulkan.org) & MNN's [OpenCL](https://opencl.org), on [NVIDIA Jetson](https://developer.nvidia.com/embedded-computing) Orin via a native TensorRT backend (JetPack 7), and accelerated on MacOS via [MPS](https://developer.apple.com/documentation/metalperformanceshaders) beind Core ML.
+- **GUI:** Windows 10/11 and macOS provide GUI runners that integrate the CLI bundle functionality and support GPU acceleration.
+- **GPU Acceleration:** Supports FP32 CPU inference and [NVIDIA CUDA](https://developer.nvidia.com/cuda-toolkit) through the ONNX Runtime CUDA Execution Provider on Linux and Windows; Windows also supports NCNN [Vulkan](https://vulkan.org) and MNN [OpenCL](https://opencl.org), NVIDIA Jetson Orin supports a native TensorRT backend (JetPack 7), and macOS uses [MPS](https://developer.apple.com/documentation/metalperformanceshaders) through Core ML.
 
 ## ☕ Note
 
@@ -134,10 +134,10 @@ Ensure you have the following dependencies installed （not required if you only
 > **Note:** The CUDA Execution Provider is ABI-coupled to a CUDA major version — use the ONNX Runtime GPU build that matches your CUDA Toolkit (e.g. the CUDA-12 build with CUDA 12.x), or you'll hit loader errors.
 
 
-### MacOS
+### macOS
 |                                                         | Version       | Notes                                                                                                          |
 | :------------------------------------------------------------------ | :------------ | :------------------------------------------------------------------------------------------------------------- |
-| MacOS | Sonoma or newer (14.0+) | SwiftUI API floor (onKeyPress, zero-param onChange)  |
+| macOS | Sonoma or newer (14.0+) | SwiftUI API floor (onKeyPress, zero-param onChange)  |
 | [Xcode Command Line Tools](https://developer.apple.com/documentation/xcode/installing-the-command-line-tools/) | Xcode 15+    | Install with xcode-select --install. Provides swift, codesign, ditto. Full Xcode GUI not required for a build.   |
 | [Swift toolchain](https://www.swift.org/swiftly/documentation/swiftly/install-toolchains/) | 5.9+  | swift-tools-version:5.9 in Package.swift; ships with the CLT/Xcode above. Build: swift build -c release --package-path mac. |       
 | Apple SDK frameworks | macOS 14+ SDK (system) | SwiftUI, AppKit, AVFoundation, Core ML, Core Image, Core Video, ImageIO, QuartzCore, etc. |
@@ -220,7 +220,7 @@ Ensure you have the following dependencies installed （not required if you only
 
    > If PowerShell blocks `.ps1` scripts, use `.cmd` scripts as they are not subject to execution policy. `build.ps1` is equivalent and takes the same paths as parameters.   
    
-### MacOS 
+### macOS
 
 1.  **Clone the Repository:**
     ```bash
@@ -251,7 +251,7 @@ The backend is inferred from the model (`.onnx` → ONNX Runtime, an NCNN direct
 --device       cpu | cuda                (ONNX backend; falls back to CPU)
 --conf         confidence threshold      (default 0.25; lower for dense scenes)
 --iou          NMS IoU threshold         (default 0.50)
---multi-label  one detection per class > conf per anchor (matches Ultralytics val mAP)
+--multi-label  one detection per class >= conf per anchor (matches Ultralytics val mAP)
 --save-txt     dir to write predictions  ('class conf x1 y1 x2 y2')
 --out          dir for annotated outputs  --no-save / --quiet
 ```
@@ -268,28 +268,28 @@ tar xzf yolomaster_edge-jetson-orin-jp7.tar.gz && cd yolomaster_edge-jetson-orin
 ./yolomaster_edge --model models/esmoe_n_fp16.engine --source <img|dir> --classes visdrone --out out
 ```
 
-On an Orin Nano 4 GB the FP16 engine runs at **35.7 FPS** (27.8 ms) with **mAP50-95 0.2029 (−0.34% vs FP32)**. FP16 is the recommended target on this model — its area-attention does not quantize, so INT8 is both slower and less accurate here. To build from source, the [`jetson/`](jetson/) scripts drive the engine build and packaging; see [`jetson/README.md`](jetson/README.md) and [`jetson/DEPLOYMENT_LOG.md`](jetson/DEPLOYMENT_LOG.md).
+On an Orin Nano 4 GB the FP16 engine runs at **35.7 FPS** (27.8 ms) with **mAP50-95 0.2029 (−0.07 pp vs FP32)**. FP16 is the recommended target for this model because the area-attention path is not quantized, making INT8 both slower and less accurate here. To build from source, the [`jetson/`](jetson/) scripts drive the engine build and packaging; see [`jetson/README.md`](jetson/README.md) and [`jetson/DEPLOYMENT_LOG.md`](jetson/DEPLOYMENT_LOG.md).
 
 ## 📊 Results
 
 Inference performed on full 548 VisDrone validation images against the PyTorch original (`mAP50-95 = 0.2036`), using identical settings (conf 0.001, NMS IoU 0.7, multi-label).
 
-| Inference Backend | Device | mAP50-95 | Δ vs PyTorch | Latency | FPS   |
+| Inference Backend | Device | mAP50-95 | Δ vs PyTorch (percentage points) | Latency | FPS   |
 | :------------------------ | :------- | :------- | :----------- | :------ | :---- |
-| ONNX | CPU | 0.2034 | −0.02%  | 40 ms | 25.0  |
-| ONNX (CUDA) | H200 SXM | 0.2033 | −0.03% | 7.8 ms  | 128   |
-| ONNX (CUDA) | RTX 5070Ti Laptop | 0.2033 | −0.03%  | 9.0 ms  | 111   |
-| NCNN | CPU | 0.2034 | −0.02% | 80 ms | 12.5  |
-| NCNN (Vulkan) | RTX 5070Ti Laptop | 0.2034 | −0.02%  | 20.2 ms | 49.5  | 
-| MNN | CPU | 0.2034 | −0.02% | 74 ms | 13.5  |
-| MNN (OpenCL) | RTX 5070Ti Laptop | 0.2034 | −0.02%  | 19.1 | 52.4  | 
-| INT8 mixed ¹ | CPU | 0.1952 | −0.84% | 137 ms  | 7.2   |
-| TensorRT FP16 | Jetson Orin Nano 4GB | 0.2029 | −0.34% | 27.8 ms | 35.7 |
+| ONNX | CPU | 0.2034 | −0.02 pp  | 40 ms | 25.0  |
+| ONNX (CUDA) | H200 SXM | 0.2033 | −0.03 pp | 7.8 ms  | 128   |
+| ONNX (CUDA) | RTX 5070Ti Laptop | 0.2033 | −0.03 pp  | 9.0 ms  | 111   |
+| NCNN | CPU | 0.2034 | −0.02 pp | 80 ms | 12.5  |
+| NCNN (Vulkan) | RTX 5070Ti Laptop | 0.2034 | −0.02 pp  | 20.2 ms | 49.5  |
+| MNN | CPU | 0.2034 | −0.02 pp | 74 ms | 13.5  |
+| MNN (OpenCL) | RTX 5070Ti Laptop | 0.2034 | −0.02 pp  | 19.1 ms | 52.4  |
+| INT8 mixed ¹ | CPU | 0.1952 | −0.84 pp | 137 ms  | 7.2   |
+| TensorRT FP16 | Jetson Orin Nano 4GB | 0.2029 | −0.07 pp | 27.8 ms | 35.7 |
 | Core ML | Apple M4 Max | N/A (no validator bundled) | N/A | 17.4 ms | 57.4  |
 
 CPU latencies are x86 @ 4 threads on one host; mAP is identical across FP32 formats because they are of the same graph. The Jetson row is a native TensorRT FP16 engine, measured on-device.
 
-> ¹ INT8 is *slower* than FP32 on CPU — its throughput payoff needs INT8 tensor cores, not x86 CPUs. The CPU INT8 result is an **accuracy** proof (−0.84%, within budget); on the actual accelerator, note that even on the Orin's tensor cores FP16 wins here (the attention doesn't quantize — see the TensorRT row and [`TECHNICAL_REPORT.md`](TECHNICAL_REPORT.md) Section 9).
+> ¹ INT8 is *slower* than FP32 on CPU — its throughput payoff needs INT8 tensor cores, not x86 CPUs. The CPU INT8 result is **accuracy evidence** (−0.84 percentage points, within budget); on the actual accelerator, FP16 also wins on Orin because the attention path is not quantized (see the TensorRT row and [`TECHNICAL_REPORT.md`](TECHNICAL_REPORT.md) Section 9).
 
 See [`TECHNICAL_REPORT.md`](TECHNICAL_REPORT.md) for the full methodology, INT8 quantization deep-dive, and numerical parity analysis.
 

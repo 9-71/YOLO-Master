@@ -92,6 +92,12 @@ if(USE_MNN AND EXISTS "${MNN_ROOT}/include/MNN/Interpreter.hpp")
     message(FATAL_ERROR "USE_MNN=ON but libMNN not found under ${MNN_ROOT}/{lib,build}")
   endif()
   list(APPEND LIBS ${MNN_LIB})
+  if(UNIX AND NOT APPLE)
+    # Static MNN builds do not propagate their POSIX runtime dependencies.
+    # Keep shared-library builds unchanged while making libMNN.a linkable.
+    find_package(Threads REQUIRED)
+    list(APPEND LIBS Threads::Threads ${CMAKE_DL_LIBS})
+  endif()
   if(WIN32)
     file(GLOB MNN_DLLS "${MNN_ROOT}/lib/*.dll" "${MNN_ROOT}/bin/*.dll" "${MNN_ROOT}/build/*.dll" "${MNN_ROOT}/build/Release/*.dll")
     list(APPEND RUNTIME_DLLS ${MNN_DLLS})

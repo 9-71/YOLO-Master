@@ -4,18 +4,7 @@
 #include "yolomaster.hpp"
 #include "slicing.hpp"
 #include "annotate_export.hpp"
-#ifdef USE_ORT
-#include "ort_backend.hpp"
-#endif
-#ifdef USE_NCNN
-#include "ncnn_backend.hpp"
-#endif
-#ifdef USE_MNN
-#include "mnn_backend.hpp"
-#endif
-#ifdef USE_TRT
-#include "trt_backend.hpp"
-#endif
+#include "backend_factory.hpp"
 #include "CLI11.hpp"
 #include "stb_image.h"
 #include "stb_image_write.h"
@@ -28,10 +17,6 @@
 
 using namespace yolomaster;
 namespace fs = std::filesystem;
-
-static bool ends_with(const std::string& s, const std::string& suf) {
-    return s.size() >= suf.size() && s.compare(s.size() - suf.size(), suf.size(), suf) == 0;
-}
 
 // image I/O via stb (avoids OpenCV imgcodecs -> GDAL/DB/poppler dependency closure)
 static cv::Mat imread_bgr(const std::string& path) {
@@ -50,7 +35,7 @@ static bool imwrite_jpg(const std::string& path, const cv::Mat& bgr) {
 }
 
 int main(int argc, char** argv) {
-    CLI::App app{"yolomaster_edge - universal YOLO-Master edge runner (ONNX / ncnn / MNN)"};
+    CLI::App app{"yolomaster_edge - universal YOLO-Master edge runner (ONNX / ncnn / MNN / TensorRT)"};
     std::string model, source, backend = "auto", classes_opt = "auto", outdir = "runs_edge";
     std::string device = "cpu", savetxt;
     int imgsz = 0, threads = 4, limit = 0, max_det = 300;
@@ -63,8 +48,8 @@ int main(int argc, char** argv) {
 
     app.add_option("-m,--model", model, "model: .onnx file, or ncnn dir / .param")->required();
     app.add_option("-s,--source", source, "image / directory / video / dataset.yaml")->required();
-    app.add_option("-b,--backend", backend, "auto|onnx|ncnn|mnn")->default_str("auto");
-    app.add_option("-d,--device", device, "cpu|cuda|trt|coreml (onnx backend; trt=TensorRT EP, coreml=Apple CoreML EP)")->default_str("cpu");
+    app.add_option("-b,--backend", backend, "auto|onnx|ncnn|mnn|trt")->default_str("auto");
+    app.add_option("-d,--device", device, "cpu|cuda|trt|coreml (backend-dependent; trt=TensorRT EP, coreml=Apple CoreML EP)")->default_str("cpu");
     app.add_option("--classes", classes_opt, "auto|visdrone|sku (auto = from model metadata)")->default_str("auto");
     app.add_option("--imgsz", imgsz, "inference size (0 = from model / 640)");
     app.add_option("--conf", conf, "confidence threshold")->capture_default_str();
@@ -74,7 +59,7 @@ int main(int argc, char** argv) {
     app.add_option("--limit", limit, "cap #inputs (0 = all)");
     app.add_option("--out", outdir, "output dir for annotated results")->capture_default_str();
     app.add_option("--save-txt", savetxt, "dir to write per-image predictions ('class conf x1 y1 x2 y2')");
-    app.add_flag("--multi-label", multilabel, "one detection per class>conf per anchor (matches ultralytics val mAP)");
+    app.add_flag("--multi-label", multilabel, "one detection per class >= conf per anchor (matches ultralytics val mAP)");
     app.add_flag("--stretch", stretch, "preprocess by stretching to square instead of aspect-preserving letterbox");
     app.add_flag("--no-save", no_save, "do not write annotated outputs");
     app.add_flag("--quiet", quiet, "suppress per-image logs");
@@ -97,53 +82,15 @@ int main(int argc, char** argv) {
     else if (label_format == "voc") lfmt = annot::Format::PascalVOC;
     else if (label_format != "yolo") { std::cerr << "unknown --label-format: " << label_format << "\n"; return 2; }
 
-    // ---- backend auto-detect from the model path ----
-    if (backend == "auto") {
-        std::error_code ec;
-        if (fs::is_directory(model, ec) || ends_with(model, ".param")) backend = "ncnn";
-        else if (ends_with(model, ".onnx")) backend = "onnx";
-        else if (ends_with(model, ".mnn")) backend = "mnn";
-        else if (ends_with(model, ".engine") || ends_with(model, ".trt")) backend = "trt";
-        else { std::cerr << "cannot infer backend from '" << model << "'; pass --backend\n"; return 2; }
-    }
-
     // ---- construct backend ----
     std::unique_ptr<Backend> be;
-    try {
-        if (backend == "onnx") {
-#ifdef USE_ORT
-            be = std::make_unique<OrtBackend>(model, threads, device);
-#else
-            std::cerr << "built without ONNXRuntime backend\n"; return 2;
-#endif
-        } else if (backend == "ncnn") {
-#ifdef USE_NCNN
-            std::string param = model, bin;
-            std::error_code ec;
-            if (fs::is_directory(model, ec)) {
-                param = (fs::path(model) / "model.ncnn.param").string();
-                bin = (fs::path(model) / "model.ncnn.bin").string();
-            } else bin = param.substr(0, param.rfind('.')) + ".bin";
-            be = std::make_unique<NcnnBackend>(param, bin, threads);
-#else
-            std::cerr << "built without ncnn backend\n"; return 2;
-#endif
-        } else if (backend == "mnn") {
-#ifdef USE_MNN
-            be = std::make_unique<MnnBackend>(model, threads, device == "cuda" ? "cuda" : "cpu");
-#else
-            std::cerr << "built without MNN backend (rebuild with -DUSE_MNN=ON)\n"; return 2;
-#endif
-        } else if (backend == "trt") {
-#ifdef USE_TRT
-            be = std::make_unique<TrtBackend>(model);
-#else
-            std::cerr << "built without TensorRT backend (rebuild with -DUSE_TRT=ON)\n"; return 2;
-#endif
-        } else { std::cerr << "unknown backend: " << backend << "\n"; return 2; }
-    } catch (const std::exception& e) {
-        std::cerr << "backend init failed: " << e.what() << "\n"; return 3;
+    std::string resolved_backend, backend_error;
+    be = make_backend(model, backend, threads, device, resolved_backend, backend_error);
+    if (!be) {
+        std::cerr << backend_error << "\n";
+        return 3;
     }
+    backend = resolved_backend;
 
     // ---- resolve config: --flag > model metadata > default ----
     Config cfg;

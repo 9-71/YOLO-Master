@@ -1,10 +1,17 @@
 #!/usr/bin/env python3
-"""Export YOLO-Master checkpoints for edge backend validation."""
+"""Export a YOLO-Master checkpoint for edge-backend comparison."""
 
 from __future__ import annotations
 
 import argparse
+import sys
 from pathlib import Path
+
+EXAMPLE_ROOT = Path(__file__).resolve().parent
+REPO_ROOT = EXAMPLE_ROOT.parents[1]
+for path in (EXAMPLE_ROOT, REPO_ROOT):
+    if str(path) not in sys.path:
+        sys.path.insert(0, str(path))
 
 from edge_utils import add_profile_args
 
@@ -12,18 +19,36 @@ from edge_utils import add_profile_args
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--model", type=Path, required=True, help="YOLO-Master checkpoint path")
-    parser.add_argument("--formats", nargs="+", default=["onnx", "ncnn"], choices=("onnx", "ncnn", "mnn"))
+    parser.add_argument(
+        "--formats", nargs="+", default=["onnx", "ncnn"], choices=("onnx", "ncnn", "mnn"),
+        help="export formats; MNN conversion requires ONNX",
+    )
     parser.add_argument("--imgsz", type=int, default=960)
     parser.add_argument("--opset", type=int, default=12)
     parser.add_argument("--half", action="store_true")
     parser.add_argument("--int8", action="store_true")
-    parser.add_argument("--simplify", action="store_true", help="Simplify ONNX where supported")
+    simplify = parser.add_mutually_exclusive_group()
+    simplify.add_argument(
+        "--simplify", dest="simplify", action="store_true",
+        help="Simplify ONNX with onnxsim (default)",
+    )
+    simplify.add_argument(
+        "--no-simplify", dest="simplify", action="store_false",
+        help="debug-only raw ONNX export",
+    )
+    parser.set_defaults(simplify=True)
     add_profile_args(parser)
     return parser.parse_args()
 
 
 def main() -> int:
     args = parse_args()
+    if not args.model.is_file():
+        raise FileNotFoundError(f"checkpoint not found: {args.model}")
+    if args.imgsz <= 0 or args.opset < 7:
+        raise ValueError("imgsz must be positive and opset must be at least 7")
+    if "mnn" in args.formats and "onnx" not in args.formats:
+        raise ValueError("MNN conversion requires ONNX in --formats")
     from ultralytics import YOLO
 
     model = YOLO(str(args.model))
@@ -31,9 +56,9 @@ def main() -> int:
         export_args = {
             "format": fmt,
             "imgsz": args.imgsz,
-            "half": args.half,
-            "int8": args.int8,
         }
+        if fmt == "onnx":
+            export_args.update({"half": args.half, "int8": args.int8})
         if fmt == "onnx":
             export_args.update({"opset": args.opset, "simplify": args.simplify})
         print(f"[export] {args.model} -> {fmt} with {export_args}")
