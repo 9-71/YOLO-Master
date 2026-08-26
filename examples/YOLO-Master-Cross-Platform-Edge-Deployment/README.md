@@ -27,15 +27,15 @@ Full notes: [Release Page](https://github.com/skywalker-lt/yolo-master-edge/rele
 ## ✨ Update (27-07-2026): YOLO-Master Windows 10/11 Runner (**GUI**) on ONNX/ncnn/MNN backends with **GPU Acceleration**
 **Download the [CPU runner](https://github.com/skywalker-lt/yolo-master-edge/releases/download/v1.0.0-windows/YOLO-Master-Windows-1.0.0.zip) / [CUDA runner](https://github.com/skywalker-lt/yolo-master-edge/releases/download/v1.0.0-windows/YOLO-Master-Windows-CUDA-1.0.0.zip).**
 
-Now the Windows C++ edge runner has an improved backend and dedicated GUI. **YOLO-Master Windows Runner GUI** provides a C++ edge inference backend that bundles [ONNX](https://onnxruntime.ai/), [ncnn](https://github.com/Tencent/ncnn), and [MNN](https://github.com/alibaba/MNN) with **GPU acceleration**, together with a [Dear ImGui](https://github.com/ocornut/imgui) frontend. It also bundles a default `YOLO-Master-v0.1-seg-N` segmentation model for the macOS runner.
+Now the Windows C++ edge runner has an improved backend and dedicated GUI. **YOLO-Master Windows Runner GUI** provides a C++ edge inference backend that bundles [ONNX](https://onnxruntime.ai/), [ncnn](https://github.com/Tencent/ncnn), and [MNN](https://github.com/alibaba/MNN) with **GPU acceleration**, together with a [Dear ImGui](https://github.com/ocornut/imgui) frontend. It includes the same default `YOLO-Master-v0.1-seg-N` segmentation model as the macOS runner.
 
 <img width="400" alt="48 2" src="https://github.com/user-attachments/assets/fa96097b-1014-46c0-8692-2c3656f4f763" />  <img width="400" alt="50 2" src="https://github.com/user-attachments/assets/db1e2194-584e-4898-b2b3-e7370fa325c5" />
 <img width="800" alt="49 2" src="https://github.com/user-attachments/assets/6a438094-b352-4f59-bb55-9e3c600837ad" />
 
-- **Three Backends in One App** ONNX, ncnn, and MNN all ship in single executable. Inference backends can be switched with a single click.
-- **GPU Acceleration for All Backends** up to **4x speedup** with CUDA-accelerated inference on consumer devices. (See the inference speed comparison table in the [Releases](https://github.com/skywalker-lt/yolo-master-edge/releases/tag/v1.0.0-windows).)
+- **Three Backends in One App** ONNX, ncnn, and MNN ship in a single executable, and the inference backend can be switched at runtime.
+- **GPU Acceleration for All Backends** supports CUDA (ONNX Runtime), Vulkan (ncnn), and OpenCL (MNN), with up to **4x speedup** on supported consumer hardware. (See the inference speed comparison table in the [Releases](https://github.com/skywalker-lt/yolo-master-edge/releases/tag/v1.0.0-windows).)
 
-Please check our [Release Page](https://github.com/skywalker-lt/yolo-master-edge/releases/tag/v1.0.0-windows) for more details.
+See the [Windows release notes](https://github.com/skywalker-lt/yolo-master-edge/releases/tag/v1.0.0-windows) for build and benchmark details.
 
 ---
 
@@ -50,10 +50,10 @@ Alongside the Linux and Windows C++ runtimes, this project provides a native mac
 
 - **Detection & Segmentation:** Runs both bounding-box detectors and instance-segmentation models, with anti-aliased mask overlays and a Masks / Boxes / Both toggle.
 - **Images, Video & Live Camera:** Infers single images, whole folders (batch), and MP4 video, plus a low-latency **live webcam** mode with a real-time FPS / ms-per-frame readout.
-- **⭐️ Real-Time Tuning:** Confidence, IoU, box style, labels, and letterbox/stretch preprocessing are all adjustable live:  the forward pass is cached, so tuning re-draws without re-inferring.
+- **⭐️ Real-Time Tuning:** Confidence, IoU, box style, labels, and letterbox/stretch preprocessing are adjustable at runtime. The forward pass is cached, so tuning redraws without rerunning inference.
 - **Signed & Notarized:** A **universal** (Apple Silicon + Intel) bundle, **Developer-ID signed and notarized by Apple**; it installs by double-clicking on macOS 14+.
 
-For more details, please check the [Release](https://github.com/skywalker-lt/yolo-master-edge/releases/tag/v1.0.0-macos) page.
+See the [macOS release notes](https://github.com/skywalker-lt/yolo-master-edge/releases/tag/v1.0.0-macos) for build and distribution details.
 
 ---
 
@@ -117,7 +117,7 @@ python coreml_export/export_coreml.py --weights base.pt --merge-lora-dir lora_ad
 
 ## ⚙️ Dependencies
 
-Ensure you have the following dependencies installed （not required if you only want to smoke-test the pre-built bundles):
+Ensure you have the following dependencies installed (not required if you only want to smoke-test the pre-built bundles):
 
 ### Linux & Windows
 
