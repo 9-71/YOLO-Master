@@ -38,7 +38,8 @@ inline std::string detect_backend(const std::string& model) {
 }
 
 // Construct a backend. On failure returns nullptr and fills `err`. `backend` may be
-// "auto" (detected from the path). `device` is onnx-only ("cpu|cuda|coreml|trt").
+// "auto" (detected from the path). `device` is mapped to the selected backend's
+// native execution provider (for example, CUDA for ONNX Runtime or Vulkan for NCNN).
 inline std::unique_ptr<Backend> make_backend(std::string model, std::string backend,
                                              int threads, const std::string& device,
                                              std::string& resolved, std::string& err) {
