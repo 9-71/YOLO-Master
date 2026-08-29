@@ -1,10 +1,70 @@
 # YOLO-Master Cross-Platform Edge Inference Runtime
 
-<img alt="C++" src="https://img.shields.io/badge/C++-17-blue.svg?style=flat&logo=c%2B%2B"> <img alt="Onnx-runtime" src="https://img.shields.io/badge/OnnxRuntime-717272.svg?logo=Onnx&logoColor=white"> <img alt="NCNN" src="https://img.shields.io/badge/NCNN-Tencent-blue.svg"> <img alt="MNN" src="https://img.shields.io/badge/MNN-Alibaba-orange.svg"> <img alt="TensorRT" src="https://img.shields.io/badge/TensorRT-NVIDIA-76B900.svg"> <img alt="Core ML" src="https://img.shields.io/badge/CoreML-Apple-black.svg"> <img alt="Linux" src="https://img.shields.io/badge/Linux-FCC624.svg?logo=linux&logoColor=black"> <img alt="Windows" src="https://img.shields.io/badge/Windows-0078D6.svg?logo=windows&logoColor=white"> <img alt="macOS" src="https://img.shields.io/badge/macOS-000000.svg?logo=apple&logoColor=white"> <img alt="Jetson" src="https://img.shields.io/badge/Jetson%20Orin-76B900.svg?logo=nvidia&logoColor=white">
+<img alt="C++" src="https://img.shields.io/badge/C++-17-blue.svg?style=flat&logo=c%2B%2B"> <img alt="Onnx-runtime" src="https://img.shields.io/badge/OnnxRuntime-717272.svg?logo=Onnx&logoColor=white"> <img alt="NCNN" src="https://img.shields.io/badge/NCNN-Tencent-blue.svg"> <img alt="MNN" src="https://img.shields.io/badge/MNN-Alibaba-orange.svg"> <img alt="TensorRT" src="https://img.shields.io/badge/TensorRT-NVIDIA-76B900.svg"> <img alt="Core ML" src="https://img.shields.io/badge/CoreML-Apple-black.svg"> <img alt="Linux" src="https://img.shields.io/badge/Linux-FCC624.svg?logo=linux&logoColor=black"> <img alt="Windows" src="https://img.shields.io/badge/Windows-0078D6.svg?logo=windows&logoColor=white"> <img alt="Jetson" src="https://img.shields.io/badge/Jetson%20Orin-76B900.svg?logo=nvidia&logoColor=white"> <img alt="macOS" src="https://img.shields.io/badge/macOS-000000.svg?logo=apple&logoColor=white"> <img alt="iOS" src="https://img.shields.io/badge/iOS-000000.svg?logo=apple&logoColor=white"> 
 
 This project provides a cross-platform inference runtime for [YOLO-Master](https://github.com/Tencent/YOLO-Master) object-detection models using [ONNX Runtime](https://onnxruntime.ai/), [NCNN](https://github.com/Tencent/ncnn), [MNN](https://github.com/alibaba/mnn), [TensorRT](https://github.com/nvidia/tensorrt), and [Core ML](https://github.com/apple/coremltools) backends. The supported targets are Linux, Windows 10/11, Jetson, and macOS, with CPU, [NVIDIA CUDA](https://developer.nvidia.com/cuda-toolkit), and [Apple Metal Performance Shaders](https://developer.apple.com/documentation/metalperformanceshaders) execution where available. The runtime can infer the model format and read class names and input size from model metadata.
+This project provides a universal inference runtime for [YOLO-Master](https://github.com/Tencent/YOLO-Master) object-detection models, leveraging, [ONNX Runtime](https://onnxruntime.ai/), [NCNN](https://github.com/Tencent/ncnn), [MNN](https://github.com/alibaba/mnn), [TensorRT](https://github.com/nvidia/tensorrt), and [CoreML](https://github.com/apple/coremltools) backends. It runs on almost every platform: Linux, Windows (10/11), Jetson, MacOS, and **iOS (NEW!)**; supports CPU, [CUDA](https://developer.nvidia.com/cuda-toolkit), [MPS](https://developer.apple.com/documentation/metalperformanceshaders), and [ANE (on Apple devices）](https://machinelearning.apple.com). It's capable of auto-detecting the model format, class names, and input size -- designed for real-time, end-to-end edge deployment in some of the most challenging tasks (VisDrone, SKU-110K, AI-TOD-v2, etc.).
 
-<img width="900" alt="edge_deployment_architecture_light" src="https://github.com/user-attachments/assets/9c5e6739-b4a2-4747-991f-f7e1d9552bfa" />
+<p align="left">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/skywalker-lt/yolo-master-edge/dev/ios/assets/edge_deployment_architecture_dark.png">
+    <img src="https://raw.githubusercontent.com/skywalker-lt/yolo-master-edge/dev/ios/assets/edge_deployment_architecture_light.png" width="900" alt="Edge Deployment Bundle — Architecture">
+  </picture>
+</p>
+
+---
+
+## 📱 Update (27-08-2026): YOLO-Master for iPhone v1.1.0 Beta Build 1
+
+<img width="4812" height="2291" alt="screnshots-framed" src="https://github.com/user-attachments/assets/e858e07b-eeff-40c2-b11a-dcb4dba44577" />
+
+<br>
+<br>
+
+**🍾 Welcome to the 5th platform of YOLO-Master Edge. [Try it now.](https://testflight.apple.com/join/EVExpVHD)**
+
+Native iOS SwiftUI app for on-device YOLO-Master detection and segmentation, powered by Apple Core ML and the same YOLOMasterKit inference path as the macOS runtime. Everything runs locally on the Neural Engine, GPU, or CPU. Nothing you capture leaves the iPhone. Requires iPhone on iOS 17 or later. iPhone 13 and later models are recommended. 
+
+### Features
+
+- **📹 Live** - Real-time camera detection with a dynamic performance visuliaztion (FPS tachometer, per-stage latency measures, and phone's thermal state), multi-cam with automatic lens switching and pinch zoom, tap-to-focus, torch, and a full-resolution shutter that renders the live overlay (boxes and segmentation masks) into the saved photo. Also supports live IoU/conf tuning without pausing the inference. 
+
+- **📸 Photo** - Batch detection over images you pick from your library, up to 100 images at a time. Per-image and batch stats, segmentation masks, live conf/IoU tuning, and export of annotated images back to Photos.
+
+- **🎛️ Bench** - On-device benchmarking on all devices. A Cold Sweep measures every bundled model across compute units (Neural Engine (ANE), GPU, CPU) with expandable pre/inference/decode stage breakdowns, and a Sustained mode runs a thermal-throttle test with a live latency heatbeat sparkline and a colored state timeline. Pause/resume, a persistent run History vault (with per-run graphs) and CSV export.
+
+- **⚙️ Settings** - App info and an expandable About card (wihich explains the MoE architecture summary with Paper, Model / App Repo links), Licenses and Acknowledgements (from macOS build), a Privacy and Security summary, a CPU-inference opt-in for Live and Photo modes, erase-all benchmark history, and a Beta importer for your own trained Core ML models (.mlpackage / .mlmodelc / .mlmodel).
+
+### Performance
+
+All data are measured under Live mode on ANE with `YOLO-Master-v0.1-N` (COCO) for 3 min.
+
+| iPhone Model | SoC | End-to-end FPS | Thermal State after 1 min |
+|---|---|---|---|
+| iPhone 17 Pro Max | A19 Pro | 51 | 🟢 |
+| iPhone Air | A19 Pro | 36 | 🟠 |
+| iPhone 15 Pro Max | A17 Pro | 42 | 🟠 |
+
+### Install (Public Beta)
+
+The app is distributed through TestFlight. Install the TestFlight app on App Store, then open the invite link below to start testing it: 
+
+https://testflight.apple.com/join/EVExpVHD
+
+### Build from source
+
+```zsh
+brew install xcodegen
+cd ios && xcodegen # this generates YOLOMasterIOS.xcodeproj
+```
+
+Drop your Core ML models into directory `ios/Models/`, set your signing team ID in `ios/project.yml`, open the project, and run. See `ios/README.md` for details.
+
+### Privacy & License (iOS App Update)
+
+The app has no internet connection. No data leaves the device, and we don't collect anything. See PRIVACY.md for detailed terms. 
+
+The app is licensed under AGPL-3.0, consistent with YOLO-Master and Ultralytics; coremltools is BSD-3-Clause. It is released for research and personal experience only, and any direct commercial use of this app is prohibited. 
 
 ---
 
@@ -14,13 +74,19 @@ This project provides a cross-platform inference runtime for [YOLO-Master](https
 
 v1.1.0 brings the same feature set to all runners (macOS / Windows GUIs, Linux and Jetson TensorRT CLIs):
 
-- **Slicing (Sparse SAHI):** sliced inference for small objects on large images, a faithful port of upstream [YOLO-Master](https://github.com/Tencent/YOLO-Master)'s Sparse SAHI Mode plus a traditional dense-tiling variant, with adjustable tile size and per-run statistics.
-- **Cluster-Weighted NMS:** a new NMS mode that refines each box as the weighted average of its detection cluster; tunable sigma, live everywhere including the webcam.
-- **Annotation export:** turn detections into training data as **YOLO TXT / COCO JSON / Pascal VOC XML** from images, folders, or videos (with frame sampling); segmentation models export real mask polygons. Rendered images and annotated videos export too.
-- **Zoom & pan:** cursor-anchored zoom up to 8x on images and paused video in both GUIs.
-- **New: prebuilt Linux x86_64 bundles** (self-contained, glibc 2.35+, all three backends + ffmpeg video) and a **Jetson Orin bundle** with the TensorRT backend now supporting the full feature set.
+- **🔪 Slicing (Sparse SAHI):** sliced inference for small objects on large images, a faithful port of upstream [YOLO-Master](https://github.com/Tencent/YOLO-Master)'s Sparse SAHI Mode plus a traditional dense-tiling variant, with adjustable tile size and per-run statistics.
+- **🍇 Cluster-Weighted NMS:** a new NMS mode that refines each box as the weighted average of its detection cluster; tunable sigma, live everywhere including the webcam.
+- **📤 Annotation export:** turn detections into training data as **YOLO TXT / COCO JSON / Pascal VOC XML** from images, folders, or videos (with frame sampling); segmentation models export real mask polygons. Rendered images and annotated videos export too.
+- **🔎 Zoom & pan on GUI:** cursor-anchored zoom up to 8x on images and paused video in both GUIs.
+- **📦 New: prebuilt Linux x86_64 bundles** (self-contained, glibc 2.35+, all three backends + ffmpeg video) and a **Jetson Orin bundle** with the TensorRT backend now supporting the full feature set.
 
-Full notes: [Release Page](https://github.com/skywalker-lt/yolo-master-edge/releases/tag/v1.1.0).
+<br>
+
+<img height="380" alt="Screenshot 2026-08-12 at 5 35 43 PM" src="https://github.com/user-attachments/assets/6cb59d23-76e1-43b4-93f6-4302290a0e8a" /> <img height="380" alt="Screenshot 2026-08-12 at 5 36 12 PM" src="https://github.com/user-attachments/assets/27a60aee-a587-47e1-be93-e404e70b932d" />
+
+<br>
+
+**Full notes: [Release Page](https://github.com/skywalker-lt/yolo-master-edge/releases/tag/v1.1.0).**
 
 ---
 
@@ -29,11 +95,15 @@ Full notes: [Release Page](https://github.com/skywalker-lt/yolo-master-edge/rele
 
 Now the Windows C++ edge runner has an improved backend and dedicated GUI. **YOLO-Master Windows Runner GUI** provides a C++ edge inference backend that bundles [ONNX](https://onnxruntime.ai/), [ncnn](https://github.com/Tencent/ncnn), and [MNN](https://github.com/alibaba/MNN) with **GPU acceleration**, together with a [Dear ImGui](https://github.com/ocornut/imgui) frontend. It includes the same default `YOLO-Master-v0.1-seg-N` segmentation model as the macOS runner.
 
+<br>
+
 <img width="400" alt="48 2" src="https://github.com/user-attachments/assets/fa96097b-1014-46c0-8692-2c3656f4f763" />  <img width="400" alt="50 2" src="https://github.com/user-attachments/assets/db1e2194-584e-4898-b2b3-e7370fa325c5" />
 <img width="800" alt="49 2" src="https://github.com/user-attachments/assets/6a438094-b352-4f59-bb55-9e3c600837ad" />
 
-- **Three Backends in One App** ONNX, ncnn, and MNN ship in a single executable, and the inference backend can be switched at runtime.
-- **GPU Acceleration for All Backends** supports CUDA (ONNX Runtime), Vulkan (ncnn), and OpenCL (MNN), with up to **4x speedup** on supported consumer hardware. (See the inference speed comparison table in the [Releases](https://github.com/skywalker-lt/yolo-master-edge/releases/tag/v1.0.0-windows).)
+<br>
+
+- **Three Backends in One App** ONNX, ncnn, and MNN all ship in single executable. Inference backends can be switched with a single click.
+- **GPU Acceleration for All Backends** up to **4x speedup** with CUDA-accelerated inference on consumer devices. (please refer to the inference speed comparison table in [Relases](https://github.com/skywalker-lt/yolo-master-edge/releases/tag/v1.0.0-windows)) 
 
 See the [Windows release notes](https://github.com/skywalker-lt/yolo-master-edge/releases/tag/v1.0.0-windows) for build and benchmark details.
 
@@ -256,7 +326,7 @@ The backend is inferred from the model (`.onnx` → ONNX Runtime, an NCNN direct
 --out          dir for annotated outputs  --no-save / --quiet
 ```
 
-See `cpp/run_tests.sh` for the 18-test robustness battery.
+See `tests/run_tests.sh` for the 16-test robustness battery.
 
 ## 🤖 Jetson Orin (Native TensorRT)
 
@@ -274,7 +344,7 @@ On an Orin Nano 4 GB the FP16 engine runs at **35.7 FPS** (27.8 ms) with **mAP50
 
 Inference performed on full 548 VisDrone validation images against the PyTorch original (`mAP50-95 = 0.2036`), using identical settings (conf 0.001, NMS IoU 0.7, multi-label).
 
-| Inference Backend | Device | mAP50-95 | Δ vs PyTorch (percentage points) | Latency | FPS   |
+| Inference Backend | Device | mAP50-95 | Δ vs PyTorch | End-to-end Latency | FPS |
 | :------------------------ | :------- | :------- | :----------- | :------ | :---- |
 | ONNX | CPU | 0.2034 | −0.02 pp  | 40 ms | 25.0  |
 | ONNX (CUDA) | H200 SXM | 0.2033 | −0.03 pp | 7.8 ms  | 128   |
