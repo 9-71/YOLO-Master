@@ -75,8 +75,13 @@ class TestTaskHandlerRegistry:
     """Test suite for TaskHandlerRegistry registration and lookup."""
 
     def setup_method(self):
-        """Clear registry before each test for isolation."""
+        """Backup registry state before each test for isolation."""
+        self._registry_backup = TaskHandlerRegistry._handlers.copy()
         TaskHandlerRegistry.clear()
+
+    def teardown_method(self):
+        """Restore registry state after each test."""
+        TaskHandlerRegistry._handlers = self._registry_backup
 
     def test_register_and_retrieve_handler(self):
         """Verify handler registration and retrieval via get()."""
@@ -160,7 +165,8 @@ class TestEndToEndIntegration:
     """End-to-end integration tests simulating dispatcher usage."""
 
     def setup_method(self):
-        """Clear registry and register mock handlers."""
+        """Backup registry state and register mock handlers."""
+        self._registry_backup = TaskHandlerRegistry._handlers.copy()
         TaskHandlerRegistry.clear()
 
         @TaskHandlerRegistry.register("predict")
@@ -187,6 +193,10 @@ class TestEndToEndIntegration:
                     "metadata": {"detected_count": 5},
                     "error": None,
                 }
+
+    def teardown_method(self):
+        """Restore registry state after each test."""
+        TaskHandlerRegistry._handlers = self._registry_backup
 
     def test_dispatcher_workflow_happy_path(self):
         """Simulate dispatcher retrieving handler and executing job."""
