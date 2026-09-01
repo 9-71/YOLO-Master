@@ -239,3 +239,14 @@ agent/logs/
 
 # Foundation local run records (kept local per repo policy)
 reports/foundation/v0.1/
+
+# ==========================================
+# OMC / Claude Agent / Local Dev Memory
+# ==========================================
+.omc/
+.claude/
+.agents/
+.context/
+*.scratchpad.md
+*.agent.log
+smoke/f1/smoke_run.log
