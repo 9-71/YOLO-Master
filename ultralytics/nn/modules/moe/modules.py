@@ -856,9 +856,10 @@ class OptimizedMOE(nn.Module):
         flat_indices = routing_indices.view(B, self.top_k)  # [B, k]
         flat_weights = routing_weights.view(B, self.top_k)  # [B, k]
 
-        if torch.onnx.is_in_onnx_export():
-            # ONNX tracing cannot capture data-dependent ``if mask.any()``
-            # skips. Use a dense path: compute all experts, gather Top-K, sum.
+        if torch.onnx.is_in_onnx_export() or torch.jit.is_tracing():
+            # Neither ONNX export nor ``torch.jit.trace`` can capture data-dependent
+            # ``if mask.any()`` skips; both record this batch's routing as the graph.
+            # Use a dense path: compute all experts, gather Top-K, sum.
             all_outs = torch.stack([self.experts[i](x) for i in range(self.num_experts)], dim=1)  # [B, E, out_C, H, W]
             for k in range(self.top_k):
                 idx_k = flat_indices[:, k]  # [B]
@@ -1114,8 +1115,9 @@ class OptimizedMOEImproved(nn.Module):
         if getattr(self, "detach_routing", False):
             weights_flat = weights_flat.detach()
 
-        if torch.onnx.is_in_onnx_export():
-            # ONNX tracing cannot capture ``if mask.any()`` skips.
+        if torch.onnx.is_in_onnx_export() or torch.jit.is_tracing():
+            # Neither ONNX export nor ``torch.jit.trace`` can capture ``if mask.any()``
+            # skips; both freeze this batch's routing into the graph.
             # Dense path: compute all experts, gather Top-K, weighted-sum.
             all_outs = torch.stack([self.experts[i](x) for i in range(self.num_experts)], dim=1)  # [B, E, out_C, H, W]
             for k in range(adaptive_top_k):
