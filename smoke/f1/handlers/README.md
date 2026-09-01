@@ -1,10 +1,10 @@
 # F1 Task Handler Framework
 
-基于装饰器的任务执行器解耦骨架，为 YOLO-Master F1 平台提供类型安全、安全优先的处理器注册机制。
+Decorator-based task handler decoupling framework providing type-safe, security-first handler registration mechanism for the YOLO-Master F1 platform.
 
-## 快速开始
+## Quick Start
 
-### 定义处理器
+### Define a Handler
 
 ```python
 from smoke.f1.handlers import BaseTaskHandler, TaskHandlerRegistry
@@ -13,7 +13,7 @@ from smoke.f1.handlers import BaseTaskHandler, TaskHandlerRegistry
 @TaskHandlerRegistry.register("predict")
 class PredictHandler(BaseTaskHandler):
     def validate_params(self, params, security_constraints):
-        """验证参数和安全约束"""
+        """Validate parameters and security constraints"""
         if security_constraints.get("allow_shell"):
             return False, "Shell execution not permitted"
 
@@ -25,7 +25,7 @@ class PredictHandler(BaseTaskHandler):
         return True, None
 
     def execute(self, job_id, params, output_dir):
-        """执行任务"""
+        """Execute the task"""
         from ultralytics import YOLO
 
         model = YOLO(params["model_path"])
@@ -43,78 +43,78 @@ class PredictHandler(BaseTaskHandler):
         }
 ```
 
-### 调度器集成
+### Dispatcher Integration
 
 ```python
-# 获取处理器并执行
+# Retrieve handler and execute
 handler_class = TaskHandlerRegistry.get(job_request.task_type)
 handler = handler_class()
 
-# 验证
+# Validate
 is_valid, err = handler.validate_params(params, security_constraints)
 if not is_valid:
-    # 处理验证失败
+    # Handle validation failure
     pass
 
-# 执行
+# Execute
 result = handler.execute(job_id, params, output_dir)
 ```
 
-## 核心特性
+## Core Features
 
-✅ **类型安全**: 完整的 Type Hints 和抽象基类强制  
-✅ **装饰器注册**: `@TaskHandlerRegistry.register(task_type)` 自动注册  
-✅ **工厂方法**: `TaskHandlerRegistry.get(task_type)` 动态检索  
-✅ **安全优先**: 内置路径白名单验证和 shell 执行防护  
-✅ **错误清晰**: 重复注册和未注册类型抛出明确异常  
+✅ **Type-Safe**: Complete type hints and abstract base class enforcement  
+✅ **Decorator Registration**: `@TaskHandlerRegistry.register(task_type)` auto-registration  
+✅ **Factory Method**: `TaskHandlerRegistry.get(task_type)` dynamic retrieval  
+✅ **Security-First**: Built-in path whitelisting and shell execution protection  
+✅ **Clear Errors**: Duplicate registration and unregistered types throw explicit exceptions  
 
-## 文件结构
+## File Structure
 
 ```
 handlers/
-├── __init__.py          # 模块入口
-├── base.py              # BaseTaskHandler 抽象基类
-├── registry.py          # TaskHandlerRegistry 注册器
-├── USAGE.md             # 详细使用指南
-└── README.md            # 本文件
+├── __init__.py          # Module entry point
+├── base.py              # BaseTaskHandler abstract base class
+├── registry.py          # TaskHandlerRegistry
+├── USAGE.md             # Detailed usage guide
+└── README.md            # This file
 ```
 
-## 测试
+## Testing
 
 ```bash
 cd smoke/f1
 python -m pytest test_handlers_framework.py -v
 ```
 
-**测试覆盖**: 10 个测试用例，覆盖注册、检索、验证、安全防护和端到端集成。
+**Test Coverage**: 10 test cases covering registration, retrieval, validation, security enforcement, and end-to-end integration.
 
-## 设计原则
+## Design Principles
 
-- **开闭原则**: 新增任务类型无需修改调度器
-- **依赖倒置**: 调度器依赖抽象基类，不依赖具体实现
-- **安全优先**: 空白名单默认拒绝（fail-closed）
-- **类型安全**: 运行时检查 BaseTaskHandler 继承
+- **Open-Closed Principle**: Adding new task types requires no dispatcher modifications
+- **Dependency Inversion**: Dispatcher depends on abstract base class, not concrete implementations
+- **Security-First**: Empty whitelist defaults to deny (fail-closed)
+- **Type-Safe**: Runtime enforcement of BaseTaskHandler inheritance
 
-## API 参考
+## API Reference
 
 ### BaseTaskHandler
 
-抽象基类，定义处理器契约：
+Abstract base class defining handler contract:
 
 - `validate_params(params, security_constraints)` → `(bool, str | None)`
 - `execute(job_id, params, output_dir)` → `dict[str, Any]`
-- `_is_path_safe(target_path, allowed_roots)` → `bool` (辅助方法)
+- `_is_path_safe(target_path, allowed_roots)` → `bool` (helper method)
 
 ### TaskHandlerRegistry
 
-- `@register(task_type)` - 装饰器注册
-- `get(task_type)` - 工厂方法检索
-- `list_registered()` - 列出已注册类型
-- `clear()` - 清空注册表（仅测试用）
+- `@register(task_type)` - Decorator registration
+- `get(task_type)` - Factory method retrieval
+- `list_registered()` - List registered types
+- `clear()` - Clear registry (testing only)
 
-## 详细文档
+## Detailed Documentation
 
-完整使用指南、安全模型和扩展示例见 [USAGE.md](USAGE.md)
+Complete usage guide, security model, and extension examples available in [USAGE.md](USAGE.md)
 
 ---
 
