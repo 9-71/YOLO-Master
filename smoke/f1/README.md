@@ -290,10 +290,10 @@ The F1 Studio Platform implements the following mandatory security constraints:
 **Target**: 2026-08-31
 **Deliverables**:
 - [X] Baseline entry validation & locked contract schema
-- [ ] Preserve existing baseline inference functionality
-- [ ] Add Jobs tab (submission, state monitoring, streaming logs, artifacts download)
-- [ ] Integrate `predict` and `system doctor` Agent Skills
-- [ ] Gradio UI layout optimization and state binding
+- [X] Preserve existing baseline inference functionality
+- [X] Add Jobs tab (submission, state monitoring, streaming logs, artifacts download)
+- [X] Integrate `predict` and `system doctor` Agent Skills
+- [X] Gradio UI layout optimization and state binding
 
 ### 5.2 Phase 1 (P1): Multi-Task Unification
 
@@ -391,6 +391,6 @@ print('Contract validation passed')
 - **Ultralytics YOLO Documentation**: https://docs.ultralytics.com/
 ---
 
-**Document Version**: 1.0.0
-**Last Updated**: 2026-08-24
+**Document Version**: 1.1.0
+**Last Updated**: 2026-09-02
 **Maintained By**: [@9-71](https://github.com/9-71) (`rhino-f1-dev` branch)
