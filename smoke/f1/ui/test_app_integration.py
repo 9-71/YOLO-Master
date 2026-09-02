@@ -12,6 +12,8 @@ Run:
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
+
 import gradio as gr
 import pytest
 
@@ -221,6 +223,31 @@ class TestPollingState:
 
     def test_security_alert_codes_registered(self):
         assert SECURITY_ALERT_CODES == {"SEC_ERR_001", "PARAM_VALIDATION_FAILED"}
+
+    def test_recent_jobs_rows_format_created_at_as_local_time(self):
+        raw = datetime(2026, 9, 2, 10, 14, 44, 136175, tzinfo=timezone.utc).isoformat()
+        manager = FakeJobsManager(
+            RUNNING_STATUS,
+            recent=[{"job_id": "j1", "task_type": "predict", "status": "RUNNING", "created_at": raw}],
+        )
+        state = compute_poll_state(manager, "j1", "en")
+
+        expected = datetime.fromisoformat(raw).astimezone().strftime("%Y-%m-%d %H:%M:%S")
+        assert state.recent == [["j1", "predict", "RUNNING", expected]]
+        assert "T" not in expected
+
+    def test_recent_jobs_rows_fallback_for_missing_or_malformed_timestamp(self):
+        manager = FakeJobsManager(
+            RUNNING_STATUS,
+            recent=[
+                {"job_id": "j1", "task_type": "predict", "status": "RUNNING", "created_at": ""},
+                {"job_id": "j2", "task_type": "export", "status": "FAILED", "created_at": "garbage"},
+            ],
+        )
+        state = compute_poll_state(manager, "j1", "en")
+
+        assert state.recent[0][3] == "-"
+        assert state.recent[1][3] == "garbage"
 
 
 class TestJobsTabWiring:

@@ -315,6 +315,39 @@ def is_terminal_status(status: str) -> bool:
     return status not in ACTIVE_STATUSES
 
 
+def format_created_at(created_at: str | None) -> str:
+    """Format an ISO 8601 UTC ``created_at`` as local time for the Recent Jobs table.
+
+    Backend timestamps remain raw ISO UTC strings under the hood; this helper only
+    formats them for dataframe display.
+
+    Args:
+        created_at: Raw ISO 8601 UTC timestamp from ``JobRequest.metadata.created_at``.
+
+    Returns:
+        str: Local time as ``YYYY-MM-DD HH:MM:SS``; ``"-"`` when the value is empty
+        or missing, and the raw string when it cannot be parsed.
+
+    Example:
+        >>> format_created_at("")
+        '-'
+        >>> format_created_at(None)
+        '-'
+        >>> format_created_at("not-a-timestamp")
+        'not-a-timestamp'
+        >>> from datetime import datetime
+        >>> now_local = datetime.now().astimezone()
+        >>> format_created_at(now_local.isoformat()) == now_local.strftime("%Y-%m-%d %H:%M:%S")
+        True
+    """
+    if not created_at:
+        return "-"
+    try:
+        return datetime.fromisoformat(created_at).astimezone().strftime("%Y-%m-%d %H:%M:%S")
+    except (ValueError, TypeError):
+        return str(created_at)
+
+
 def alert_banner(lang: str, code: str, message: str | None) -> str:
     """Build a localized Markdown alert banner for a failed job.
 
@@ -375,7 +408,7 @@ class PollState:
         banner: Markdown alert banner (empty when the job has no failure).
         logs: Formatted execution logs.
         artifacts: Rows for the artifacts dataframe (filename, path).
-        recent: Rows for the recent-jobs dataframe.
+        recent: Rows for the recent-jobs dataframe (timestamps formatted as local time).
         keep_polling: True while the job is active; False once terminal (deactivates the fast timer).
     """
 
@@ -394,7 +427,9 @@ def compute_poll_state(jobs_manager: JobsManager, job_id: str, lang: str = DEFAU
     Pure presentation logic over the JobsManager backend API: the backend responses
     are never modified, so backend-level test assertions remain valid. The Status
     Monitor JSON payload carries canonical backend keys/values only — localized
-    display text is confined to banners, toasts and column headers.
+    display text is confined to banners, toasts and column headers. Recent-jobs
+    timestamps are converted to local time for display while the backend keeps
+    raw ISO UTC strings.
 
     Args:
         jobs_manager: JobsManager instance (or duck-typed equivalent for tests).
@@ -438,7 +473,8 @@ def compute_poll_state(jobs_manager: JobsManager, job_id: str, lang: str = DEFAU
     logs = jobs_manager.get_job_logs(job_id)
     artifacts = [[name, path] for name, path in jobs_manager.get_job_artifacts(job_id)]
     recent = [
-        [j["job_id"], j["task_type"], j["status"], j["created_at"]] for j in jobs_manager.list_recent_jobs(limit=20)
+        [j["job_id"], j["task_type"], j["status"], format_created_at(j["created_at"])]
+        for j in jobs_manager.list_recent_jobs(limit=20)
     ]
 
     return PollState(

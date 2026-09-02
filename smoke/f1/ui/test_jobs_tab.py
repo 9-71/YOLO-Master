@@ -11,13 +11,14 @@ from __future__ import annotations
 
 import threading
 import time
+from datetime import datetime
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
 
 from smoke.f1.test_f1_smoke import ErrorInfo, JobStatus
-from smoke.f1.ui.jobs_tab import JobsManager
+from smoke.f1.ui.jobs_tab import JobsManager, format_created_at
 
 
 @pytest.fixture
@@ -192,7 +193,11 @@ class TestJobsManager:
         assert all("status" in j for j in recent)
 
     def test_list_recent_jobs_newest_first_with_per_job_timestamps(self, jobs_manager, sample_job_params):
-        """Recent jobs are sorted newest-first and each row carries its own created_at."""
+        """Recent jobs are sorted newest-first and each row carries its own raw created_at.
+
+        Backend rows keep raw ISO UTC strings; local-time formatting happens only at
+        the UI presentation layer (compute_poll_state).
+        """
         job_ids = []
         for _ in range(3):
             job_id, _ = jobs_manager.submit_job(**sample_job_params)
@@ -268,6 +273,22 @@ class TestJobsManager:
         # All job IDs should be unique
         assert len(job_ids) == len(set(job_ids))
         assert all(job_id in jobs_manager.jobs for job_id in job_ids)
+
+
+class TestTimestampFormatting:
+    """UI-layer local-time formatting for Recent Jobs timestamps."""
+
+    def test_format_created_at_converts_utc_to_local_time(self):
+        raw = "2026-09-02T10:14:44.136175+00:00"
+
+        expected = datetime.fromisoformat(raw).astimezone().strftime("%Y-%m-%d %H:%M:%S")
+        assert format_created_at(raw) == expected
+        assert "T" not in format_created_at(raw)
+
+    def test_format_created_at_fallbacks(self):
+        assert format_created_at("") == "-"
+        assert format_created_at(None) == "-"
+        assert format_created_at("not-a-timestamp") == "not-a-timestamp"
 
 
 class TestJobsManagerIntegration:
