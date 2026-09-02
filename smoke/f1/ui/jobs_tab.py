@@ -6,22 +6,31 @@ real-time lifecycle states, viewing live logs, and downloading generated artifac
 Architecture:
     UI Components → Job Submission → JobDispatcherStateMachine.execute()
                  ↓
-            State Monitor → Real-time status polling
-                 ↓
+            Adaptive Polling → 1s lifecycle timer while PENDING/RUNNING
+                 ↓            → 30s background sync (recent jobs, artifacts)
             Log Console → stdout/stderr streaming
                  ↓
             Artifacts → File explorer with download buttons
+
+Polling:
+    The fast lifecycle timer (1s) ticks while the selected job is active. The tick that
+    observes a terminal state performs the final refresh (including artifacts) and
+    deactivates itself via ``gr.update(active=False)``. A slow always-on timer (30s)
+    keeps the recent-jobs table and final artifacts fresh while the fast timer is idle.
 
 Security:
     - Fail-closed path whitelisting (auto-fill allowed_paths from inputs/outputs)
     - Shell execution permanently disabled (allow_shell=False)
     - Path traversal protection via security constraints validation
+    - SEC_ERR_001 / PARAM_VALIDATION_FAILED map to one-shot gr.Warning toasts and a
+      persistent localized status banner
 """
 
 from __future__ import annotations
 
 import threading
 import uuid
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -30,6 +39,16 @@ import gradio as gr
 
 from smoke.f1.dispatcher import JobDispatcherStateMachine
 from smoke.f1.test_f1_smoke import JobRequest, JobStatus, SecurityConstraints, TaskType
+from smoke.f1.ui.i18n import DEFAULT_LANGUAGE, get_columns, get_text
+
+#: Job states that still require high-frequency lifecycle polling.
+ACTIVE_STATUSES = frozenset({"PENDING", "RUNNING"})
+#: Backend error codes that map to visual security/validation user alerts.
+SECURITY_ALERT_CODES = frozenset({"SEC_ERR_001", "PARAM_VALIDATION_FAILED"})
+#: Fast lifecycle polling interval (seconds) while a job is active.
+POLL_FAST_SECONDS = 1.0
+#: Slow background sync interval (seconds) for recent jobs and final artifacts.
+POLL_SLOW_SECONDS = 30.0
 
 
 class JobsManager:
@@ -266,110 +285,323 @@ class JobsManager:
             return jobs_list
 
 
-def create_jobs_tab(jobs_manager: JobsManager) -> gr.Blocks:
-    """Create Gradio Jobs Tab UI component.
+def is_terminal_status(status: str) -> bool:
+    """Return True when a job status string is terminal (not PENDING/RUNNING).
+
+    COMPLETED, FAILED and NOT_FOUND are terminal from the poller's perspective;
+    a cancelled job also surfaces as FAILED (USER_CANCELLED) via the state machine,
+    and CANCELLED is treated as terminal for forward compatibility.
 
     Args:
-        jobs_manager: JobsManager instance for job orchestration
+        status: Uppercase backend status string.
 
     Returns:
-        gr.Blocks: Gradio tab component
+        bool: True when high-frequency polling should stop.
+
+    Example:
+        >>> is_terminal_status("RUNNING")
+        False
+        >>> is_terminal_status("COMPLETED")
+        True
+        >>> is_terminal_status("CANCELLED")
+        True
     """
+    return status not in ACTIVE_STATUSES
+
+
+def alert_banner(lang: str, code: str, message: str | None) -> str:
+    """Build a localized Markdown alert banner for a failed job.
+
+    Security/validation error codes get dedicated localized titles and bodies;
+    other failure codes fall back to the generic failure title with the raw message.
+
+    Args:
+        lang: ISO language code.
+        code: Backend error code (e.g. "SEC_ERR_001").
+        message: Raw backend error message.
+
+    Returns:
+        str: Markdown blockquote banner.
+
+    Example:
+        >>> banner = alert_banner("en", "SEC_ERR_001", "path not in whitelist")
+        >>> "Security Policy Violation" in banner
+        True
+        >>> banner = alert_banner("zh", "EXEC_ERR_500", "boom")
+        >>> "作业失败" in banner
+        True
+    """
+    if code in SECURITY_ALERT_CODES:
+        title = get_text(lang, f"alert.{code}.title")
+        body = get_text(lang, f"alert.{code}.body")
+        detail = f"{code}: {message}" if message else code
+        return f"> **{title}**\n> {body}\n> `{detail}`"
+    title = get_text(lang, "alert.generic.title")
+    detail = f"{code}: {message}" if message else code
+    return f"> **{title}**\n> `{detail}`"
+
+
+def security_alert_toast(lang: str, code: str) -> str:
+    """Compose the one-shot gr.Warning toast text for a security/validation error.
+
+    Args:
+        lang: ISO language code.
+        code: Backend error code from SECURITY_ALERT_CODES.
+
+    Returns:
+        str: Localized toast text.
+
+    Example:
+        >>> toast = security_alert_toast("zh", "SEC_ERR_001")
+        >>> "安全策略违规" in toast
+        True
+    """
+    return f"{get_text(lang, f'alert.{code}.title')} — {get_text(lang, f'alert.{code}.body')}"
+
+
+@dataclass(frozen=True)
+class PollState:
+    """Snapshot of all job-monitoring panels produced by one polling cycle.
+
+    Attributes:
+        status: Localized status dict rendered by the Status Monitor JSON panel.
+        error_text: Diagnostics text for the error box (empty when healthy).
+        banner: Markdown alert banner (empty when the job has no failure).
+        logs: Formatted execution logs.
+        artifacts: Rows for the artifacts dataframe (filename, path).
+        recent: Rows for the recent-jobs dataframe.
+        keep_polling: True while the job is active; False once terminal (deactivates the fast timer).
+    """
+
+    status: dict[str, Any]
+    error_text: str = ""
+    banner: str = ""
+    logs: str = ""
+    artifacts: list[list[str]] = field(default_factory=list)
+    recent: list[list[str]] = field(default_factory=list)
+    keep_polling: bool = False
+
+
+def compute_poll_state(jobs_manager: JobsManager, job_id: str, lang: str = DEFAULT_LANGUAGE) -> PollState:
+    """Compute the complete polling snapshot for one job in the given language.
+
+    Pure presentation logic over the JobsManager backend API: the backend responses
+    are never modified, so backend-level test assertions remain valid. Raw status
+    fields are preserved alongside localized ``status_label`` entries.
+
+    Args:
+        jobs_manager: JobsManager instance (or duck-typed equivalent for tests).
+        job_id: Selected job identifier (may be empty).
+        lang: ISO language code passed to i18n lookups.
+
+    Returns:
+        PollState: Snapshot with localized status, banner, logs, artifacts, recent
+        jobs, and the keep_polling flag used to deactivate high-frequency polling.
+
+    Example:
+        >>> manager = JobsManager()
+        >>> state = compute_poll_state(manager, "", "en")
+        >>> state.keep_polling
+        False
+        >>> state.status["status_label"] == "⚠️ No job selected"
+        True
+    """
+    if not job_id:
+        return PollState(
+            status={"status": "NO_SELECTION", "status_label": get_text(lang, "msg.no_job_selected")},
+        )
+
+    raw = jobs_manager.get_job_status(job_id)
+    status_str = raw.get("status", "NOT_FOUND")
+
+    status = {
+        "job_id": job_id,
+        "status": status_str,
+        "status_label": get_text(lang, f"status.{status_str}"),
+        "duration": raw.get("duration"),
+        "error_code": raw.get("error_code"),
+        "error_message": raw.get("error_message"),
+        "artifact_count": raw.get("artifact_count"),
+    }
+
+    error_text = ""
+    banner = ""
+    if status_str == "FAILED":
+        code = raw.get("error_code") or "UNKNOWN"
+        error_text = f"[{code}] {raw.get('error_message') or ''}"
+        banner = alert_banner(lang, code, raw.get("error_message"))
+
+    logs = jobs_manager.get_job_logs(job_id)
+    artifacts = [[name, path] for name, path in jobs_manager.get_job_artifacts(job_id)]
+    recent = [
+        [j["job_id"], j["task_type"], j["status"], j["created_at"]] for j in jobs_manager.list_recent_jobs(limit=20)
+    ]
+
+    return PollState(
+        status=status,
+        error_text=error_text,
+        banner=banner,
+        logs=logs,
+        artifacts=artifacts,
+        recent=recent,
+        keep_polling=not is_terminal_status(status_str),
+    )
+
+
+def create_jobs_tab(jobs_manager: JobsManager, lang: str = DEFAULT_LANGUAGE) -> gr.Blocks:
+    """Create the Jobs Tab UI with adaptive polling, security alerts and i18n.
+
+    Args:
+        jobs_manager: Application-level JobsManager singleton shared across tabs.
+        lang: Initial UI language ("en" or "zh"); switchable at runtime via the
+            language selector inside the tab.
+
+    Returns:
+        gr.Blocks: The Jobs Tab rendered as a Gradio Blocks (render into a parent app).
+
+    Polling design:
+        - Fast lifecycle timer (1s): ticks while the selected job is PENDING/RUNNING and
+          refreshes status, logs, artifacts and recent jobs on every tick. The tick that
+          observes a terminal state performs the final refresh (including artifacts) and
+          deactivates the timer via ``gr.update(active=False)``.
+        - Slow sync timer (30s): always-on low-frequency refresh of the same panels so
+          recent jobs and final artifacts stay fresh while the fast timer is idle.
+
+    Security alerts:
+        - The first tick observing SEC_ERR_001 / PARAM_VALIDATION_FAILED raises a
+          one-shot gr.Warning toast; a persistent localized banner stays visible in the
+          Status Monitor tab.
+    """
+    # Job IDs whose security alert has already been toasted (one-shot warning guard).
+    _security_warned: set[str] = set()
+
     with gr.Blocks() as jobs_tab:
-        gr.Markdown("# 📋 Jobs Management")
+        lang_state = gr.State(lang)
+        gr.Markdown(f"# {get_text(lang, 'tab.title')}")
 
         with gr.Row(equal_height=False):
             # ==================== Left Panel: Job Submission ====================
             with gr.Column(scale=1, variant="panel"):
-                gr.Markdown("### 🚀 Submit Job")
+                submit_md = gr.Markdown(f"### {get_text(lang, 'panel.submit')}")
+                lang_radio = gr.Radio(
+                    choices=[("English", "en"), ("中文", "zh")],
+                    value=lang,
+                    label=get_text(lang, "lang.label"),
+                )
 
                 # Task type selector
                 task_type_radio = gr.Radio(
                     choices=["predict", "train", "export", "diagnose"],
                     value="predict",
-                    label="Task Type",
+                    label=get_text(lang, "field.task_type"),
                 )
 
                 # Dynamic input parameters form
                 with gr.Group():
                     model_path_txt = gr.Textbox(
                         value="yolov8n.pt",
-                        label="Model Path",
-                        placeholder="yolov8n.pt or ./ckpts/model.pt",
+                        label=get_text(lang, "field.model_path"),
+                        placeholder=get_text(lang, "field.model_path.placeholder"),
                     )
                     data_source_txt = gr.Textbox(
                         value="ultralytics/assets/bus.jpg",
-                        label="Data Source",
-                        placeholder="Image/video/directory path",
+                        label=get_text(lang, "field.data_source"),
+                        placeholder=get_text(lang, "field.data_source.placeholder"),
                     )
                     output_dir_txt = gr.Textbox(
                         value="runs/predict",
-                        label="Output Directory",
-                        placeholder="runs/predict",
+                        label=get_text(lang, "field.output_dir"),
+                        placeholder=get_text(lang, "field.output_dir.placeholder"),
                     )
 
                 # Hyperparameters
-                with gr.Accordion("⚙️ Hyperparameters", open=True):
-                    conf_slider = gr.Slider(0.0, 1.0, 0.25, step=0.01, label="Confidence Threshold")
-                    device_txt = gr.Textbox("0", label="Device (0 for GPU, cpu for CPU)")
+                with gr.Accordion(get_text(lang, "accordion.hyperparams"), open=True) as hyperparams_accordion:
+                    conf_slider = gr.Slider(0.0, 1.0, 0.25, step=0.01, label=get_text(lang, "field.conf"))
+                    device_txt = gr.Textbox("0", label=get_text(lang, "field.device"))
 
                 # Security constraints
-                with gr.Accordion("🔒 Security Constraints", open=False):
+                with gr.Accordion(get_text(lang, "accordion.security"), open=False) as security_accordion:
                     allowed_paths_txt = gr.Textbox(
                         value="., ultralytics/assets, runs, ckpts",
-                        label="Allowed Paths (comma-separated)",
-                        info="Whitelist of allowed directory roots",
+                        label=get_text(lang, "field.allowed_paths"),
+                        info=get_text(lang, "field.allowed_paths.info"),
                     )
-                    gr.Markdown(
-                        "**Security Policy**: Shell execution is **permanently disabled**. "
-                        "All paths are validated against whitelist."
-                    )
+                    security_md = gr.Markdown(get_text(lang, "security.policy"))
 
-                submit_btn = gr.Button("🔥 Submit Job", variant="primary", size="lg")
+                submit_btn = gr.Button(get_text(lang, "button.submit"), variant="primary", size="lg")
+                submit_msg = gr.Markdown()
 
             # ==================== Right Panel: Monitoring ====================
             with gr.Column(scale=2), gr.Tabs():
                 # Tab 1: State & Progress Monitor
-                with gr.TabItem("📊 Status Monitor"):
-                    job_id_display = gr.Textbox(label="Current Job ID", interactive=False)
-                    status_display = gr.JSON(label="Job Status")
-
-                    with gr.Row():
-                        refresh_status_btn = gr.Button("🔄 Refresh Status", size="sm")
-                        cancel_job_btn = gr.Button("🚫 Cancel Job", size="sm", variant="stop")
-
-                    error_box = gr.Textbox(label="Error Diagnostics", interactive=False, lines=3)
+                with gr.TabItem(get_text(lang, "subtab.status")) as status_tab:
+                    job_id_display = gr.Textbox(label=get_text(lang, "field.job_id"), interactive=False)
+                    status_display = gr.JSON(label=get_text(lang, "field.status"))
+                    cancel_job_btn = gr.Button(get_text(lang, "button.cancel"), size="sm", variant="stop")
+                    banner_md = gr.Markdown()
+                    error_box = gr.Textbox(label=get_text(lang, "field.error"), interactive=False, lines=3)
 
                 # Tab 2: Live Logs & Output Console
-                with gr.TabItem("📜 Live Logs"):
+                with gr.TabItem(get_text(lang, "subtab.logs")) as logs_tab:
                     logs_console = gr.Textbox(
-                        label="Execution Logs",
+                        label=get_text(lang, "field.logs"),
                         lines=20,
                         interactive=False,
                         max_lines=100,
                     )
-                    refresh_logs_btn = gr.Button("🔄 Refresh Logs", size="sm")
 
                 # Tab 3: Artifacts Section
-                with gr.TabItem("📁 Artifacts"):
+                with gr.TabItem(get_text(lang, "subtab.artifacts")) as artifacts_tab:
                     artifacts_list = gr.Dataframe(
-                        headers=["Filename", "Path"],
-                        label="Generated Artifacts",
+                        headers=get_columns(lang, "artifacts"),
+                        label=get_text(lang, "df.artifacts"),
                         interactive=False,
                     )
-                    refresh_artifacts_btn = gr.Button("🔄 Refresh Artifacts", size="sm")
-                    gr.Markdown("**Download**: Click on artifact path to copy, then use file explorer")
+                    artifacts_hint_md = gr.Markdown(get_text(lang, "hint.artifacts"))
 
                 # Tab 4: Recent Jobs
-                with gr.TabItem("🕒 Recent Jobs"):
+                with gr.TabItem(get_text(lang, "subtab.recent")) as recent_tab:
                     recent_jobs_table = gr.Dataframe(
-                        headers=["Job ID", "Task Type", "Status", "Created At"],
-                        label="Recent Jobs",
+                        headers=get_columns(lang, "recent"),
+                        label=get_text(lang, "df.recent"),
                         interactive=False,
                     )
-                    refresh_recent_btn = gr.Button("🔄 Refresh List", size="sm")
+                    poll_note_md = gr.Markdown(get_text(lang, "poll.note"))
+
+        # Adaptive timers: fast lifecycle poll (activated on submit, self-deactivates
+        # on terminal state) and slow always-on background sync.
+        poll_timer = gr.Timer(POLL_FAST_SECONDS, active=False)
+        sync_timer = gr.Timer(POLL_SLOW_SECONDS)
 
         # ==================== Event Handlers ====================
+
+        def poll_snapshot(job_id: str, lang_value: str) -> PollState:
+            """Compute one snapshot, raising a one-shot warning for new security alerts."""
+            if job_id:
+                raw = jobs_manager.get_job_status(job_id)
+                code = raw.get("error_code")
+                if code in SECURITY_ALERT_CODES and job_id not in _security_warned:
+                    _security_warned.add(job_id)
+                    raise gr.Warning(security_alert_toast(lang_value, code))
+            return compute_poll_state(jobs_manager, job_id, lang_value)
+
+        def poll_handler(job_id: str, lang_value: str) -> tuple:
+            """Fast lifecycle poll: refresh every panel and deactivate on terminal state."""
+            state = poll_snapshot(job_id, lang_value)
+            return (
+                state.status,
+                state.error_text,
+                state.banner,
+                state.logs,
+                state.artifacts,
+                state.recent,
+                gr.update(active=state.keep_polling),
+            )
+
+        def sync_handler(job_id: str, lang_value: str) -> tuple:
+            """Slow background sync: refresh panels without touching the fast timer."""
+            state = poll_snapshot(job_id, lang_value)
+            return state.status, state.error_text, state.banner, state.logs, state.artifacts, state.recent
 
         def submit_job_handler(
             task_type: str,
@@ -379,12 +611,13 @@ def create_jobs_tab(jobs_manager: JobsManager) -> gr.Blocks:
             conf: float,
             device: str,
             allowed_paths_str: str,
-        ) -> tuple[str, dict, str]:
-            """Handle job submission."""
+            lang_value: str,
+        ) -> tuple[str, str, Any]:
+            """Submit a job and (re)activate the fast lifecycle timer."""
             # Parse allowed_paths from comma-separated string
             allowed_paths = [p.strip() for p in allowed_paths_str.split(",") if p.strip()]
 
-            job_id, message = jobs_manager.submit_job(
+            job_id, _message = jobs_manager.submit_job(
                 task_type=task_type,
                 model_path=model_path,
                 data_source=data_source,
@@ -394,47 +627,114 @@ def create_jobs_tab(jobs_manager: JobsManager) -> gr.Blocks:
                 allowed_paths=allowed_paths,
             )
 
-            # Return job_id, initial status, and message
-            status = jobs_manager.get_job_status(job_id)
-            return job_id, status, message
+            # A fresh submission may reuse the security-warning guard.
+            _security_warned.discard(job_id)
 
-        def refresh_status_handler(job_id: str) -> tuple[dict, str]:
-            """Refresh job status."""
+            return (
+                job_id,
+                get_text(lang_value, "msg.job_submitted").format(job_id=job_id),
+                gr.update(active=True),
+            )
+
+        def cancel_job_handler(job_id: str, lang_value: str) -> tuple[str, Any]:
+            """Request cancellation, surfacing localized warnings for invalid states."""
             if not job_id:
-                return {}, "⚠️ No job selected"
+                raise gr.Warning(get_text(lang_value, "msg.no_job_selected"))
+            raw = jobs_manager.get_job_status(job_id)
+            if raw.get("status") == "NOT_FOUND":
+                raise gr.Warning(get_text(lang_value, "msg.job_not_found"))
+            if is_terminal_status(raw.get("status", "")):
+                raise gr.Warning(get_text(lang_value, "msg.terminal_state").format(status=raw["status"]))
 
-            status = jobs_manager.get_job_status(job_id)
-            error_msg = ""
-            if status.get("error_message"):
-                error_msg = f"[{status.get('error_code', 'ERROR')}] {status['error_message']}"
+            jobs_manager.cancel_job(job_id)
+            return get_text(lang_value, "msg.cancel_requested").format(job_id=job_id), gr.update(active=True)
 
-            return status, error_msg
+        def apply_language(lang_value: str) -> tuple:
+            """Relabel every localizable component when the language changes."""
+            return (
+                lang_value,  # lang_state
+                gr.update(label=get_text(lang_value, "lang.label")),  # lang_radio
+                gr.update(value=f"### {get_text(lang_value, 'panel.submit')}"),  # submit_md
+                gr.update(label=get_text(lang_value, "field.task_type")),  # task_type_radio
+                gr.update(
+                    label=get_text(lang_value, "field.model_path"),
+                    placeholder=get_text(lang_value, "field.model_path.placeholder"),
+                ),  # model_path_txt
+                gr.update(
+                    label=get_text(lang_value, "field.data_source"),
+                    placeholder=get_text(lang_value, "field.data_source.placeholder"),
+                ),  # data_source_txt
+                gr.update(
+                    label=get_text(lang_value, "field.output_dir"),
+                    placeholder=get_text(lang_value, "field.output_dir.placeholder"),
+                ),  # output_dir_txt
+                gr.update(label=get_text(lang_value, "accordion.hyperparams")),  # hyperparams_accordion
+                gr.update(label=get_text(lang_value, "field.conf")),  # conf_slider
+                gr.update(label=get_text(lang_value, "field.device")),  # device_txt
+                gr.update(label=get_text(lang_value, "accordion.security")),  # security_accordion
+                gr.update(
+                    label=get_text(lang_value, "field.allowed_paths"),
+                    info=get_text(lang_value, "field.allowed_paths.info"),
+                ),  # allowed_paths_txt
+                gr.update(value=get_text(lang_value, "security.policy")),  # security_md
+                gr.update(value=get_text(lang_value, "button.submit")),  # submit_btn
+                gr.update(value=get_text(lang_value, "button.cancel")),  # cancel_job_btn
+                gr.update(label=get_text(lang_value, "subtab.status")),  # status_tab
+                gr.update(label=get_text(lang_value, "field.job_id")),  # job_id_display
+                gr.update(label=get_text(lang_value, "field.status")),  # status_display
+                gr.update(label=get_text(lang_value, "field.error")),  # error_box
+                gr.update(label=get_text(lang_value, "subtab.logs")),  # logs_tab
+                gr.update(label=get_text(lang_value, "field.logs")),  # logs_console
+                gr.update(label=get_text(lang_value, "subtab.artifacts")),  # artifacts_tab
+                gr.update(
+                    headers=get_columns(lang_value, "artifacts"),
+                    label=get_text(lang_value, "df.artifacts"),
+                ),  # artifacts_list
+                gr.update(value=get_text(lang_value, "hint.artifacts")),  # artifacts_hint_md
+                gr.update(label=get_text(lang_value, "subtab.recent")),  # recent_tab
+                gr.update(
+                    headers=get_columns(lang_value, "recent"),
+                    label=get_text(lang_value, "df.recent"),
+                ),  # recent_jobs_table
+                gr.update(value=get_text(lang_value, "poll.note")),  # poll_note_md
+            )
 
-        def refresh_logs_handler(job_id: str) -> str:
-            """Refresh job logs."""
-            if not job_id:
-                return "⚠️ No job selected"
-            return jobs_manager.get_job_logs(job_id)
+        # ==================== Event Bindings ====================
 
-        def refresh_artifacts_handler(job_id: str) -> list:
-            """Refresh artifacts list."""
-            if not job_id:
-                return []
-            artifacts = jobs_manager.get_job_artifacts(job_id)
-            return [[name, path] for name, path in artifacts]
+        lang_radio.change(
+            fn=apply_language,
+            inputs=lang_radio,
+            outputs=[
+                lang_state,
+                lang_radio,
+                submit_md,
+                task_type_radio,
+                model_path_txt,
+                data_source_txt,
+                output_dir_txt,
+                hyperparams_accordion,
+                conf_slider,
+                device_txt,
+                security_accordion,
+                allowed_paths_txt,
+                security_md,
+                submit_btn,
+                cancel_job_btn,
+                status_tab,
+                job_id_display,
+                status_display,
+                error_box,
+                logs_tab,
+                logs_console,
+                artifacts_tab,
+                artifacts_list,
+                artifacts_hint_md,
+                recent_tab,
+                recent_jobs_table,
+                poll_note_md,
+            ],
+        )
 
-        def cancel_job_handler(job_id: str) -> str:
-            """Handle job cancellation."""
-            if not job_id:
-                return "⚠️ No job selected"
-            return jobs_manager.cancel_job(job_id)
-
-        def refresh_recent_jobs_handler() -> list:
-            """Refresh recent jobs list."""
-            jobs_list = jobs_manager.list_recent_jobs(limit=20)
-            return [[j["job_id"], j["task_type"], j["status"], j["created_at"]] for j in jobs_list]
-
-        # Bind events
         submit_btn.click(
             fn=submit_job_handler,
             inputs=[
@@ -445,38 +745,66 @@ def create_jobs_tab(jobs_manager: JobsManager) -> gr.Blocks:
                 conf_slider,
                 device_txt,
                 allowed_paths_txt,
+                lang_state,
             ],
-            outputs=[job_id_display, status_display, gr.Textbox(visible=False)],
-        ).then(fn=lambda x: x, inputs=job_id_display, outputs=job_id_display)
-
-        refresh_status_btn.click(
-            fn=refresh_status_handler,
-            inputs=job_id_display,
-            outputs=[status_display, error_box],
+            outputs=[job_id_display, submit_msg, poll_timer],
+        ).then(
+            fn=poll_handler,
+            inputs=[job_id_display, lang_state],
+            outputs=[
+                status_display,
+                error_box,
+                banner_md,
+                logs_console,
+                artifacts_list,
+                recent_jobs_table,
+                poll_timer,
+            ],
         )
 
-        refresh_logs_btn.click(
-            fn=refresh_logs_handler,
-            inputs=job_id_display,
-            outputs=logs_console,
+        poll_timer.tick(
+            fn=poll_handler,
+            inputs=[job_id_display, lang_state],
+            outputs=[
+                status_display,
+                error_box,
+                banner_md,
+                logs_console,
+                artifacts_list,
+                recent_jobs_table,
+                poll_timer,
+            ],
         )
 
-        refresh_artifacts_btn.click(
-            fn=refresh_artifacts_handler,
-            inputs=job_id_display,
-            outputs=artifacts_list,
+        sync_timer.tick(
+            fn=sync_handler,
+            inputs=[job_id_display, lang_state],
+            outputs=[
+                status_display,
+                error_box,
+                banner_md,
+                logs_console,
+                artifacts_list,
+                recent_jobs_table,
+            ],
         )
 
         cancel_job_btn.click(
             fn=cancel_job_handler,
-            inputs=job_id_display,
-            outputs=error_box,
-        )
-
-        refresh_recent_btn.click(
-            fn=refresh_recent_jobs_handler,
-            inputs=None,
-            outputs=recent_jobs_table,
+            inputs=[job_id_display, lang_state],
+            outputs=[submit_msg, poll_timer],
+        ).then(
+            fn=poll_handler,
+            inputs=[job_id_display, lang_state],
+            outputs=[
+                status_display,
+                error_box,
+                banner_md,
+                logs_console,
+                artifacts_list,
+                recent_jobs_table,
+                poll_timer,
+            ],
         )
 
     return jobs_tab

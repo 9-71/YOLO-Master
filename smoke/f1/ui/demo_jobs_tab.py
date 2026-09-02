@@ -28,7 +28,8 @@ def create_demo_app() -> gr.Blocks:
     # Initialize shared jobs manager
     jobs_manager = JobsManager()
 
-    with gr.Blocks(title="YOLO-Master Studio - Jobs Demo", theme=gr.themes.Soft()) as app:
+    # NOTE: Gradio 6 moved `theme` from the Blocks constructor to launch().
+    with gr.Blocks(title="YOLO-Master Studio - Jobs Demo") as app:
         gr.Markdown("# 🚀 YOLO-Master Studio - Jobs Management Demo")
         gr.Markdown(
             """
@@ -36,10 +37,11 @@ def create_demo_app() -> gr.Blocks:
 
             **Features**:
             - Submit tasks (Predict, Train, Export, Diagnose)
-            - Real-time status monitoring with lifecycle state tracking
+            - Real-time status monitoring with automatic polling (no manual refresh)
             - Live log streaming console
             - Artifact explorer with download capability
             - Graceful cancellation handling
+            - English / 中文 (Simplified Chinese) UI switch
 
             **Security**:
             - Fail-closed path whitelisting (all paths validated against allowed_paths)
@@ -74,12 +76,12 @@ def create_demo_app() -> gr.Blocks:
                     ### 2. Monitor Execution
 
                     - **📊 Status Monitor**: View real-time job status, duration, and error diagnostics
-                    - **📜 Live Logs**: Stream execution logs (click 🔄 Refresh Logs)
+                    - **📜 Live Logs**: Stream execution logs (auto-refreshed every second while the job runs)
                     - **📁 Artifacts**: Download generated outputs (annotated images, labels, metadata)
 
                     ### 3. Cancel a Job
 
-                    1. Copy Job ID from status display
+                    1. The Job ID textbox fills automatically on submission
                     2. Click **🚫 Cancel Job** button
                     3. Job will transition to FAILED with USER_CANCELLED error code
 
@@ -217,6 +219,7 @@ def main() -> None:
         inbrowser=True,
         server_name="0.0.0.0",
         server_port=7860,
+        theme=gr.themes.Soft(),
     )
 
 
