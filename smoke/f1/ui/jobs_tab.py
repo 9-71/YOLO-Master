@@ -122,6 +122,12 @@ class JobsManager:
             },
         )
 
+        # The backend Metadata default is deep-copied from a class-definition-time
+        # instance, so every job would otherwise share one created_at. Stamp each
+        # submission with its own actual creation time (used by the Recent Jobs
+        # timestamp column and its newest-first ordering).
+        job_request.metadata.created_at = datetime.now(timezone.utc).isoformat()
+
         with self.lock:
             self.jobs[job_id] = job_request
             self.job_logs[job_id] = [f"[{datetime.now(timezone.utc).isoformat()}] Job {job_id} submitted"]
@@ -364,7 +370,7 @@ class PollState:
     """Snapshot of all job-monitoring panels produced by one polling cycle.
 
     Attributes:
-        status: Localized status dict rendered by the Status Monitor JSON panel.
+        status: Canonical status dict (backend keys/values only) rendered by the Status Monitor JSON panel.
         error_text: Diagnostics text for the error box (empty when healthy).
         banner: Markdown alert banner (empty when the job has no failure).
         logs: Formatted execution logs.
@@ -386,8 +392,9 @@ def compute_poll_state(jobs_manager: JobsManager, job_id: str, lang: str = DEFAU
     """Compute the complete polling snapshot for one job in the given language.
 
     Pure presentation logic over the JobsManager backend API: the backend responses
-    are never modified, so backend-level test assertions remain valid. Raw status
-    fields are preserved alongside localized ``status_label`` entries.
+    are never modified, so backend-level test assertions remain valid. The Status
+    Monitor JSON payload carries canonical backend keys/values only — localized
+    display text is confined to banners, toasts and column headers.
 
     Args:
         jobs_manager: JobsManager instance (or duck-typed equivalent for tests).
@@ -403,13 +410,11 @@ def compute_poll_state(jobs_manager: JobsManager, job_id: str, lang: str = DEFAU
         >>> state = compute_poll_state(manager, "", "en")
         >>> state.keep_polling
         False
-        >>> state.status["status_label"] == "⚠️ No job selected"
-        True
+        >>> state.status
+        {'status': 'NO_SELECTION'}
     """
     if not job_id:
-        return PollState(
-            status={"status": "NO_SELECTION", "status_label": get_text(lang, "msg.no_job_selected")},
-        )
+        return PollState(status={"status": "NO_SELECTION"})
 
     raw = jobs_manager.get_job_status(job_id)
     status_str = raw.get("status", "NOT_FOUND")
@@ -417,7 +422,6 @@ def compute_poll_state(jobs_manager: JobsManager, job_id: str, lang: str = DEFAU
     status = {
         "job_id": job_id,
         "status": status_str,
-        "status_label": get_text(lang, f"status.{status_str}"),
         "duration": raw.get("duration"),
         "error_code": raw.get("error_code"),
         "error_message": raw.get("error_message"),
@@ -478,7 +482,7 @@ def create_jobs_tab(jobs_manager: JobsManager, lang: str = DEFAULT_LANGUAGE) -> 
           recent jobs and final artifacts stay fresh while the fast timer is idle.
 
     Security alerts:
-        - The first tick observing SEC_ERR_001 / PARAM_VALIDATION_FAILED raises a
+        - The first tick observing SEC_ERR_001 / PARAM_VALIDATION_FAILED emits a
           one-shot gr.Warning toast; a persistent localized banner stays visible in the
           Status Monitor tab.
     """
@@ -586,13 +590,17 @@ def create_jobs_tab(jobs_manager: JobsManager, lang: str = DEFAULT_LANGUAGE) -> 
         # ==================== Event Handlers ====================
 
         def poll_snapshot(job_id: str, lang_value: str) -> PollState:
-            """Compute one snapshot, raising a one-shot warning for new security alerts."""
+            """Compute one snapshot, emitting a one-shot warning toast for new security alerts.
+
+            The warning is queued as a toast rather than raised: raising terminates the
+            event, whereas the snapshot below must still reach the monitoring panels.
+            """
             if job_id:
                 raw = jobs_manager.get_job_status(job_id)
                 code = raw.get("error_code")
                 if code in SECURITY_ALERT_CODES and job_id not in _security_warned:
                     _security_warned.add(job_id)
-                    raise gr.Warning(security_alert_toast(lang_value, code))
+                    gr.Warning(security_alert_toast(lang_value, code))
             return compute_poll_state(jobs_manager, job_id, lang_value)
 
         def poll_handler(job_id: str, lang_value: str) -> tuple:
@@ -647,14 +655,25 @@ def create_jobs_tab(jobs_manager: JobsManager, lang: str = DEFAULT_LANGUAGE) -> 
             )
 
         def cancel_job_handler(job_id: str, lang_value: str) -> tuple[str, Any]:
-            """Request cancellation, surfacing localized warnings for invalid states."""
+            """Request cancellation, surfacing localized warnings for invalid states.
+
+            Invalid requests (no selection, unknown job, terminal state) queue a
+            one-shot gr.Warning toast and return a fallback update: the localized
+            warning in the message panel and a deactivated fast poll timer.
+            """
             if not job_id:
-                raise gr.Warning(get_text(lang_value, "msg.no_job_selected"))
+                message = get_text(lang_value, "msg.no_job_selected")
+                gr.Warning(message)
+                return message, gr.update(active=False)
             raw = jobs_manager.get_job_status(job_id)
             if raw.get("status") == "NOT_FOUND":
-                raise gr.Warning(get_text(lang_value, "msg.job_not_found"))
+                message = get_text(lang_value, "msg.job_not_found")
+                gr.Warning(message)
+                return message, gr.update(active=False)
             if is_terminal_status(raw.get("status", "")):
-                raise gr.Warning(get_text(lang_value, "msg.terminal_state").format(status=raw["status"]))
+                message = get_text(lang_value, "msg.terminal_state").format(status=raw.get("status", ""))
+                gr.Warning(message)
+                return message, gr.update(active=False)
 
             jobs_manager.cancel_job(job_id)
             return get_text(lang_value, "msg.cancel_requested").format(job_id=job_id), gr.update(active=True)

@@ -152,8 +152,14 @@ class TestPollingState:
         state = compute_poll_state(FakeJobsManager(RUNNING_STATUS), "j1", "zh")
 
         assert state.keep_polling is True
-        assert state.status["status"] == "RUNNING"
-        assert state.status["status_label"] == "运行中"
+        assert state.status == {
+            "job_id": "j1",
+            "status": "RUNNING",
+            "duration": "3.0s",
+            "error_code": None,
+            "error_message": None,
+            "artifact_count": 2,
+        }
         assert state.banner == ""
         assert state.error_text == ""
 
@@ -186,14 +192,21 @@ class TestPollingState:
         state = compute_poll_state(FakeJobsManager(RUNNING_STATUS), "", "en")
 
         assert state.keep_polling is False
-        assert state.status["status"] == "NO_SELECTION"
+        assert state.status == {"status": "NO_SELECTION"}
 
     def test_not_found_stops_polling(self):
         manager = FakeJobsManager({"status": "NOT_FOUND", "message": "Job not found"})
         state = compute_poll_state(manager, "j1", "zh")
 
         assert state.keep_polling is False
-        assert state.status["status_label"] == "未找到"
+        assert state.status == {
+            "job_id": "j1",
+            "status": "NOT_FOUND",
+            "duration": None,
+            "error_code": None,
+            "error_message": None,
+            "artifact_count": None,
+        }
 
     def test_is_terminal_status_matrix(self):
         assert not is_terminal_status("PENDING")

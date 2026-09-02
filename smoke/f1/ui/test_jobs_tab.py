@@ -191,6 +191,23 @@ class TestJobsManager:
         assert all("task_type" in j for j in recent)
         assert all("status" in j for j in recent)
 
+    def test_list_recent_jobs_newest_first_with_per_job_timestamps(self, jobs_manager, sample_job_params):
+        """Recent jobs are sorted newest-first and each row carries its own created_at."""
+        job_ids = []
+        for _ in range(3):
+            job_id, _ = jobs_manager.submit_job(**sample_job_params)
+            job_ids.append(job_id)
+            time.sleep(0.1)  # Ensure distinct creation timestamps
+
+        recent = jobs_manager.list_recent_jobs(limit=5)
+
+        # Most recently submitted job appears first
+        assert [j["job_id"] for j in recent] == list(reversed(job_ids))
+        # Every row uses that job's actual creation timestamp (not a shared constant)
+        assert len({j["created_at"] for j in recent}) == len(job_ids)
+        for row in recent:
+            assert row["created_at"] == jobs_manager.jobs[row["job_id"]].metadata.created_at
+
     def test_list_recent_jobs_respects_limit(self, jobs_manager, sample_job_params):
         """Test that recent jobs listing respects limit parameter."""
         # Submit 5 jobs
