@@ -328,7 +328,7 @@ def alert_banner(lang: str, code: str, message: str | None) -> str:
         >>> "Security Policy Violation" in banner
         True
         >>> banner = alert_banner("zh", "EXEC_ERR_500", "boom")
-        >>> "作业失败" in banner
+        >>> "任务失败" in banner
         True
     """
     if code in SECURITY_ALERT_CODES:

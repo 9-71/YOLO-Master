@@ -121,7 +121,11 @@ class TestI18N:
         assert get_text("en", "button.submit") == "🔥 Submit Job"
 
     def test_get_text_chinese(self):
-        assert get_text("zh", "button.submit") == "🔥 提交作业"
+        assert get_text("zh", "button.submit") == "🔥 提交任务"
+        assert get_text("zh", "button.cancel") == "🚫 取消任务"
+        assert get_text("zh", "tab.title") == "📋 任务管理"
+        assert get_text("zh", "subtab.artifacts") == "📁 产物列表"
+        assert get_text("zh", "field.device") == "计算设备（0 为 GPU，cpu 为 CPU）"
         assert get_text("zh", "status.FAILED") == "失败"
 
     def test_get_text_unknown_language_falls_back_to_english(self):
@@ -133,6 +137,7 @@ class TestI18N:
 
     def test_get_columns_localized_and_fallback(self):
         assert get_columns("zh", "artifacts") == ["文件名", "路径"]
+        assert get_columns("zh", "recent") == ["任务 ID", "任务类型", "状态", "创建时间"]
         assert get_columns("en", "recent") == ["Job ID", "Task Type", "Status", "Created At"]
         assert get_columns("de", "artifacts") == ["Filename", "Path"]
 
