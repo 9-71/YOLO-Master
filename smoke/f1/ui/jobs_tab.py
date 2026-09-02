@@ -457,7 +457,17 @@ def create_jobs_tab(jobs_manager: JobsManager, lang: str = DEFAULT_LANGUAGE) -> 
             language selector inside the tab.
 
     Returns:
-        gr.Blocks: The Jobs Tab rendered as a Gradio Blocks (render into a parent app).
+        gr.Blocks: The Jobs Tab as a Gradio Blocks.
+
+    Mounting contract:
+        Mount the returned Blocks by calling it bare inside the parent tab context::
+
+            with gr.TabItem("📋 Jobs"):
+                create_jobs_tab(jobs_manager)
+
+        Gradio auto-embeds a child Blocks on context exit, so do NOT additionally
+        call ``.render()`` — that would mount every Jobs component a second time
+        (duplicated tabs in the DOM).
 
     Polling design:
         - Fast lifecycle timer (1s): ticks while the selected job is PENDING/RUNNING and
@@ -477,7 +487,7 @@ def create_jobs_tab(jobs_manager: JobsManager, lang: str = DEFAULT_LANGUAGE) -> 
 
     with gr.Blocks() as jobs_tab:
         lang_state = gr.State(lang)
-        gr.Markdown(f"# {get_text(lang, 'tab.title')}")
+        title_md = gr.Markdown(f"# {get_text(lang, 'tab.title')}")
 
         with gr.Row(equal_height=False):
             # ==================== Left Panel: Job Submission ====================
@@ -654,6 +664,7 @@ def create_jobs_tab(jobs_manager: JobsManager, lang: str = DEFAULT_LANGUAGE) -> 
             return (
                 lang_value,  # lang_state
                 gr.update(label=get_text(lang_value, "lang.label")),  # lang_radio
+                gr.update(value=f"# {get_text(lang_value, 'tab.title')}"),  # title_md
                 gr.update(value=f"### {get_text(lang_value, 'panel.submit')}"),  # submit_md
                 gr.update(label=get_text(lang_value, "field.task_type")),  # task_type_radio
                 gr.update(
@@ -707,6 +718,7 @@ def create_jobs_tab(jobs_manager: JobsManager, lang: str = DEFAULT_LANGUAGE) -> 
             outputs=[
                 lang_state,
                 lang_radio,
+                title_md,
                 submit_md,
                 task_type_radio,
                 model_path_txt,

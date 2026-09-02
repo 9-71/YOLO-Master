@@ -412,8 +412,11 @@ class YOLO_Master_WebUI:
                                 )
 
                 # ================= Tab 2: Jobs =================
+                # Single mount: entering the child Blocks inside this active context
+                # auto-embeds it on context exit; an explicit .render() would mount
+                # every Jobs component a second time (duplicate tabs in the DOM).
                 with gr.TabItem("📋 Jobs"):
-                    create_jobs_tab(self.jobs_manager).render()
+                    create_jobs_tab(self.jobs_manager)
 
             # ================= Event Binding =================
 
