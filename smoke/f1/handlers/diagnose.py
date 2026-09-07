@@ -128,8 +128,9 @@ class DiagnoseHandler(BaseTaskHandler):
             with txt_path.open("w", encoding="utf-8") as f:
                 f.write(self._format_diagnostics(diagnostics))
 
-            # Return execution result
-            artifacts = [str(json_path.resolve()), str(txt_path.resolve())]
+            # Collect artifacts with the standard full-tree scan shared by all
+            # handlers instead of hardcoding the two report filenames.
+            artifacts = sorted(str(p.resolve()) for p in job_output_dir.rglob("*") if p.is_file())
 
             metadata = {
                 "python_version": diagnostics["python"]["version"],

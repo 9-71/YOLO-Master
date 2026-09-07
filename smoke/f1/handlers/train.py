@@ -21,7 +21,7 @@ import warnings
 from pathlib import Path
 from typing import Any
 
-from smoke.f1.handlers.base import BaseTaskHandler
+from smoke.f1.handlers.base import BaseTaskHandler, PathWhitelistViolationError
 from smoke.f1.handlers.registry import TaskHandlerRegistry
 
 
@@ -59,7 +59,7 @@ class TrainHandler(BaseTaskHandler):
 
         Validation Rules:
             1. model_path (required): Must be within allowed_paths whitelist
-            2. data_source (required): Must be data.yaml within allowed_paths whitelist
+            2. data_source (required): Must be a dataset YAML (.yaml/.yml) within allowed_paths whitelist
             3. epochs (required): Must be int > 0
             4. batch_size (optional): If present, must be int > 0
             5. device (optional): No validation (passed directly to YOLO engine)
@@ -101,24 +101,31 @@ class TrainHandler(BaseTaskHandler):
             return False, "Path whitelisting must be enabled"
 
         allowed_paths = security_constraints.get("allowed_paths", [])
-        if not allowed_paths:
+        allowed_patterns = security_constraints.get("allowed_path_patterns", [])
+        if not allowed_paths and not allowed_patterns:
             return False, "allowed_paths cannot be empty when path_whitelisted=True"
 
-        # Validate required parameter: model_path
-        if "model_path" not in params:
+        # Validate required parameter: model_path (empty string = not provided)
+        if not params.get("model_path"):
             return False, "Required parameter 'model_path' is missing"
 
         model_path = params["model_path"]
-        if not self._is_path_safe(model_path, allowed_paths):
-            return False, f"model_path '{model_path}' is not within allowed_paths whitelist"
+        if not self._is_path_safe(model_path, allowed_paths, allowed_patterns):
+            raise PathWhitelistViolationError(f"model_path '{model_path}' is not within allowed_paths whitelist")
 
         # Validate required parameter: data_source
         if "data_source" not in params:
             return False, "Required parameter 'data_source' is missing"
 
         data_source = params["data_source"]
-        if not self._is_path_safe(data_source, allowed_paths):
-            return False, f"data_source '{data_source}' is not within allowed_paths whitelist"
+        if not self._is_path_safe(data_source, allowed_paths, allowed_patterns):
+            raise PathWhitelistViolationError(f"data_source '{data_source}' is not within allowed_paths whitelist")
+
+        # train requires a dataset configuration YAML: the Ultralytics train engine
+        # raises "Not a YAML file" for images or any other non-YAML source, so
+        # reject them up front during validation instead of failing mid-execution.
+        if not data_source or not str(data_source).lower().endswith((".yaml", ".yml")):
+            return False, "data_source for train must be a dataset YAML file (e.g., coco8.yaml)"
 
         # Validate required parameter: epochs
         if "epochs" not in params:
@@ -159,7 +166,8 @@ class TrainHandler(BaseTaskHandler):
             2. Apply Discussion #244 defect mitigations (seed injection, optimizer audit)
             3. Configure job-specific output directory (output_dir / job_id)
             4. Invoke YOLO.train() with validated parameters
-            5. Collect generated artifacts (best.pt, last.pt, training curves)
+            5. Collect all generated files (weights, curves, sample images such as
+               train_batch0.jpg / val_batch0_labels.jpg)
             6. Return execution result with artifact paths
 
         Discussion #244 Defect Mitigations:
@@ -237,19 +245,12 @@ class TrainHandler(BaseTaskHandler):
             # Discussion #244 Defect A: Audit optimizer parameter groups
             optimizer_audit = self._audit_optimizer_param_groups(model)
 
-            # Collect generated artifacts from training output directory
-            artifacts = []
-            # YOLO training saves to project/name/weights/{best.pt, last.pt}
-            weights_dir = job_output_dir / "weights"
-            if weights_dir.exists():
-                for artifact_path in weights_dir.glob("*.pt"):
-                    artifacts.append(str(artifact_path.resolve()))
-
-            # Also collect training curves and logs
-            for log_file in job_output_dir.glob("*.csv"):
-                artifacts.append(str(log_file.resolve()))
-            for png_file in job_output_dir.glob("*.png"):
-                artifacts.append(str(png_file.resolve()))
+            # Collect every generated file under the job output directory:
+            # weights (best.pt/last.pt), results.csv, curve plots (.png) and
+            # sample batches such as train_batch0.jpg / val_batch0_labels.jpg.
+            # The manifest must not hardcode curve plots only, or .jpg sample
+            # images never reach the artifacts table and the preview gallery.
+            artifacts = sorted(str(p.resolve()) for p in job_output_dir.rglob("*") if p.is_file())
 
             # Build execution metadata with Discussion #244 mitigation evidence
             metadata = {

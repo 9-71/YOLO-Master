@@ -24,8 +24,8 @@ Usage:
 """
 
 # Auto-import concrete handlers to trigger @register decorators
-from smoke.f1.handlers import diagnose, export, predict, train  # noqa: F401
-from smoke.f1.handlers.base import BaseTaskHandler
+from smoke.f1.handlers import diagnose, export, predict, train, val  # noqa: F401
+from smoke.f1.handlers.base import BaseTaskHandler, PathWhitelistViolationError
 from smoke.f1.handlers.registry import TaskHandlerRegistry
 
-__all__ = ["BaseTaskHandler", "TaskHandlerRegistry"]
+__all__ = ["BaseTaskHandler", "PathWhitelistViolationError", "TaskHandlerRegistry"]

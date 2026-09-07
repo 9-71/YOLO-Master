@@ -9,6 +9,7 @@ This test suite validates:
 
 from __future__ import annotations
 
+import re
 import sys
 from pathlib import Path
 from typing import Any
@@ -69,6 +70,95 @@ class TestBaseTaskHandler:
 
         # Case 5: Symlink resolution (if OS supports)
         assert handler._is_path_safe("./././ultralytics/../ultralytics/assets", ["."]) is True
+
+
+class TestPathSafetyRegexWhitelist:
+    """Regex-enhanced path whitelisting unit tests (P1)."""
+
+    @staticmethod
+    def _make_handler() -> BaseTaskHandler:
+        class ConcreteHandler(BaseTaskHandler):
+            def validate_params(self, params, security_constraints):
+                return True, None
+
+            def execute(self, job_id, params, output_dir):
+                return {"success": True, "artifacts": []}
+
+        return ConcreteHandler()
+
+    @staticmethod
+    def _posix_root(path: Path) -> str:
+        """Regex-escaped normalized resolved POSIX form used to build patterns."""
+        return re.escape(path.resolve().as_posix())
+
+    def test_regex_pattern_match_succeeds(self, tmp_path):
+        """A path fully matching an allowed regex pattern is accepted."""
+        handler = self._make_handler()
+        root = self._posix_root(tmp_path)
+        target = tmp_path / "models" / "yolov8n.pt"
+        assert handler._is_path_safe(str(target), [], [f"^{root}/models/.*\\.pt$"]) is True
+
+    def test_regex_pattern_resolving_outside_allowed_boundaries_fails(self, tmp_path):
+        """A path that textually matches the pattern but resolves outside it is rejected."""
+        handler = self._make_handler()
+        root = self._posix_root(tmp_path)
+        # Textual prefix of this path matches "^{root}/sub/.*", but the resolved
+        # path (tmp_path's parent + file) does not -> fail-closed rejection.
+        target = tmp_path / "sub" / ".." / ".." / "escape.pt"
+        assert handler._is_path_safe(str(target), [], [f"^{root}/sub/.*\\.pt$"]) is False
+
+    def test_regex_substring_partial_match_bypass_rejected(self, tmp_path):
+        """Prefix/substring matches must not whitelist sibling paths."""
+        handler = self._make_handler()
+        root = self._posix_root(tmp_path)
+        # Pattern with no tail anchor must NOT whitelist a sibling directory
+        # whose name merely starts with the same prefix.
+        sibling = tmp_path / "models_evil" / "weight.pt"
+        assert handler._is_path_safe(str(sibling), [], [f"^{root}/models"]) is False
+        # Same for a child of the intended directory: the pattern must fully
+        # describe the path, e.g. with an explicit wildcard tail.
+        child = tmp_path / "models" / "weight.pt"
+        assert handler._is_path_safe(str(child), [], [f"^{root}/models"]) is False
+        assert handler._is_path_safe(str(child), [], [f"^{root}/models/.*"]) is True
+
+    def test_regex_entry_detected_inside_allowed_paths(self, tmp_path):
+        """Entries in allowed_paths starting with '^' are treated as regex patterns."""
+        handler = self._make_handler()
+        root = self._posix_root(tmp_path)
+        allowed_roots = [f"^{root}/cache/.*\\.pt$"]
+        assert handler._is_path_safe(str(tmp_path / "cache" / "yolov8n.pt"), allowed_roots) is True
+        assert handler._is_path_safe(str(tmp_path / "other" / "yolov8n.pt"), allowed_roots) is False
+
+    def test_malformed_regex_fails_closed_without_crash(self, tmp_path):
+        """Malformed patterns never raise; they contribute nothing and a mixed
+        list with one malformed pattern must not poison the valid ones."""
+        handler = self._make_handler()
+        root = self._posix_root(tmp_path)
+        target = str(tmp_path / "models" / "yolov8n.pt")
+        # Malformed-only: fail closed, no exception.
+        assert handler._is_path_safe(target, [], ["^[unclosed("]) is False
+        # Malformed entry beside a valid pattern: valid pattern still applies.
+        patterns = ["^[unclosed(", f"^{root}/models/.*\\.pt$"]
+        assert handler._is_path_safe(target, [], patterns) is True
+
+    def test_empty_whitelist_and_patterns_reject_all(self, tmp_path):
+        """Fail-closed: with both sets empty every path is rejected."""
+        handler = self._make_handler()
+        assert handler._is_path_safe(str(tmp_path / "valid_file.txt"), [], []) is False
+
+    def test_regex_symlink_escape_fails(self, tmp_path):
+        """A symlink escape resolves outside the pattern's boundary and is rejected."""
+        handler = self._make_handler()
+        root = self._posix_root(tmp_path)
+        try:
+            link = tmp_path / "link_out"
+            link.symlink_to(tmp_path.parent, target_is_directory=True)
+        except OSError:
+            pytest.skip("symlink creation not permitted on this platform")
+        # Literal path matches "^{root}/.*"; the resolved path (outside tmp_path)
+        # does not -> rejected.
+        target = link / "secret.pt"
+        assert handler._is_path_safe(str(target), [], [f"^{root}/.*\\.pt$"]) is False
 
 
 class TestTaskHandlerRegistry:

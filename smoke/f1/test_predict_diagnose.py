@@ -20,7 +20,7 @@ import pytest
 project_root = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(project_root))
 
-from smoke.f1.handlers import TaskHandlerRegistry
+from smoke.f1.handlers import PathWhitelistViolationError, TaskHandlerRegistry
 from smoke.f1.handlers.diagnose import DiagnoseHandler
 from smoke.f1.handlers.predict import PredictHandler
 
@@ -69,14 +69,17 @@ class TestPredictHandlerValidation:
         assert "missing" in err.lower()
 
     def test_validation_rejects_path_outside_whitelist(self):
-        """Verify that validation fails when paths are outside allowed_paths."""
+        """Verify that a whitelist violation raises PathWhitelistViolationError.
+
+        The dedicated exception is the dispatcher's signal to map the failure to
+        SEC_ERR_001 instead of the generic PARAM_VALIDATION_FAILED.
+        """
         params = {"model_path": "ultralytics/assets/yolov8n.pt", "data_source": "../../etc/passwd"}
         constraints = {"path_whitelisted": True, "allow_shell": False, "allowed_paths": ["ultralytics/assets"]}
 
-        is_valid, err = self.handler.validate_params(params, constraints)
-        assert is_valid is False
-        assert "data_source" in err
-        assert "whitelist" in err.lower()
+        with pytest.raises(PathWhitelistViolationError, match="data_source") as exc_info:
+            self.handler.validate_params(params, constraints)
+        assert "whitelist" in str(exc_info.value).lower()
 
     def test_validation_accepts_valid_paths(self):
         """Verify that validation passes for paths within allowed_paths."""

@@ -24,7 +24,7 @@ import pytest
 project_root = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(project_root))
 
-from smoke.f1.handlers import TaskHandlerRegistry
+from smoke.f1.handlers import PathWhitelistViolationError, TaskHandlerRegistry
 from smoke.f1.handlers.export import SUPPORTED_EXPORT_FORMATS, ExportHandler
 from smoke.f1.handlers.train import TrainHandler
 
@@ -87,6 +87,37 @@ class TestTrainHandlerValidation:
         assert "data_source" in err
         assert "missing" in err.lower()
 
+    def test_validation_rejects_non_yaml_data_source(self):
+        """Verify that an image (or any non-YAML) data_source is rejected.
+
+        Regression for the E2E train failure: the engine raises "Not a YAML file"
+        for image sources, so validation must reject them before execution.
+        """
+        params = {"model_path": "yolov8n.pt", "data_source": "ultralytics/assets/bus.jpg", "epochs": 10}
+        constraints = {"path_whitelisted": True, "allow_shell": False, "allowed_paths": ["."]}
+
+        is_valid, err = self.handler.validate_params(params, constraints)
+        assert is_valid is False
+        assert "dataset YAML file" in err
+
+    def test_validation_rejects_empty_data_source(self):
+        """Verify that an empty data_source is rejected as a non-YAML source."""
+        params = {"model_path": "yolov8n.pt", "data_source": "", "epochs": 10}
+        constraints = {"path_whitelisted": True, "allow_shell": False, "allowed_paths": ["."]}
+
+        is_valid, err = self.handler.validate_params(params, constraints)
+        assert is_valid is False
+        assert "dataset YAML file" in err
+
+    def test_validation_accepts_yaml_and_yml_data_sources(self):
+        """Verify that both .yaml and .yml dataset configurations pass validation."""
+        constraints = {"path_whitelisted": True, "allow_shell": False, "allowed_paths": ["."]}
+        for source in ("coco8.yaml", "dataset.yml"):
+            params = {"model_path": "yolov8n.pt", "data_source": source, "epochs": 10}
+            is_valid, err = self.handler.validate_params(params, constraints)
+            assert is_valid is True, f"data_source '{source}' should be accepted: {err}"
+            assert err is None
+
     def test_validation_requires_epochs(self):
         """Verify that validation fails when epochs is missing."""
         params = {"model_path": "yolov8n.pt", "data_source": "coco8.yaml"}
@@ -135,14 +166,13 @@ class TestTrainHandlerValidation:
         assert "seed" in err
 
     def test_validation_rejects_path_outside_whitelist(self):
-        """Verify that validation fails when model_path is outside allowed_paths."""
+        """Verify that a whitelist violation raises PathWhitelistViolationError."""
         params = {"model_path": "../../etc/passwd", "data_source": "coco8.yaml", "epochs": 10}
         constraints = {"path_whitelisted": True, "allow_shell": False, "allowed_paths": ["ultralytics/assets"]}
 
-        is_valid, err = self.handler.validate_params(params, constraints)
-        assert is_valid is False
-        assert "model_path" in err
-        assert "whitelist" in err.lower()
+        with pytest.raises(PathWhitelistViolationError, match="model_path") as exc_info:
+            self.handler.validate_params(params, constraints)
+        assert "whitelist" in str(exc_info.value).lower()
 
     def test_validation_rejects_shell_execution(self):
         """Verify that validation fails when allow_shell=True."""
@@ -273,14 +303,13 @@ class TestExportHandlerValidation:
         assert "missing" in err.lower()
 
     def test_validation_rejects_path_outside_whitelist(self):
-        """Verify that validation fails when model_path is outside allowed_paths."""
+        """Verify that a whitelist violation raises PathWhitelistViolationError."""
         params = {"model_path": "../../etc/passwd", "format": "onnx"}
         constraints = {"path_whitelisted": True, "allow_shell": False, "allowed_paths": ["ultralytics/assets"]}
 
-        is_valid, err = self.handler.validate_params(params, constraints)
-        assert is_valid is False
-        assert "model_path" in err
-        assert "whitelist" in err.lower()
+        with pytest.raises(PathWhitelistViolationError, match="model_path") as exc_info:
+            self.handler.validate_params(params, constraints)
+        assert "whitelist" in str(exc_info.value).lower()
 
     def test_validation_rejects_unsupported_format(self):
         """Verify that validation fails for formats outside the closed allowlist."""
@@ -422,7 +451,8 @@ class TestExportHandlerExecution:
 
         assert result["success"] is True
         assert result["error"] is None
-        assert len(result["artifacts"]) == 1
+        # Full-tree scan captures both the job-local model copy (.pt) and the export
+        assert len(result["artifacts"]) == 2
         assert result["artifacts"][0].endswith(".onnx")
         assert Path(result["artifacts"][0]).exists()
 
@@ -490,10 +520,10 @@ class TestExportHandlerExecution:
 class TestRegistryIntegration:
     """End-to-end integration tests across all four registered handlers."""
 
-    def test_all_four_handlers_are_registered(self):
-        """Verify predict, train, export, and diagnose are all registered."""
+    def test_all_five_handlers_are_registered(self):
+        """Verify predict, train, export, diagnose, and val are all registered."""
         registered = TaskHandlerRegistry.list_registered()
-        assert registered == ["diagnose", "export", "predict", "train"]  # Alphabetically sorted
+        assert registered == ["diagnose", "export", "predict", "train", "val"]  # Alphabetically sorted
 
     def test_dispatcher_can_retrieve_phase1_handlers(self):
         """Simulate dispatcher workflow retrieving and using phase-1 handlers."""

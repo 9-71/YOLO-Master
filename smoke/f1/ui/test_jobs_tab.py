@@ -9,22 +9,36 @@ Run:
 
 from __future__ import annotations
 
+import json
+import os
+import shutil
+import subprocess
+import sys
 import threading
 import time
+from collections.abc import Callable
 from datetime import datetime
 from pathlib import Path
+from types import SimpleNamespace
+from typing import Any
 from unittest.mock import patch
 
+import gradio as gr
 import pytest
 
-from smoke.f1.test_f1_smoke import ErrorInfo, JobStatus
-from smoke.f1.ui.jobs_tab import JobsManager, format_created_at
+from core.schema import ErrorInfo, JobRequest, JobStatus, OutputConfig, TaskType
+from smoke.f1.ui.jobs_tab import JobsManager, create_jobs_tab, format_created_at, get_job_image_artifacts
 
 
 @pytest.fixture
 def jobs_manager():
     """Create JobsManager instance for testing."""
     return JobsManager()
+
+
+def _wired_fn(tab: gr.Blocks, component: gr.Component, event: str) -> Callable[..., Any]:
+    """Resolve the live callable Gradio registered for ``(component, event)``."""
+    return next(bf.fn for bf in tab.fns.values() if bf.fn and (component._id, event) in bf.targets)
 
 
 @pytest.fixture
@@ -39,6 +53,12 @@ def sample_job_params():
         "device": "cpu",
         "allowed_paths": [".", "ultralytics/assets", "runs"],
     }
+
+
+def _stub_execute(job):
+    """Dispatcher stub marking a job COMPLETED without any engine work."""
+    job.status = JobStatus.COMPLETED
+    return job
 
 
 class TestJobsManager:
@@ -66,6 +86,66 @@ class TestJobsManager:
 
         assert status["status"] == "NOT_FOUND"
         assert "not found" in status["message"].lower()
+
+    def test_submit_train_job_injects_required_defaults(self, jobs_manager):
+        """Train submissions carry epochs=1 and imgsz=640 so TrainHandler.validate_params passes."""
+        with patch.object(jobs_manager.dispatcher, "execute", _stub_execute):
+            job_id, _ = jobs_manager.submit_job(
+                task_type="train",
+                model_path="yolov8n.pt",
+                data_source="coco8.yaml",
+                output_dir="runs/train",
+                conf=0.25,
+                device="cpu",
+                allowed_paths=[".", "runs"],
+            )
+
+        params = jobs_manager.jobs[job_id].params
+        assert params["epochs"] == 1
+        assert params["imgsz"] == 640
+
+    def test_submit_val_job_injects_imgsz_default(self, jobs_manager):
+        """Val submissions carry imgsz=640 as a default engine parameter."""
+        with patch.object(jobs_manager.dispatcher, "execute", _stub_execute):
+            job_id, _ = jobs_manager.submit_job(
+                task_type="val",
+                model_path="yolov8n.pt",
+                data_source="coco8.yaml",
+                output_dir="runs/val",
+                conf=0.25,
+                device="cpu",
+                allowed_paths=[".", "runs"],
+            )
+
+        params = jobs_manager.jobs[job_id].params
+        assert params["imgsz"] == 640
+
+    def test_train_job_with_image_data_source_fails_validation_fast(self, jobs_manager):
+        """Train with an image data_source fails fast with PARAM_VALIDATION_FAILED.
+
+        Regression for the E2E hang: the YOLO train engine requires a dataset YAML.
+        Passing bus.jpg must be rejected during validation (before RUNNING) instead
+        of raising "Not a YAML file" mid-execution or hanging in dataset resolution.
+        """
+        job_id, _ = jobs_manager.submit_job(
+            task_type="train",
+            model_path="yolov8n.pt",
+            data_source="ultralytics/assets/bus.jpg",
+            output_dir="runs/train",
+            conf=0.25,
+            device="cpu",
+            allowed_paths=[".", "runs", "ultralytics/assets"],
+        )
+
+        deadline = time.time() + 10
+        status = jobs_manager.get_job_status(job_id)
+        while time.time() < deadline and status["status"] not in ("COMPLETED", "FAILED"):
+            time.sleep(0.1)
+            status = jobs_manager.get_job_status(job_id)
+
+        assert status["status"] == "FAILED"
+        assert status["error_code"] == "PARAM_VALIDATION_FAILED"
+        assert "dataset YAML file" in status["error_message"]
 
     def test_get_job_status_valid(self, jobs_manager, sample_job_params):
         """Test status retrieval for valid job."""
@@ -291,6 +371,219 @@ class TestTimestampFormatting:
         assert format_created_at("not-a-timestamp") == "not-a-timestamp"
 
 
+class TestArtifactVisualizer:
+    """Test cases for Artifact Visualizer — image artifact scanning and preview.
+
+    Validates that ``get_job_image_artifacts`` (the module-level scanner) and
+    ``JobsManager.get_job_image_artifacts`` (the thread-safe wrapper) correctly:
+    hide artifacts until a job reaches COMPLETED, return only image files sorted
+    by filename, defend against path traversal, and degrade gracefully.
+    """
+
+    @staticmethod
+    def _write_minimal_png(path: Path) -> None:
+        """Write a minimal valid 1x1 RGB PNG file (real image, not just a stub).
+
+        Args:
+            path: Destination file path.
+        """
+        png_bytes = (
+            b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01"
+            b"\x08\x02\x00\x00\x00\x90wS\xde\x00\x00\x00\x0cIDATx\x9cc\xf8\xcf\xc0"
+            b"\x00\x00\x00\x03\x00\x01\xba\x1b\xe3\x82\x00\x00\x00\x00IEND\xaeB`\x82"
+        )
+        path.write_bytes(png_bytes)
+
+    @staticmethod
+    def _write_minimal_jpg(path: Path) -> None:
+        """Write a minimal valid 1x1 JPEG file (real image, not just a stub).
+
+        Args:
+            path: Destination file path.
+        """
+        jpg_bytes = (
+            b"\xff\xd8\xff\xe0\x00\x10JFIF\x00\x01\x01\x00\x00\x01\x00\x01\x00\x00"
+            b"\xff\xdb\x00C\x00\x08\x06\x06\x07\x06\x05\x08\x07\x07\x07\t\t\x08\n"
+            b"\x0c\x14\r\x0c\x0b\x0b\x0c\x19\x12\x13\x0f\x14\x1d\x1a\x1f\x1e\x1d\x1a"
+            b"\x1c\x1c $. \x1c\x1c(7),01444\x1f'9=82<.342"
+            b"\xff\xc0\x00\x0b\x08\x00\x01\x00\x01\x01\x01\x11\x00"
+            b"\xff\xc4\x00\x1f\x00\x00\x01\x05\x01\x01\x01\x01\x01\x01\x00\x00\x00"
+            b"\x00\x00\x00\x00\x00\x01\x02\x03\x04\x05\x06\x07\x08\t\n\x0b"
+            b"\xff\xc4\x00\xb5\x10\x00\x02\x01\x03\x03\x02\x04\x03\x05\x05\x04\x04"
+            b'\x00\x00\x01}\x01\x02\x03\x00\x04\x11\x05\x12!1A\x06\x13Qa\x07"q\x142'
+            b"\x81\x91\xa1\x08#B\xb1\xc1\x15R\xd1\xf0$3br\x82\t\n\x16\x17\x18\x19\x1a"
+            b"%&'()*456789:CDEFGHIJSTUVWXYZcdefghijstuvwxyz\x83\x84\x85\x86\x87\x88"
+            b"\x89\x8a\x92\x93\x94\x95\x96\x97\x98\x99\x9a\xa2\xa3\xa4\xa5\xa6\xa7"
+            b"\xa8\xa9\xaa\xb2\xb3\xb4\xb5\xb6\xb7\xb8\xb9\xba\xc2\xc3\xc4\xc5\xc6"
+            b"\xc7\xc8\xc9\xca\xd2\xd3\xd4\xd5\xd6\xd7\xd8\xd9\xda\xe1\xe2\xe3\xe4"
+            b"\xe5\xe6\xe7\xe8\xe9\xea\xf1\xf2\xf3\xf4\xf5\xf6\xf7\xf8\xf9\xfa"
+            b"\xff\xda\x00\x08\x01\x01\x00\x00?\x00T\xd2\x21\xff\xd9"
+        )
+        path.write_bytes(jpg_bytes)
+
+    @staticmethod
+    def _write_minimal_webp(path: Path) -> None:
+        """Write a minimal valid WebP file (RIFF + VP8 lossy, 1x1 frame).
+
+        Args:
+            path: Destination file path.
+        """
+        vp8_data = b"\x10\x00\x00\x9d\x01\x2a\x01\x00\x01\x00\x02\x00"
+        vp8_size = len(vp8_data)
+        riff_size = 4 + 8 + vp8_size  # "WEBP" + "VP8 " + size_field + vp8_data
+        webp_bytes = (
+            b"RIFF" + riff_size.to_bytes(4, "little") + b"WEBP" + b"VP8 " + vp8_size.to_bytes(4, "little") + vp8_data
+        )
+        path.write_bytes(webp_bytes)
+
+    def test_get_image_artifacts_status_not_completed(self, tmp_path: Path) -> None:
+        """Non-COMPLETED jobs must never expose unready artifacts.
+
+        Even when real PNG files already exist under ``output_dir`` (e.g. from a
+        previous partial run or an external writer), a PENDING or RUNNING job
+        must return an empty list so the UI never shows half-baked previews.
+        """
+        output_dir = tmp_path / "output"
+        output_dir.mkdir()
+        self._write_minimal_png(output_dir / "result.png")
+
+        job = JobRequest(
+            job_id="test-pending-artifacts",
+            task_type=TaskType.PREDICT,
+            status=JobStatus.PENDING,
+            output=OutputConfig(output_dir=str(output_dir)),
+        )
+
+        assert get_job_image_artifacts(job) == []
+
+    def test_get_image_artifacts_success(self, tmp_path: Path) -> None:
+        """COMPLETED job returns only image files, sorted by filename ascending.
+
+        Three images (c.jpg, a.png, b.webp) and one non-image file (readme.txt)
+        are placed in the output directory.  The scanner must:
+        - include exactly the three image files
+        - exclude the non-image file
+        - return filenames in strict ascending order: a.png, b.webp, c.jpg
+        """
+        output_dir = tmp_path / "output"
+        output_dir.mkdir()
+
+        # Write files in intentionally scrambled order
+        self._write_minimal_jpg(output_dir / "c.jpg")
+        self._write_minimal_png(output_dir / "a.png")
+        self._write_minimal_webp(output_dir / "b.webp")
+        (output_dir / "readme.txt").write_text("not an image")
+
+        job = JobRequest(
+            job_id="test-completed-artifacts",
+            task_type=TaskType.PREDICT,
+            status=JobStatus.COMPLETED,
+            output=OutputConfig(output_dir=str(output_dir)),
+        )
+
+        result = get_job_image_artifacts(job)
+
+        assert len(result) == 3
+        assert Path(result[0]).name == "a.png"
+        assert Path(result[1]).name == "b.webp"
+        assert Path(result[2]).name == "c.jpg"
+
+    def test_get_image_artifacts_path_traversal_protection(self, tmp_path: Path) -> None:
+        """Images placed outside ``output_dir`` must never be scanned or returned.
+
+        The scanner resolves every candidate path and verifies it lives under
+        the resolved output directory root.  A sibling image in the parent
+        directory must be silently dropped.
+        """
+        output_dir = tmp_path / "job_output"
+        output_dir.mkdir()
+        self._write_minimal_png(output_dir / "inside.png")
+
+        # Place a decoy image in the parent directory (outside output_dir)
+        self._write_minimal_png(tmp_path / "outside.png")
+
+        job = JobRequest(
+            job_id="test-traversal-protection",
+            task_type=TaskType.PREDICT,
+            status=JobStatus.COMPLETED,
+            output=OutputConfig(output_dir=str(output_dir)),
+        )
+
+        result = get_job_image_artifacts(job)
+
+        assert len(result) == 1
+        assert Path(result[0]).name == "inside.png"
+        assert all("outside" not in p for p in result)
+
+    def test_jobs_manager_wrapper(self, jobs_manager: JobsManager, tmp_path: Path) -> None:
+        """JobsManager.get_job_image_artifacts wraps the scanner safely.
+
+        Verifies three behaviours:
+        1. A non-existent job_id returns an empty list (no KeyError raised).
+        2. A completed job with image artifacts returns the expected files.
+        3. Edge cases (e.g. missing output directory on a COMPLETED job) are
+           handled gracefully by returning ``[]`` instead of raising.
+        """
+        # 1. Non-existent job → empty list
+        assert jobs_manager.get_job_image_artifacts("nonexistent-job-id") == []
+
+        # 2. Completed job with images → returns artifact paths
+        output_dir = tmp_path / "artifacts"
+        output_dir.mkdir()
+        self._write_minimal_png(output_dir / "preview.png")
+
+        def fake_execute(job: JobRequest) -> JobRequest:
+            job.status = JobStatus.COMPLETED
+            job.output.output_dir = str(output_dir)
+            return job
+
+        with patch.object(jobs_manager.dispatcher, "execute", fake_execute):
+            job_id, _ = jobs_manager.submit_job(
+                task_type="predict",
+                model_path="nonexistent.pt",
+                data_source="ultralytics/assets/bus.jpg",
+                output_dir=str(output_dir),
+                conf=0.25,
+                device="cpu",
+                allowed_paths=[".", "ultralytics/assets", str(tmp_path)],
+            )
+            # Give the background thread a moment to mark the job COMPLETED
+            time.sleep(0.5)
+
+        images = jobs_manager.get_job_image_artifacts(job_id)
+        assert isinstance(images, list)
+        assert len(images) == 1
+        assert Path(images[0]).name == "preview.png"
+
+        # 3. Edge case: COMPLETED job whose output_dir vanished → safe fallback
+        vanished_dir = tmp_path / "vanished"
+        vanished_dir.mkdir()
+        self._write_minimal_png(vanished_dir / "orphan.png")
+
+        def fake_vanished(job: JobRequest) -> JobRequest:
+            job.status = JobStatus.COMPLETED
+            job.output.output_dir = str(vanished_dir)
+            return job
+
+        with patch.object(jobs_manager.dispatcher, "execute", fake_vanished):
+            job_id2, _ = jobs_manager.submit_job(
+                task_type="predict",
+                model_path="nonexistent.pt",
+                data_source="ultralytics/assets/bus.jpg",
+                output_dir=str(vanished_dir),
+                conf=0.25,
+                device="cpu",
+                allowed_paths=[".", "ultralytics/assets", str(tmp_path)],
+            )
+            time.sleep(0.5)
+
+        # Remove the directory after the job is marked COMPLETED
+        shutil.rmtree(vanished_dir)
+
+        fallback = jobs_manager.get_job_image_artifacts(job_id2)
+        assert fallback == []
+
+
 class TestJobsManagerIntegration:
     """Integration tests for end-to-end job execution."""
 
@@ -365,6 +658,246 @@ class TestJobsManagerIntegration:
         # Should generate diagnostic artifacts
         artifacts = jobs_manager.get_job_artifacts(job_id)
         assert len(artifacts) > 0
+
+
+class TestArtifactTableSelectGuard:
+    """Regression guards for the artifacts-table select callback.
+
+    Invokes the wired handler exactly as Gradio does (``BlockFunction.fn``) so
+    both the image-preview path and the non-image guard run against real code.
+    """
+
+    ARTIFACTS_LABEL = "Generated Artifacts"  # get_text("en", "df.artifacts")
+
+    def _build(self) -> tuple[JobsManager, gr.Blocks, gr.Dataframe, Callable[..., Any]]:
+        manager = JobsManager()
+        tab = create_jobs_tab(manager, "en")
+        dataframe = next(
+            b for b in tab.blocks.values() if isinstance(b, gr.Dataframe) and b.label == self.ARTIFACTS_LABEL
+        )
+        return manager, tab, dataframe, _wired_fn(tab, dataframe, "select")
+
+    def _insert_completed_job(self, manager: JobsManager, job_id: str, artifacts: list[str]) -> None:
+        job = JobRequest(
+            job_id=job_id,
+            task_type=TaskType.PREDICT,
+            status=JobStatus.COMPLETED,
+            output=OutputConfig(output_dir="runs/predict", artifacts=artifacts),
+        )
+        manager.jobs[job_id] = job
+
+    def test_image_row_updates_preview_and_selector(self, tmp_path: Path) -> None:
+        """Selecting an image row syncs the selector and loads the large preview."""
+        manager, _tab, _df, select_fn = self._build()
+        image = tmp_path / "a.jpg"
+        image.write_bytes(b"jpg")
+        manifest = tmp_path / "args.yaml"
+        manifest.write_text("conf: 0.25\n", encoding="utf-8")
+        self._insert_completed_job(manager, "sel-img-001", [str(manifest), str(image)])
+
+        result = select_fn(SimpleNamespace(index=(1,)), "sel-img-001", "en")
+
+        assert result[0].get("value") == "a.jpg"  # selector synced to the filename
+        assert result[1].get("value") == str(image)
+        assert "a.jpg" in result[1]["label"]
+
+    def test_non_image_row_keeps_preview_and_warns_bilingually(self, tmp_path: Path, monkeypatch: Any) -> None:
+        """A .pt/.yaml row triggers a localized gr.Info and never touches the preview."""
+        manager, _tab, _df, select_fn = self._build()
+        image = tmp_path / "a.jpg"
+        image.write_bytes(b"jpg")
+        weights = tmp_path / "best.pt"
+        weights.write_bytes(b"pt")
+        self._insert_completed_job(manager, "sel-pt-001", [str(image), str(weights)])
+
+        infos: list[str] = []
+        monkeypatch.setattr("gradio.Info", lambda message: infos.append(message))
+        result = select_fn(SimpleNamespace(index=(1,)), "sel-pt-001", "zh")
+
+        assert len(infos) == 1
+        assert "best.pt" in infos[0]
+        assert "不是图片文件" in infos[0]
+        # Preview state must be preserved: no value overwrite, no reset to None
+        assert result[0].get("value") is None
+        assert result[1].get("value") is None
+
+        infos.clear()
+        result = select_fn(SimpleNamespace(index=(1,)), "sel-pt-001", "en")
+        assert len(infos) == 1
+        assert "is not an image file" in infos[0]
+        assert result[0].get("value") is None
+
+    def test_out_of_range_row_is_ignored_silently(self, tmp_path: Path) -> None:
+        """Rows beyond the artifact list (or empty selection) yield no-op updates."""
+        manager, _tab, _df, select_fn = self._build()
+        image = tmp_path / "a.jpg"
+        image.write_bytes(b"jpg")
+        self._insert_completed_job(manager, "sel-oob-001", [str(image)])
+
+        for evt in (SimpleNamespace(index=(99,)), SimpleNamespace(index=())):
+            result = select_fn(evt, "sel-oob-001", "en")
+            assert result[0].get("value") is None
+            assert result[1].get("value") is None
+
+
+class TestOpenOutputFolderNavigation:
+    """The open-folder button must reveal exactly the job-specific root folder."""
+
+    def _build(self) -> tuple[JobsManager, Callable[..., Any]]:
+        manager = JobsManager()
+        tab = create_jobs_tab(manager, "en")
+        button = next(b for b in tab.blocks.values() if isinstance(b, gr.Button) and b.value == "📂 Open Folder")
+        return manager, _wired_fn(tab, button, "click")
+
+    def _insert_job(self, manager: JobsManager, job_id: str, output_dir: Path, artifacts: list[str]) -> None:
+        job = JobRequest(
+            job_id=job_id,
+            task_type=TaskType.PREDICT,
+            status=JobStatus.COMPLETED,
+            output=OutputConfig(output_dir=str(output_dir), artifacts=artifacts),
+        )
+        manager.jobs[job_id] = job
+
+    @pytest.mark.skipif(os.name != "nt", reason="os.startfile is Windows-only")
+    def test_deep_artifact_opens_job_root(self, tmp_path: Path, monkeypatch: Any) -> None:
+        """Artifacts nested in ``<job_root>/weights/`` open the job root, not the subdir."""
+        manager, open_fn = self._build()
+        job_root = tmp_path / "runs" / "train" / "predict_open001"
+        (job_root / "weights").mkdir(parents=True)
+        best = job_root / "weights" / "best.pt"
+        best.write_bytes(b"pt")
+        self._insert_job(manager, "predict_open001", tmp_path / "runs" / "train", [str(best.resolve())])
+
+        opened: list[str] = []
+
+        def _fake_startfile(path: str) -> None:
+            opened.append(path)
+
+        monkeypatch.setattr(os, "startfile", _fake_startfile, raising=False)
+        open_fn("predict_open001", "en")
+
+        # Exactly the directory whose name contains the job_id — never deeper,
+        # never the parent runs/train.
+        assert opened == [str(job_root)]
+
+    def test_posix_branch_uses_xdg_open_on_job_root(self, tmp_path: Path, monkeypatch: Any) -> None:
+        """Non-Windows platforms shell out with the job root as the sole argument."""
+        manager, open_fn = self._build()
+        job_root = tmp_path / "runs" / "val" / "val_open002"
+        job_root.mkdir(parents=True)
+        report = job_root / "results.csv"
+        report.write_text("epoch\n", encoding="utf-8")
+        self._insert_job(manager, "val_open002", tmp_path / "runs" / "val", [str(report.resolve())])
+
+        commands: list[list[str]] = []
+
+        class _FakePopen:
+            def __init__(self, cmd: list[str], *args: Any, **kwargs: Any) -> None:
+                commands.append(cmd)
+
+        monkeypatch.setattr(os, "name", "posix")
+        monkeypatch.setattr(sys, "platform", "linux")
+        monkeypatch.setattr(subprocess, "Popen", _FakePopen)
+        open_fn("val_open002", "en")
+
+        assert commands == [["xdg-open", str(job_root)]]
+
+    def test_missing_directory_warns_without_opening(self, tmp_path: Path, monkeypatch: Any) -> None:
+        """A dangling manifest or unknown job id degrades to a localized warning."""
+        manager, open_fn = self._build()
+        self._insert_job(
+            manager,
+            "predict_gone001",
+            tmp_path / "runs" / "predict",
+            [str(tmp_path / "runs" / "predict" / "predict_gone001" / "ghost.jpg")],
+        )
+
+        warnings: list[str] = []
+        opened: list[str] = []
+        monkeypatch.setattr("gradio.Warning", lambda message: warnings.append(message))
+        monkeypatch.setattr(os, "startfile", lambda path: opened.append(path), raising=False)
+
+        open_fn("predict_gone001", "en")
+        open_fn("no-such-job", "zh")
+
+        assert len(warnings) == 2
+        assert "Output directory does not exist." in warnings
+        assert "输出目录尚不存在。" in warnings
+        assert opened == []  # never touches the OS on a missing folder
+
+
+class TestJobsPersistence:
+    """Persistence layer tests for JobsManager (storage_path opt-in)."""
+
+    @staticmethod
+    def _wait_terminal(manager: JobsManager, job_id: str, timeout: float = 10.0) -> None:
+        """Block until the background thread reaches a terminal state."""
+        deadline = time.time() + timeout
+        while time.time() < deadline:
+            if manager.jobs[job_id].status in (JobStatus.COMPLETED, JobStatus.FAILED):
+                return
+            time.sleep(0.05)
+        raise AssertionError(f"Job {job_id} never reached a terminal state")
+
+    def test_persist_writes_json_roundtrip(self, tmp_path: Path, sample_job_params) -> None:
+        """Submitting a job with storage_path writes a well-formed JSON state file."""
+        storage = tmp_path / "state" / "jobs_state.json"
+        manager = JobsManager(storage_path=str(storage))
+
+        with patch.object(manager.dispatcher, "execute", _stub_execute):
+            job_id, _ = manager.submit_job(**sample_job_params)
+        self._wait_terminal(manager, job_id)
+
+        assert storage.is_file(), "state file was not created"
+        payload = json.loads(storage.read_text(encoding="utf-8"))
+        assert payload["version"] == 1
+        assert job_id in payload["jobs"]
+        assert payload["jobs"][job_id]["job_id"] == job_id
+        assert payload["jobs"][job_id]["task_type"] == "predict"
+        assert payload["jobs"][job_id]["status"] == "completed"
+        assert job_id in payload["job_logs"]
+        assert any("submitted" in line for line in payload["job_logs"][job_id])
+        # Round-trip: the persisted payload re-validates into a JobRequest.
+        restored = JobRequest.model_validate(payload["jobs"][job_id])
+        assert restored.status == JobStatus.COMPLETED
+
+    def test_new_instance_restores_history(self, tmp_path: Path, sample_job_params) -> None:
+        """A second JobsManager on the same storage_path sees prior jobs and logs."""
+        storage = tmp_path / "jobs_state.json"
+        manager = JobsManager(storage_path=str(storage))
+
+        with patch.object(manager.dispatcher, "execute", _stub_execute):
+            job_id, _ = manager.submit_job(**sample_job_params)
+        self._wait_terminal(manager, job_id)
+
+        reloaded = JobsManager(storage_path=str(storage))
+        assert job_id in reloaded.jobs
+        assert reloaded.jobs[job_id].status == JobStatus.COMPLETED
+        assert reloaded.jobs[job_id].task_type == TaskType.PREDICT
+        assert job_id in reloaded.job_logs
+        assert any("submitted" in line for line in reloaded.job_logs[job_id])
+
+    def test_orphaned_active_jobs_heal_to_failed(self, tmp_path: Path) -> None:
+        """PENDING/RUNNING jobs in the state file are reset to FAILED on load."""
+        storage = tmp_path / "jobs_state.json"
+        pending = JobRequest(job_id="predict_orphan_pending", task_type=TaskType.PREDICT, status=JobStatus.PENDING)
+        running = JobRequest(job_id="predict_orphan_running", task_type=TaskType.PREDICT, status=JobStatus.RUNNING)
+        completed = JobRequest(
+            job_id="predict_orphan_completed", task_type=TaskType.PREDICT, status=JobStatus.COMPLETED
+        )
+        payload = {
+            "version": 1,
+            "jobs": {j.job_id: j.model_dump(mode="json") for j in (pending, running, completed)},
+            "job_logs": {pending.job_id: ["stale log line"], running.job_id: []},
+        }
+        storage.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+
+        manager = JobsManager(storage_path=str(storage))
+        assert manager.jobs[pending.job_id].status == JobStatus.FAILED
+        assert manager.jobs[running.job_id].status == JobStatus.FAILED
+        # Terminal jobs are restored untouched.
+        assert manager.jobs[completed.job_id].status == JobStatus.COMPLETED
+        assert manager.job_logs[pending.job_id] == ["stale log line"]
 
 
 if __name__ == "__main__":

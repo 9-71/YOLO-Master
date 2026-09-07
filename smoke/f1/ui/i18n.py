@@ -1,12 +1,17 @@
-"""Localization (i18n) dictionaries for the YOLO-Master Jobs Tab UI.
+"""Localization (i18n) dictionaries for the YOLO-Master Studio UI.
 
-This module decouples UI-facing strings from the JobsManager backend so that
-backend API messages (asserted by the test suites) remain stable while the UI
-can be presented in English or Simplified Chinese.
+This module decouples UI-facing strings from the backend (JobsManager,
+dispatcher, handlers) so that backend API messages (asserted by the test
+suites) remain stable while the UI can be presented in English or Simplified
+Chinese. It backs the whole Studio app:
 
-The mapping covers component labels, button texts, placeholders, tooltips,
-status labels, user messages and security-alert copy. Unknown languages and
-missing keys always fall back to English.
+- Jobs Tab zone keys (``tab.*``, ``field.*``, ``button.*``, ...)
+- Inference Studio zone keys (``studio.*``, ``app.tab.*``) consumed by the
+  top-level language broadcast wired in ``app.py``
+- Shared selectors (``LANGUAGE_CHOICES``) and dataframe column headers
+  (``COLUMNS``) for both zones
+
+Unknown languages and missing keys always fall back to English.
 
 Example:
     >>> from smoke.f1.ui.i18n import get_text
@@ -18,7 +23,11 @@ from __future__ import annotations
 
 DEFAULT_LANGUAGE = "en"
 
-#: Column headers for the artifacts and recent-jobs dataframes, per language.
+#: Selector choices shared by every language radio in the app (each language is
+#: labeled in its own language, so the choices are language-invariant).
+LANGUAGE_CHOICES: tuple[tuple[str, str], ...] = (("English", "en"), ("中文", "zh"))
+
+#: Column headers for the artifacts, recent-jobs and detections dataframes, per language.
 COLUMNS: dict[str, dict[str, list[str]]] = {
     "artifacts": {
         "en": ["Filename", "Path"],
@@ -28,21 +37,55 @@ COLUMNS: dict[str, dict[str, list[str]]] = {
         "en": ["Job ID", "Task Type", "Status", "Created At"],
         "zh": ["任务 ID", "任务类型", "状态", "创建时间"],
     },
+    "detections": {
+        "en": ["Class ID", "Class Name", "Confidence", "x1", "y1", "x2", "y2"],
+        "zh": ["类别 ID", "类别名称", "置信度", "x1", "y1", "x2", "y2"],
+    },
 }
 
 I18N: dict[str, dict[str, str]] = {
     "en": {
         # Language selector
         "lang.label": "Language",
+        # Top-level tab labels shared by the whole Studio app
+        "app.tab.studio": "🖼️ Inference Studio",
+        "app.tab.jobs": "📋 Jobs",
+        # Inference Studio zone
+        "studio.heading": "# 🚀 YOLO-Master Dashboard",
+        "studio.settings": "### 🛠 Settings",
+        "studio.field.task": "Task",
+        "studio.field.model_weights": "Model Weights",
+        "studio.field.custom_model_path": "Custom Model Path (file or directory)",
+        "studio.field.custom_model_path.placeholder": "./ckpts/yolo_master_n.pt",
+        "studio.button.validate": "✅ Validate Path",
+        "studio.validate.empty": "⚠️ Please enter a model path.",
+        "studio.validate.valid": "✅ Model path is valid.",
+        "studio.validate.invalid": "❌ Model path does not exist or is invalid.",
+        "studio.accordion.advanced": "⚙️ Advanced Parameters",
+        "studio.field.conf": "Confidence (Conf)",
+        "studio.field.iou": "IoU Threshold",
+        "studio.field.max_objects": "Max Objects",
+        "studio.field.line_width": "Line Width",
+        "studio.field.device": "Device ID (e.g. 0, cpu)",
+        "studio.field.force_cpu": "Force CPU",
+        "studio.field.output_options": "Output Options",
+        "studio.button.run": "🔥 Start Inference",
+        "studio.subtab.visualization": "🖼️ Visualization",
+        "studio.subtab.data_analysis": "📊 Data Analysis",
+        "studio.field.input_image": "Input Image",
+        "studio.field.result_image": "Inference Result",
+        "studio.message.waiting": "Waiting for input...",
+        "studio.heading.detections": "### Detections Data",
+        "studio.df.detections": "Raw Detections",
         # Panel headers
         "tab.title": "📋 Jobs Management",
         "panel.submit": "🚀 Submit Job",
         # Submission form
         "field.task_type": "Task Type",
         "field.model_path": "Model Path",
-        "field.model_path.placeholder": "yolov8n.pt or ./ckpts/model.pt",
+        "field.model_path.placeholder": "e.g., ./ckpts/yolov8n.pt or runs/train/weights/best.pt",
         "field.data_source": "Data Source",
-        "field.data_source.placeholder": "Image/video/directory path",
+        "field.data_source.placeholder": "e.g., coco8.yaml, data/custom.yaml, or path/to/image.jpg",
         "field.output_dir": "Output Directory",
         "field.output_dir.placeholder": "runs/predict",
         "accordion.hyperparams": "⚙️ Hyperparameters",
@@ -58,6 +101,9 @@ I18N: dict[str, dict[str, str]] = {
         # Buttons
         "button.submit": "🔥 Submit Job",
         "button.cancel": "🚫 Cancel Job",
+        "button.reset_model": "🔄 Reset to default model",
+        "button.reset_data": "🔄 Reset to default data source",
+        "studio.button.refresh": "🔄 Refresh model list",
         # Monitoring sub-tabs
         "subtab.status": "📊 Status Monitor",
         "field.job_id": "Current Job ID",
@@ -67,7 +113,6 @@ I18N: dict[str, dict[str, str]] = {
         "field.logs": "Execution Logs",
         "subtab.artifacts": "📁 Artifacts",
         "df.artifacts": "Generated Artifacts",
-        "hint.artifacts": "**Download**: Click on an artifact path to copy it, then retrieve the file from your file explorer",
         "subtab.recent": "🕒 Recent Jobs",
         "df.recent": "Recent Jobs",
         "poll.note": (
@@ -101,15 +146,45 @@ I18N: dict[str, dict[str, str]] = {
     "zh": {
         # Language selector
         "lang.label": "语言",
+        # Top-level tab labels shared by the whole Studio app
+        "app.tab.studio": "🖼️ 推理工作台",
+        "app.tab.jobs": "📋 任务管理",
+        # Inference Studio zone
+        "studio.heading": "# 🚀 YOLO-Master 仪表盘",
+        "studio.settings": "### 🛠 设置",
+        "studio.field.task": "任务",
+        "studio.field.model_weights": "模型权重",
+        "studio.field.custom_model_path": "自定义模型路径（文件或目录）",
+        "studio.field.custom_model_path.placeholder": "./ckpts/yolo_master_n.pt",
+        "studio.button.validate": "✅ 校验路径",
+        "studio.validate.empty": "⚠️ 请输入模型路径。",
+        "studio.validate.valid": "✅ 模型路径有效。",
+        "studio.validate.invalid": "❌ 模型路径不存在或无效。",
+        "studio.accordion.advanced": "⚙️ 高级参数",
+        "studio.field.conf": "置信度 (Conf)",
+        "studio.field.iou": "IoU 阈值",
+        "studio.field.max_objects": "最大目标数",
+        "studio.field.line_width": "线宽",
+        "studio.field.device": "设备 ID（如 0、cpu）",
+        "studio.field.force_cpu": "强制 CPU",
+        "studio.field.output_options": "输出选项",
+        "studio.button.run": "🔥 开始推理",
+        "studio.subtab.visualization": "🖼️ 可视化",
+        "studio.subtab.data_analysis": "📊 数据分析",
+        "studio.field.input_image": "输入图像",
+        "studio.field.result_image": "推理结果",
+        "studio.message.waiting": "等待输入...",
+        "studio.heading.detections": "### 检测数据",
+        "studio.df.detections": "原始检测结果",
         # Panel headers
         "tab.title": "📋 任务管理",
         "panel.submit": "🚀 提交任务",
         # Submission form
         "field.task_type": "任务类型",
         "field.model_path": "模型路径",
-        "field.model_path.placeholder": "yolov8n.pt 或 ./ckpts/model.pt",
+        "field.model_path.placeholder": "例如：./ckpts/yolov8n.pt 或 runs/train/weights/best.pt",
         "field.data_source": "数据源",
-        "field.data_source.placeholder": "图片/视频/目录路径",
+        "field.data_source.placeholder": "例如：coco8.yaml、data/custom.yaml 或 path/to/image.jpg",
         "field.output_dir": "输出目录",
         "field.output_dir.placeholder": "runs/predict",
         "accordion.hyperparams": "⚙️ 超参数",
@@ -122,6 +197,9 @@ I18N: dict[str, dict[str, str]] = {
         # Buttons
         "button.submit": "🔥 提交任务",
         "button.cancel": "🚫 取消任务",
+        "button.reset_model": "🔄 重置为默认模型",
+        "button.reset_data": "🔄 重置为默认数据源",
+        "studio.button.refresh": "🔄 刷新模型列表",
         # Monitoring sub-tabs
         "subtab.status": "📊 状态监控",
         "field.job_id": "当前任务 ID",
@@ -131,7 +209,6 @@ I18N: dict[str, dict[str, str]] = {
         "field.logs": "执行日志",
         "subtab.artifacts": "📁 产物列表",
         "df.artifacts": "生成的产物",
-        "hint.artifacts": "**下载**：点击产物路径即可复制，然后通过文件浏览器获取文件",
         "subtab.recent": "🕒 最近任务",
         "df.recent": "最近任务",
         "poll.note": "🔄 任务运行期间状态、日志与产物每秒自动刷新；任务进入终态后自动停止高频轮询。",

@@ -2,7 +2,7 @@
 
 **Topic**: F1 - YOLO-Master Studio Platform Core
 **Milestone**: Entry Check - 2026-08-24
-**Status**: ✅ **ALL SMOKE SCENARIOS PASSED**
+**Status**: ✅ **P0 Complete · P1 In Progress (3/4)** · v1.2.0
 
 ---
 
@@ -289,6 +289,7 @@ The F1 Studio Platform implements the following mandatory security constraints:
 
 **Target**: 2026-08-31
 **Deliverables**:
+
 - [X] Baseline entry validation & locked contract schema
 - [X] Preserve existing baseline inference functionality
 - [X] Add Jobs tab (submission, state monitoring, streaming logs, artifacts download)
@@ -298,16 +299,19 @@ The F1 Studio Platform implements the following mandatory security constraints:
 ### 5.2 Phase 1 (P1): Multi-Task Unification
 
 **Target**: 2026-09-07
+**Progress**: 3/4 items completed · regex whitelist enhancement remaining
 **Deliverables**:
-- [ ] Unify `train`, `val`, `predict`, `export` task contracts
-- [ ] Implement job cancellation, watchdog timers, and timeout mechanisms
-- [ ] Add batch image/video inference support
+
+- [X] Unify `train`, `val`, `predict`, `export` task contracts
+- [X] Implement job cancellation, watchdog timers, and timeout mechanisms
+- [X] Add batch image/video inference support
 - [ ] Enhance path whitelisting with regex patterns
 
 ### 5.3 Phase 2 (P2): Production Hardening
 
 **Target**: 2026-09-12
 **Deliverables**:
+
 - [ ] Provide standalone FastAPI backend endpoints alongside Gradio WebUI
 - [ ] Add real-time hardware telemetry (GPU/CPU utilization via NVML)
 - [ ] Basic authentication and access control
@@ -370,12 +374,14 @@ print('Contract validation passed')
 ## 7. Known Limitations & Future Work
 
 ### 7.1 Current Constraints
+
 - **Single-Task Execution**: No concurrent job execution
 - **Limited Task Types**: Only `predict` implemented in smoke test
 - **Local-Only Storage**: Artifacts stored on local filesystem
 - **No Retry Mechanism**: Failed jobs require manual resubmission
 
 ### 7.2 Planned Enhancements
+
 - Distributed task queue (Celery/Redis backend)
 - Multi-GPU job scheduling and load balancing
 - WebSocket-based real-time log streaming
@@ -389,8 +395,9 @@ print('Contract validation passed')
 - **Agent Skills Specification**: `agent/SKILL.md`
 - **Async Runtime & Handlers**: `agent/runtime/cli/async_jobs.py`, `agent/runtime/cli/job_handlers.py`
 - **Ultralytics YOLO Documentation**: https://docs.ultralytics.com/
+
 ---
 
-**Document Version**: 1.1.0
-**Last Updated**: 2026-09-02
+**Document Version**: 1.2.0
+**Last Updated**: 2026-09-04
 **Maintained By**: [@9-71](https://github.com/9-71) (`rhino-f1-dev` branch)

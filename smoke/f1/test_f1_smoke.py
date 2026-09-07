@@ -1,76 +1,21 @@
+"""Legacy F1 entry contract module and runnable multi-scenario smoke suite.
+
+P1 architecture cleanup (domain schema decoupling): the strong-typed job domain
+classes (``JobRequest``, ``SecurityConstraints``, ``TaskType``, ...) that this
+file originally defined now live in the canonical production module
+:mod:`core.schema`. They are re-imported here so the historical runnable smoke
+suite and its scenario code keep working with unchanged semantics, while
+production modules no longer import data structures from a test file.
+"""
+
 from __future__ import annotations
 
 import json
 import sys
 import time
-from datetime import datetime, timezone
-from enum import Enum
 from pathlib import Path
-from typing import Any
 
-from pydantic import BaseModel, Field
-
-
-# 1. Interface Contract Definitions
-class TaskType(str, Enum):
-    PREDICT = "predict"
-    TRAIN = "train"
-    EXPORT = "export"
-    DIAGNOSE = "diagnose"
-
-
-class JobStatus(str, Enum):
-    PENDING = "pending"
-    RUNNING = "running"
-    COMPLETED = "completed"
-    FAILED = "failed"
-
-
-class Metadata(BaseModel):
-    created_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
-    created_by: str = "anonymous"
-    description: str | None = None
-    priority: str = "normal"
-    tags: list[str] = Field(default_factory=list)
-
-
-class OutputConfig(BaseModel):
-    output_dir: str = "runs/predict/job_20260824_f1_001"
-    save_images: bool = True
-    save_labels: bool = False
-    save_logs: bool = True
-    artifacts: list[str] = Field(default_factory=list)
-
-
-class SecurityConstraints(BaseModel):
-    path_whitelisted: bool = True
-    allow_shell: bool = False
-    allowed_paths: list[str] = Field(default_factory=list)
-
-
-class RuntimeTracking(BaseModel):
-    stream_logs: bool = True
-    timeout_seconds: int = 300
-    cancellable: bool = True
-    cancel_requested: bool = False
-
-
-class ErrorInfo(BaseModel):
-    code: str
-    message: str
-    timestamp: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
-
-
-class JobRequest(BaseModel):
-    job_id: str
-    task_type: TaskType
-    status: JobStatus = JobStatus.PENDING
-    metadata: Metadata = Metadata()
-    params: dict[str, Any] = Field(default_factory=dict)
-    output: OutputConfig = OutputConfig()
-    security_constraints: SecurityConstraints = SecurityConstraints()
-    runtime_tracking: RuntimeTracking = RuntimeTracking()
-    error: ErrorInfo | None = None
+from core.schema import ErrorInfo, JobRequest, JobStatus, SecurityConstraints, TaskType
 
 
 # 2. Security Policy Enforcement

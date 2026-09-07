@@ -87,7 +87,7 @@ class PredictHandler(BaseTaskHandler):
 Dispatcher usage example:
 
 ```python
-from smoke.f1.handlers import TaskHandlerRegistry
+from smoke.f1.handlers import PathWhitelistViolationError, TaskHandlerRegistry
 
 
 def dispatch_job(job_request):
@@ -96,12 +96,20 @@ def dispatch_job(job_request):
     handler_class = TaskHandlerRegistry.get(job_request.task_type)
     handler = handler_class()
 
-    # 2. Validate parameters and security constraints
-    is_valid, err_msg = handler.validate_params(job_request.params, job_request.security_constraints)
+    # 2. Validate parameters and security constraints.
+    # A path whitelist violation raises PathWhitelistViolationError (a security
+    # event -> SEC_ERR_001); plain parameter problems return (False, message)
+    # and map to PARAM_VALIDATION_FAILED.
+    try:
+        is_valid, err_msg = handler.validate_params(job_request.params, job_request.security_constraints)
+    except PathWhitelistViolationError as exc:
+        job_request.status = "FAILED"
+        job_request.error = {"code": "SEC_ERR_001", "message": str(exc)}
+        return job_request
 
     if not is_valid:
         job_request.status = "FAILED"
-        job_request.error = {"code": "SEC_ERR_001", "message": err_msg}
+        job_request.error = {"code": "PARAM_VALIDATION_FAILED", "message": err_msg}
         return job_request
 
     # 3. Execute task

@@ -41,7 +41,8 @@ def create_demo_app() -> gr.Blocks:
             - Live log streaming console
             - Artifact explorer with download capability
             - Graceful cancellation handling
-            - English / 中文 (Simplified Chinese) UI switch
+            - English / 中文 (Simplified Chinese) UI — the language is selected by
+              the host app (see app.py)
 
             **Security**:
             - Fail-closed path whitelisting (all paths validated against allowed_paths)
@@ -183,7 +184,7 @@ def create_demo_app() -> gr.Blocks:
                     ### JobRequest Contract
 
                     ```python
-                    from smoke.f1.test_f1_smoke import JobRequest, TaskType, SecurityConstraints
+                    from core.schema import JobRequest, TaskType, SecurityConstraints
 
                     job = JobRequest(
                         job_id="test-001",

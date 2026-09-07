@@ -20,16 +20,9 @@ from __future__ import annotations
 
 import pytest
 
+from core.schema import JobRequest, JobStatus, OutputConfig, RuntimeTracking, SecurityConstraints, TaskType
 from smoke.f1.dispatcher import JobDispatcherStateMachine
 from smoke.f1.handlers.registry import TaskHandlerRegistry
-from smoke.f1.test_f1_smoke import (
-    JobRequest,
-    JobStatus,
-    OutputConfig,
-    RuntimeTracking,
-    SecurityConstraints,
-    TaskType,
-)
 
 
 class TestJobDispatcherDynamicDispatch:
@@ -165,7 +158,11 @@ class TestJobDispatcherSecurityEnforcement:
         print(f"✓ Path whitelist enforcement: {result.error.message}")
 
     def test_block_path_traversal_attack(self):
-        """Verify handler-level path validation rejects directory traversal attacks."""
+        """Verify directory traversal escapes fail with the precise SEC_ERR_001 code.
+
+        A whitelist violation is a security event: it must map to SEC_ERR_001,
+        not the generic PARAM_VALIDATION_FAILED reserved for plain parameter issues.
+        """
         dispatcher = JobDispatcherStateMachine()
         job = JobRequest(
             job_id="test-security-traversal-001",
@@ -185,9 +182,92 @@ class TestJobDispatcherSecurityEnforcement:
 
         assert result.status == JobStatus.FAILED
         assert result.error is not None
-        assert result.error.code == "PARAM_VALIDATION_FAILED"
+        assert result.error.code == "SEC_ERR_001"
+        assert "Security policy violation" in result.error.message
         assert "not within allowed_paths" in result.error.message
-        print(f"✓ Path traversal blocked: {result.error.message}")
+        print(f"✓ Path traversal blocked with SEC_ERR_001: {result.error.message}")
+
+    def test_block_regex_whitelist_mismatch_escape(self):
+        """Verify regex whitelist mismatch escapes also map to SEC_ERR_001."""
+        dispatcher = JobDispatcherStateMachine()
+        job = JobRequest(
+            job_id="test-security-regex-001",
+            task_type=TaskType.PREDICT,
+            params={
+                "model_path": "yolov8n.pt",
+                "data_source": "ultralytics/assets/bus.jpg",  # Resolves outside the pattern
+            },
+            security_constraints=SecurityConstraints(
+                path_whitelisted=True,
+                allow_shell=False,
+                allowed_paths=[],
+                allowed_path_patterns=["^/nonexistent_root/.*\\.pt$"],
+            ),
+        )
+
+        result = dispatcher.execute(job)
+
+        assert result.status == JobStatus.FAILED
+        assert result.error is not None
+        assert result.error.code == "SEC_ERR_001"
+        assert "not within allowed_paths" in result.error.message
+        print(f"✓ Regex whitelist escape blocked with SEC_ERR_001: {result.error.message}")
+
+    def test_normal_param_issue_keeps_param_validation_failed(self):
+        """Plain parameter problems (invalid conf) stay PARAM_VALIDATION_FAILED.
+
+        The security error code must be reserved for actual whitelist violations;
+        a value out of range is a parameter problem, not a security event.
+        """
+        dispatcher = JobDispatcherStateMachine()
+        job = JobRequest(
+            job_id="test-param-conf-001",
+            task_type=TaskType.PREDICT,
+            params={
+                "model_path": "yolov8n.pt",
+                "data_source": "ultralytics/assets/bus.jpg",
+                "conf": 1.5,  # Outside (0.0, 1.0]
+            },
+            security_constraints=SecurityConstraints(
+                path_whitelisted=True,
+                allow_shell=False,
+                allowed_paths=[".", "ultralytics/assets"],
+            ),
+        )
+
+        result = dispatcher.execute(job)
+
+        assert result.status == JobStatus.FAILED
+        assert result.error is not None
+        assert result.error.code == "PARAM_VALIDATION_FAILED"
+        assert "conf" in result.error.message
+        print(f"✓ Invalid conf keeps PARAM_VALIDATION_FAILED: {result.error.message}")
+
+    def test_train_non_yaml_source_keeps_param_validation_failed(self):
+        """Train with a non-YAML data_source is a parameter problem, not a security event."""
+        dispatcher = JobDispatcherStateMachine()
+        job = JobRequest(
+            job_id="test-param-yaml-001",
+            task_type=TaskType.TRAIN,
+            params={
+                "model_path": "yolov8n.pt",
+                "data_source": "ultralytics/assets/bus.jpg",  # Path-safe but not a YAML
+                "epochs": 10,
+            },
+            security_constraints=SecurityConstraints(
+                path_whitelisted=True,
+                allow_shell=False,
+                allowed_paths=[".", "ultralytics/assets"],
+            ),
+        )
+
+        result = dispatcher.execute(job)
+
+        assert result.status == JobStatus.FAILED
+        assert result.error is not None
+        assert result.error.code == "PARAM_VALIDATION_FAILED"
+        assert "dataset YAML file" in result.error.message
+        print(f"✓ Non-YAML train source keeps PARAM_VALIDATION_FAILED: {result.error.message}")
 
 
 class TestJobDispatcherCancellation:

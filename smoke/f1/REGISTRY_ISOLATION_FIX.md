@@ -26,6 +26,7 @@ def setup_method(self):
     self._registry_backup = TaskHandlerRegistry._handlers.copy()
     TaskHandlerRegistry.clear()
 
+
 def teardown_method(self):
     """Restore registry state after each test."""
     TaskHandlerRegistry._handlers = self._registry_backup
@@ -38,6 +39,7 @@ def setup_method(self):
     self._registry_backup = TaskHandlerRegistry._handlers.copy()
     TaskHandlerRegistry.clear()
     # ... register mock handlers
+
 
 def teardown_method(self):
     """Restore registry state after each test."""

@@ -13,17 +13,43 @@ Refactoring Goals (Step 3-1):
     2. Strict lifecycle and state machine enforcement
     3. Phase 1 contract support (cancel_requested checking)
     4. Exception safety with atomic FAILED transitions
+
+Phase 1 Runtime Supervision:
+    - Deadline supervision: jobs exceeding runtime_tracking.timeout_seconds transition
+      to FAILED with error code TIMEOUT. Handler execution runs in a daemon worker
+      thread joined with the remaining deadline.
+    - Cooperative cancellation: cancel_requested is checked at dispatcher checkpoints
+      (pre-execution, post-validation, in-flight polling, post-execution) AND by
+      handlers at their own checkpoints via BaseTaskHandler._check_cancelled(), which
+      raises CooperativeCancellationError mapped to FAILED + USER_CANCELLED.
+
+Security Red Line (Log & Env Sanitization):
+    - Every error message attached to ``job.error`` is routed through
+      :func:`core.security.sanitize_log_text` inside ``transition()``.
+    - Handler exception tracebacks are captured, sanitized and appended to
+      ``job.logs`` via the ``JobRequest.append_log`` interface (which sanitizes).
+    - A sanitized environment audit line (redacted variable names only, never
+      values) is recorded per executed job via ``sanitize_env_dict``.
 """
 
 from __future__ import annotations
 
+import os
+import time
+import traceback
 from datetime import datetime, timezone
-from typing import TYPE_CHECKING
+from queue import Queue
+from threading import Thread
+from typing import Any
 
-if TYPE_CHECKING:
-    from smoke.f1.test_f1_smoke import JobRequest, JobStatus
-
+from core.schema import ErrorInfo, JobRequest, JobStatus
+from core.security import REDACTED, sanitize_env_dict, sanitize_log_text
+from smoke.f1.handlers.base import CooperativeCancellationError, PathWhitelistViolationError
 from smoke.f1.handlers.registry import TaskHandlerRegistry
+
+# How often the dispatcher polls cancel_requested while a job is in flight (seconds).
+# A small interval keeps cancellation latency low without busy-waiting.
+CANCELLATION_POLL_INTERVAL = 0.05
 
 
 class JobDispatcherStateMachine:
@@ -35,12 +61,13 @@ class JobDispatcherStateMachine:
     Guarantees:
         - Security policies are enforced BEFORE execution begins
         - State transitions follow strict FSM rules (no illegal jumps)
-        - Cancellation requests are checked before execution
+        - Cancellation requests are checked before, during, and after execution
+        - Execution deadline (timeout_seconds) is enforced via worker-thread supervision
         - All exceptions are caught and converted to FAILED state
         - Handler execution is isolated (no cross-task coupling)
 
     Example:
-        >>> from smoke.f1.test_f1_smoke import JobRequest, TaskType
+        >>> from core.schema import JobRequest, TaskType
         >>> dispatcher = JobDispatcherStateMachine()
         >>> job = JobRequest(
         ...     job_id="test-001",
@@ -55,8 +82,6 @@ class JobDispatcherStateMachine:
 
     def __init__(self) -> None:
         """Initialize state machine with valid transition rules."""
-        from smoke.f1.test_f1_smoke import JobStatus
-
         self.valid_transitions: dict[JobStatus, list[JobStatus]] = {
             JobStatus.PENDING: [JobStatus.RUNNING, JobStatus.FAILED],
             JobStatus.RUNNING: [JobStatus.COMPLETED, JobStatus.FAILED],
@@ -83,6 +108,7 @@ class JobDispatcherStateMachine:
             ValueError: If transition is not allowed by FSM rules
 
         Example:
+            >>> from core.schema import JobRequest, JobStatus, TaskType
             >>> dispatcher = JobDispatcherStateMachine()
             >>> job = JobRequest(job_id="test", task_type=TaskType.PREDICT)
             >>> dispatcher.transition(job, JobStatus.RUNNING)  # PENDING -> RUNNING (allowed)
@@ -92,21 +118,44 @@ class JobDispatcherStateMachine:
                 ...
             ValueError: Illegal state transition: completed -> pending
         """
-        from smoke.f1.test_f1_smoke import ErrorInfo
-
         if target_status not in self.valid_transitions[job.status]:
             raise ValueError(f"Illegal state transition: {job.status.value} -> {target_status.value}")
 
         job.status = target_status
+        job.append_log(f"[StateMachine] Job {job.job_id} transitioned to: {target_status.value.upper()}")
 
         if err_code:
+            # Sanitize BEFORE the message is attached to the job: ErrorInfo is
+            # consumed by the UI and external queries, so plaintext credentials
+            # must never reach it. ``append_log`` sanitizes its own input.
             job.error = ErrorInfo(
                 code=err_code,
-                message=err_msg or "",
+                message=sanitize_log_text(err_msg or ""),
                 timestamp=datetime.now(timezone.utc).isoformat(),
             )
+            job.append_log(f"[{err_code}] {err_msg or ''}")
 
         print(f"  [StateMachine] Job {job.job_id} transitioned to: {job.status.value.upper()}")
+
+    def _record_env_audit(self, job: JobRequest) -> None:
+        """Record a sanitized environment snapshot audit line into ``job.logs``.
+
+        The process environment is transformed by
+        :func:`core.security.sanitize_env_dict` first; only the NAMES of
+        variables whose key or value was redacted are logged (never values),
+        giving an audit trail that proves the red line held without leaking
+        credential material into the log buffer.
+
+        Args:
+            job: JobRequest whose sanitized log buffer receives the audit line.
+        """
+        sanitized_env = sanitize_env_dict(os.environ)
+        redacted_keys = sorted(key for key, value in sanitized_env.items() if value == REDACTED)
+        detail = f": {', '.join(redacted_keys)}" if redacted_keys else ""
+        job.append_log(
+            f"[SecurityAudit] Environment snapshot sanitized: "
+            f"{len(redacted_keys)} sensitive variable(s) redacted{detail}"
+        )
 
     def execute(self, job: JobRequest) -> JobRequest:
         """Execute job with dynamic handler resolution and state machine enforcement.
@@ -117,7 +166,10 @@ class JobDispatcherStateMachine:
             3. Dynamic Handler Resolution (TaskHandlerRegistry.get)
             4. Parameter Validation (handler.validate_params)
             5. State Transition (PENDING -> RUNNING)
-            6. Handler Execution (handler.execute)
+            6. Deadline-Supervised Handler Execution in Worker Thread
+               - Deadline = now + runtime_tracking.timeout_seconds
+               - In-flight polling of cancel_requested (cooperative cancellation)
+               - Deadline exceeded -> FAILED + TIMEOUT
             7. Artifact Capture & State Transition (RUNNING -> COMPLETED)
             8. Exception Handling (any error -> FAILED with error code)
 
@@ -135,7 +187,15 @@ class JobDispatcherStateMachine:
         Cancellation Semantics:
             - If runtime_tracking.cancel_requested is True, job transitions to FAILED
             - Error code: USER_CANCELLED
-            - No handler execution occurs (early exit)
+            - Dispatch-time short-circuit (before execution) and in-flight cooperative
+              cancellation (polling during execution + handler checkpoints) are supported
+            - The in-flight worker thread is daemonized; it is detached after the
+              terminal FAILED transition and its late result is discarded
+
+        Timeout Semantics:
+            - If handler execution exceeds runtime_tracking.timeout_seconds, the job
+              transitions to FAILED with error code TIMEOUT
+            - Timeout never produces a partial COMPLETED transition
 
         Exception Safety:
             - All exceptions are caught and logged
@@ -143,6 +203,7 @@ class JobDispatcherStateMachine:
             - Error message includes exception type and message
 
         Example:
+            >>> from core.schema import JobRequest, TaskType
             >>> dispatcher = JobDispatcherStateMachine()
             >>> job = JobRequest(
             ...     job_id="test-001",
@@ -153,8 +214,6 @@ class JobDispatcherStateMachine:
             >>> print(result.status, result.error)
             JobStatus.COMPLETED None
         """
-        from smoke.f1.test_f1_smoke import JobStatus
-
         # =====================================================================
         # Step 1: Security Policy Enforcement (Pre-Execution Guard)
         # =====================================================================
@@ -211,10 +270,23 @@ class JobDispatcherStateMachine:
         # =====================================================================
         # Step 4: Parameter Validation (Handler-Specific)
         # =====================================================================
-        is_valid, validation_err = handler.validate_params(
-            params=job.params,
-            security_constraints=job.security_constraints.model_dump(),
-        )
+        try:
+            is_valid, validation_err = handler.validate_params(
+                params=job.params,
+                security_constraints=job.security_constraints.model_dump(),
+            )
+        except PathWhitelistViolationError as e:
+            # A path whitelist failure is a security event, not a parameter problem:
+            # map it to SEC_ERR_001 so the UI and callers can distinguish it from
+            # PARAM_VALIDATION_FAILED (which stays reserved for plain parameter issues).
+            self.transition(
+                job,
+                JobStatus.FAILED,
+                err_code="SEC_ERR_001",
+                err_msg=f"Security policy violation: {e}",
+            )
+            print(f"  [Dispatcher] Security violation blocked: {sanitize_log_text(str(e))}")
+            return job
 
         if not is_valid:
             self.transition(
@@ -226,43 +298,152 @@ class JobDispatcherStateMachine:
             return job
 
         # =====================================================================
+        # Step 4.5: Cooperative Cancellation Checkpoint (post-validation)
+        # A cancellation request may arrive while validation is running.
+        # =====================================================================
+        if job.runtime_tracking.cancel_requested:
+            self.transition(
+                job,
+                JobStatus.FAILED,
+                err_code="USER_CANCELLED",
+                err_msg="Job execution cancelled by user request",
+            )
+            print(f"  [Dispatcher] Job {job.job_id} cancelled after validation (cancel_requested=True)")
+            return job
+
+        # =====================================================================
         # Step 5: State Transition (PENDING -> RUNNING)
         # =====================================================================
         self.transition(job, JobStatus.RUNNING)
 
-        # =====================================================================
-        # Step 6: Handler Execution with Exception Safety
-        # =====================================================================
-        try:
-            execution_result = handler.execute(
-                job_id=job.job_id,
-                params=job.params,
-                output_dir=job.output.output_dir,
-            )
+        # Security red line: record a sanitized environment audit trail. Only
+        # the NAMES of redacted variables are logged; values never leave
+        # ``sanitize_env_dict``'s redacted mapping.
+        self._record_env_audit(job)
 
-            # Capture execution results
-            if execution_result["success"]:
-                job.output.artifacts = execution_result.get("artifacts", [])
-                print(f"  [Dispatcher] Execution successful. Artifacts: {len(job.output.artifacts)} files captured")
-                self.transition(job, JobStatus.COMPLETED)
-            else:
-                # Handler returned success=False (controlled failure)
-                error_msg = execution_result.get("error", "Unknown handler error")
+        # =====================================================================
+        # Step 6: Deadline-Supervised Handler Execution with Cooperative
+        #         Cancellation (Phase 1 runtime supervision)
+        # =====================================================================
+        timeout_seconds = float(job.runtime_tracking.timeout_seconds)
+        deadline = time.monotonic() + max(timeout_seconds, 0.0)
+
+        # Inject the job's runtime tracking so the handler can honor cooperative
+        # cancellation checkpoints between long-running work items.
+        handler._runtime_tracking = job.runtime_tracking
+
+        # Execute the handler in a daemon worker thread so the dispatcher can
+        # enforce the deadline and poll cancel_requested while the job is in flight.
+        execution_queue: Queue[dict[str, Any]] = Queue(maxsize=1)
+
+        def _run_handler() -> None:
+            try:
+                execution_queue.put(
+                    {
+                        "result": handler.execute(
+                            job_id=job.job_id,
+                            params=job.params,
+                            output_dir=job.output.output_dir,
+                        )
+                    }
+                )
+            except Exception as exc:  # noqa: BLE001 - worker captures exceptions for main-thread mapping
+                # Capture the full traceback so the main thread can log a
+                # sanitized copy; raw tracebacks may embed credential strings
+                # raised by downstream engines (DB clients, SDKs, etc.).
+                execution_queue.put({"error": exc, "traceback": traceback.format_exc()})
+
+        worker = Thread(target=_run_handler, daemon=True, name=f"f1-job-{job.job_id}")
+        worker.start()
+
+        # Deadline supervision + in-flight cooperative cancellation polling.
+        # While the worker is alive and the deadline has not passed, poll
+        # cancel_requested so an in-flight user cancellation aborts promptly.
+        while worker.is_alive() and time.monotonic() < deadline:
+            if job.runtime_tracking.cancel_requested:
                 self.transition(
                     job,
                     JobStatus.FAILED,
-                    err_code="HANDLER_EXEC_FAILED",
-                    err_msg=error_msg,
+                    err_code="USER_CANCELLED",
+                    err_msg="Job cancelled in-flight by user request",
                 )
+                print(f"  [Dispatcher] Job {job.job_id} cancelled in-flight (cancel_requested=True)")
+                return job
+            worker.join(timeout=CANCELLATION_POLL_INTERVAL)
 
-        except Exception as e:  # noqa: BLE001 - Dispatcher must catch all execution exceptions
-            # Uncontrolled exception during handler execution
+        # Deadline supervision: the handler is still running past its deadline.
+        if worker.is_alive():
             self.transition(
                 job,
                 JobStatus.FAILED,
-                err_code="EXEC_ERR_500",
-                err_msg=f"Unhandled execution exception: {type(e).__name__}: {e}",
+                err_code="TIMEOUT",
+                err_msg=f"Job execution exceeded timeout of {timeout_seconds}s",
             )
-            print(f"  [Dispatcher] Exception caught: {type(e).__name__}: {e}")
+            print(f"  [Dispatcher] Job {job.job_id} timed out after {timeout_seconds}s (worker detached)")
+            return job
+
+        # Worker finished within the deadline; collect its outcome.
+        execution_payload = execution_queue.get_nowait()
+
+        # =====================================================================
+        # Step 6.5: Cooperative Cancellation Checkpoint (post-execution)
+        # A cancellation request arriving after the handler finished but before
+        # the COMPLETED transition still wins over a successful result.
+        # =====================================================================
+        if job.runtime_tracking.cancel_requested:
+            self.transition(
+                job,
+                JobStatus.FAILED,
+                err_code="USER_CANCELLED",
+                err_msg="Job cancelled by user request after execution",
+            )
+            print(f"  [Dispatcher] Job {job.job_id} cancelled after execution (cancel_requested=True)")
+            return job
+
+        # Map worker exceptions: cooperative cancellation first, then generic errors.
+        worker_error = execution_payload.get("error")
+        if worker_error is not None:
+            if isinstance(worker_error, CooperativeCancellationError):
+                self.transition(
+                    job,
+                    JobStatus.FAILED,
+                    err_code="USER_CANCELLED",
+                    err_msg=str(worker_error),
+                )
+                print(f"  [Dispatcher] Job {job.job_id} cooperatively cancelled by handler checkpoint")
+            else:
+                # Uncontrolled exception during handler execution. The raw
+                # traceback may carry plaintext credentials inside exception
+                # messages or source lines, so it is sanitized BEFORE entering
+                # the job's log buffer (append_log sanitizes again, by design).
+                raw_traceback = execution_payload.get("traceback", "")
+                if raw_traceback:
+                    job.append_log(f"[Traceback]\n{raw_traceback}")
+                error_summary = f"{type(worker_error).__name__}: {worker_error}"
+                self.transition(
+                    job,
+                    JobStatus.FAILED,
+                    err_code="EXEC_ERR_500",
+                    err_msg=f"Unhandled execution exception: {error_summary}",
+                )
+                print(f"  [Dispatcher] Exception caught: {sanitize_log_text(error_summary)}")
+            return job
+
+        # Capture execution results
+        execution_result = execution_payload["result"]
+        if execution_result["success"]:
+            job.output.artifacts = execution_result.get("artifacts", [])
+            job.append_log(f"[Dispatcher] Execution successful. Artifacts: {len(job.output.artifacts)} files captured")
+            print(f"  [Dispatcher] Execution successful. Artifacts: {len(job.output.artifacts)} files captured")
+            self.transition(job, JobStatus.COMPLETED)
+        else:
+            # Handler returned success=False (controlled failure)
+            error_msg = execution_result.get("error", "Unknown handler error")
+            self.transition(
+                job,
+                JobStatus.FAILED,
+                err_code="HANDLER_EXEC_FAILED",
+                err_msg=error_msg,
+            )
 
         return job

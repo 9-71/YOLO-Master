@@ -17,7 +17,7 @@ import shutil
 from pathlib import Path
 from typing import Any
 
-from smoke.f1.handlers.base import BaseTaskHandler
+from smoke.f1.handlers.base import BaseTaskHandler, PathWhitelistViolationError
 from smoke.f1.handlers.registry import TaskHandlerRegistry
 
 # Closed allowlist of Ultralytics YOLO export formats supported by the F1 platform.
@@ -121,13 +121,13 @@ class ExportHandler(BaseTaskHandler):
         if not allowed_paths:
             return False, "allowed_paths cannot be empty when path_whitelisted=True"
 
-        # Validate required parameter: model_path
-        if "model_path" not in params:
+        # Validate required parameter: model_path (empty string = not provided)
+        if not params.get("model_path"):
             return False, "Required parameter 'model_path' is missing"
 
         model_path = params["model_path"]
         if not self._is_path_safe(model_path, allowed_paths):
-            return False, f"model_path '{model_path}' is not within allowed_paths whitelist"
+            raise PathWhitelistViolationError(f"model_path '{model_path}' is not within allowed_paths whitelist")
 
         # Validate optional parameter: format (closed allowlist, fail-closed)
         if "format" in params:
@@ -227,10 +227,11 @@ class ExportHandler(BaseTaskHandler):
             # Delegate to Ultralytics export engine
             exported_path = model.export(format=fmt, imgsz=imgsz, device=device, half=half, int8=int8)
 
-            # Collect generated artifacts (all files except the copied input weights)
-            artifacts = sorted(
-                str(p.resolve()) for p in job_output_dir.iterdir() if p.is_file() and p.name != model_copy.name
-            )
+            # Collect every generated file under the job output directory with the
+            # standard full-tree scan shared by all handlers: the job-local model
+            # copy (.pt), the exported artifact (.onnx/.torchscript/...) and any
+            # engine side files are captured without extension filters.
+            artifacts = sorted(str(p.resolve()) for p in job_output_dir.rglob("*") if p.is_file())
 
             # Build execution metadata
             metadata = {

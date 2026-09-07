@@ -330,7 +330,7 @@ class TestPredictSkill:
         assert "conf must be a valid float" in result["error_message"]
 
     def test_execute_path_whitelist_violation(self, tmp_path):
-        """Test that path traversal attacks are blocked by dispatcher."""
+        """Test that path traversal attacks are blocked by dispatcher with SEC_ERR_001."""
         skill = PredictSkill()
         output_dir = str(tmp_path / "predict")
 
@@ -356,7 +356,8 @@ class TestPredictSkill:
 
             # Verify failure due to path violation
             assert result["status"] == "failed"
-            assert result["error_code"] == "PARAM_VALIDATION_FAILED"
+            assert result["error_code"] == "SEC_ERR_001"
+            assert "Security policy violation" in result["error_message"]
             assert "not within allowed_paths whitelist" in result["error_message"]
 
     def test_execute_dynamic_whitelist_includes_output_dir(self, tmp_path):
