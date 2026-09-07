@@ -27,7 +27,17 @@ import gradio as gr
 import pytest
 
 from core.schema import ErrorInfo, JobRequest, JobStatus, OutputConfig, TaskType
-from smoke.f1.ui.jobs_tab import JobsManager, create_jobs_tab, format_created_at, get_job_image_artifacts
+from smoke.f1.ui.i18n import get_text
+from smoke.f1.ui.jobs_tab import (
+    _DATAFRAME_HEADER_MENU_CSS,
+    POLL_SLOW_SECONDS,
+    JobsManager,
+    compute_poll_state,
+    create_jobs_tab,
+    format_created_at,
+    get_job_image_artifacts,
+    recent_jobs_rows,
+)
 
 
 @pytest.fixture
@@ -898,6 +908,182 @@ class TestJobsPersistence:
         # Terminal jobs are restored untouched.
         assert manager.jobs[completed.job_id].status == JobStatus.COMPLETED
         assert manager.job_logs[pending.job_id] == ["stale log line"]
+
+
+class TestRecentJobsInitialValue:
+    """Recent Jobs table must pre-populate from restored persistence on UI build.
+
+    Regression for the first-render timing bug: the backend restored persisted
+    state via ``_load()``, but the ``gr.Dataframe`` mounted with an empty value,
+    so the table only filled after the next submit/poll. The initial ``value``
+    must now carry the restored history with no user interaction.
+    """
+
+    @staticmethod
+    def _make_job(job_id: str, task_type: TaskType, status: JobStatus, created_at: str) -> JobRequest:
+        """Build a persisted job with an explicit, deterministic creation time."""
+        job = JobRequest(job_id=job_id, task_type=task_type, status=status)
+        job.metadata.created_at = created_at
+        return job
+
+    @staticmethod
+    def _write_state(storage: Path, jobs: list[JobRequest]) -> None:
+        """Write a ``jobs_state.json`` payload exactly as ``JobsManager._save`` does."""
+        payload = {
+            "version": 1,
+            "jobs": {j.job_id: j.model_dump(mode="json") for j in jobs},
+            "job_logs": {j.job_id: [f"log {j.job_id}"] for j in jobs},
+        }
+        storage.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    @staticmethod
+    def _find_recent_table(tab: gr.Blocks) -> gr.Dataframe:
+        """Return the Recent Jobs dataframe by its localized label."""
+        return next(
+            b for b in tab.blocks.values() if isinstance(b, gr.Dataframe) and b.label == get_text("en", "df.recent")
+        )
+
+    @staticmethod
+    def _rows(value: Any) -> list[list[str]]:
+        """Normalize a ``gr.Dataframe`` value (dict / DataFrame / list) to rows."""
+        if isinstance(value, dict):
+            return value["data"]
+        if hasattr(value, "values"):  # pandas DataFrame
+            return value.values.tolist()
+        return value
+
+    def test_table_prepopulates_with_persisted_history(self, tmp_path: Path) -> None:
+        """A UI built over an existing jobs_state.json shows history immediately."""
+        storage = tmp_path / "jobs_state.json"
+        jobs = [
+            self._make_job("predict_older", TaskType.PREDICT, JobStatus.COMPLETED, "2026-09-01T10:00:00+00:00"),
+            self._make_job("train_newer", TaskType.TRAIN, JobStatus.FAILED, "2026-09-02T10:00:00+00:00"),
+        ]
+        self._write_state(storage, jobs)
+
+        # Backend restores the two persisted jobs.
+        manager = JobsManager(storage_path=str(storage))
+        assert set(manager.jobs) == {"predict_older", "train_newer"}
+
+        # Building the UI must bind the restored history as the table's initial value.
+        tab = create_jobs_tab(manager, "en")
+        rows = self._rows(self._find_recent_table(tab).value)
+
+        assert rows, "Recent Jobs table must be non-empty on first render"
+        # Strictly matches the persisted records: newest first, local-time formatted.
+        expected = [
+            ["train_newer", "train", "FAILED", format_created_at("2026-09-02T10:00:00+00:00")],
+            ["predict_older", "predict", "COMPLETED", format_created_at("2026-09-01T10:00:00+00:00")],
+        ]
+        assert rows == expected
+        # The component value is exactly what the shared formatting helper produces,
+        # so first render and every later poll refresh stay consistent.
+        assert rows == recent_jobs_rows(manager, limit=20)
+
+
+class TestPollIdlePreservesRecentJobs:
+    """Idle polling must never blank the Recent Jobs table.
+
+    Regression for the auto-clearing table bug: with no active job selected,
+    ``compute_poll_state`` used to return a snapshot whose ``recent`` field was
+    the empty default, and the always-on slow sync timer wrote that empty list
+    into ``recent_jobs_table``, wiping the rows pre-populated from persistence.
+    """
+
+    @staticmethod
+    def _make_job(job_id: str, task_type: TaskType, status: JobStatus, created_at: str) -> JobRequest:
+        """Build a persisted job with an explicit, deterministic creation time."""
+        job = JobRequest(job_id=job_id, task_type=task_type, status=status)
+        job.metadata.created_at = created_at
+        return job
+
+    @staticmethod
+    def _write_state(storage: Path, jobs: list[JobRequest]) -> None:
+        """Write a ``jobs_state.json`` payload exactly as ``JobsManager._save`` does."""
+        payload = {
+            "version": 1,
+            "jobs": {j.job_id: j.model_dump(mode="json") for j in jobs},
+            "job_logs": {j.job_id: [] for j in jobs},
+        }
+        storage.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+
+    @staticmethod
+    def _persisted_manager(tmp_path: Path) -> tuple[JobsManager, list[list[str]]]:
+        """Return a manager restored from two persisted jobs and its expected rows."""
+        storage = tmp_path / "jobs_state.json"
+        jobs = [
+            TestPollIdlePreservesRecentJobs._make_job(
+                "predict_older", TaskType.PREDICT, JobStatus.COMPLETED, "2026-09-01T10:00:00+00:00"
+            ),
+            TestPollIdlePreservesRecentJobs._make_job(
+                "train_newer", TaskType.TRAIN, JobStatus.FAILED, "2026-09-02T10:00:00+00:00"
+            ),
+        ]
+        TestPollIdlePreservesRecentJobs._write_state(storage, jobs)
+        manager = JobsManager(storage_path=str(storage))
+        return manager, recent_jobs_rows(manager, limit=20)
+
+    def test_compute_poll_state_idle_keeps_persisted_rows(self, tmp_path: Path) -> None:
+        """The no-selection branch still carries the full persisted history."""
+        manager, expected = self._persisted_manager(tmp_path)
+
+        state = compute_poll_state(manager, "", "en")
+
+        assert state.status == {"status": "NO_SELECTION"}
+        assert state.recent == expected
+        assert len(state.recent) == 2
+        # Rows are the exact formatted rows, never an empty list.
+        assert state.recent != []
+
+    def test_sync_timer_tick_keeps_recent_rows(self, tmp_path: Path) -> None:
+        """A slow-sync tick with no active job writes the persisted rows, not ``[]``."""
+        manager, expected = self._persisted_manager(tmp_path)
+        tab = create_jobs_tab(manager, "en")
+
+        # Resolve the always-on slow sync timer and its tick handler exactly as
+        # Gradio invokes it (BlockFunction.fn).
+        sync_timer = next(b for b in tab.blocks.values() if isinstance(b, gr.Timer) and b.value == POLL_SLOW_SECONDS)
+        sync_fn = _wired_fn(tab, sync_timer, "tick")
+
+        # Simulate an idle tick: no active job selected.
+        result = sync_fn("", "en")
+
+        # The Recent Jobs output is the final element of the handler's tuple.
+        recent = result[-1]
+        assert recent == expected
+        assert len(recent) == 2
+
+    def test_poll_handler_idle_keeps_recent_rows(self, tmp_path: Path) -> None:
+        """The fast lifecycle poll (idle) also keeps the persisted rows intact."""
+        manager, expected = self._persisted_manager(tmp_path)
+        tab = create_jobs_tab(manager, "en")
+
+        # Fast timer is inactive on idle, but its tick handler is still wired.
+        poll_timer = next(b for b in tab.blocks.values() if isinstance(b, gr.Timer) and b.value != POLL_SLOW_SECONDS)
+        poll_fn = _wired_fn(tab, poll_timer, "tick")
+
+        result = poll_fn("", "en")
+
+        # poll_handler tuple: recent is the second-to-last element, timer update last.
+        recent = result[-2]
+        assert recent == expected
+        assert len(recent) == 2
+
+
+class TestDataframeHeaderMenuHidden:
+    """The Dataframe column-header three-dot menu must be hidden via local CSS."""
+
+    def test_css_constant_targets_cell_menu_button(self) -> None:
+        """The injected CSS hides the Dataframe header options button."""
+        assert ".cell-menu-button" in _DATAFRAME_HEADER_MENU_CSS
+        assert "display: none !important" in _DATAFRAME_HEADER_MENU_CSS
+
+    def test_tab_injects_header_menu_css(self) -> None:
+        """Building the Jobs tab emits an HTML component carrying the hiding CSS."""
+        tab = create_jobs_tab(JobsManager(), "en")
+
+        html_values = [b.value for b in tab.blocks.values() if isinstance(b, gr.HTML)]
+        assert _DATAFRAME_HEADER_MENU_CSS in html_values
 
 
 if __name__ == "__main__":

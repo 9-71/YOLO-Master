@@ -169,6 +169,13 @@ _ARTIFACT_PREV_LABEL: dict[str, str] = {"en": "◀ Prev", "zh": "◀ 上一张"}
 _ARTIFACT_NEXT_LABEL: dict[str, str] = {"en": "Next ▶", "zh": "下一张 ▶"}
 #: Localized label for the open-output-folder button.
 _OPEN_FOLDER_LABEL: dict[str, str] = {"en": "📂 Open Folder", "zh": "📂 打开输出目录"}
+#: Local CSS injected into the Jobs zone to hide the Gradio Dataframe
+#: column-header options button (the three-dot "Open cell menu" trigger). The
+#: tab's Dataframes are read-only monitors, so the built-in column sort/filter
+#: menu — whose labels are not localized by this app's i18n layer — is hidden
+#: entirely. ``.cell-menu-button`` is the stable semantic class Gradio applies
+#: to that trigger (``aria-label="Open cell menu"``).
+_DATAFRAME_HEADER_MENU_CSS: str = "<style>.cell-menu-button { display: none !important; }</style>"
 
 
 def _artifact_preview_label(lang: str | None, filename: str | None) -> str:
@@ -798,6 +805,33 @@ def format_created_at(created_at: str | None) -> str:
         return str(created_at)
 
 
+def recent_jobs_rows(jobs_manager: JobsManager, limit: int = 20) -> list[list[str]]:
+    """Format the recent-jobs listing into Recent Jobs dataframe rows.
+
+    Each row is ``[job_id, task_type, status, local_time]``, newest first, with
+    raw ISO UTC timestamps localized via :func:`format_created_at`. Extracted
+    from :func:`compute_poll_state` so the Recent Jobs table can be pre-populated
+    at construction time (its initial ``value``) and stay byte-for-byte
+    consistent with every polling refresh.
+
+    Args:
+        jobs_manager: JobsManager instance (or duck-typed equivalent).
+        limit: Maximum number of recent jobs to include.
+
+    Returns:
+        list[list[str]]: Formatted rows for the Recent Jobs ``gr.Dataframe``.
+
+    Example:
+        >>> manager = JobsManager()
+        >>> recent_jobs_rows(manager)
+        []
+    """
+    return [
+        [j["job_id"], j["task_type"], j["status"], format_created_at(j["created_at"])]
+        for j in jobs_manager.list_recent_jobs(limit=limit)
+    ]
+
+
 def alert_banner(lang: str, code: str, message: str | None) -> str:
     """Build a localized Markdown alert banner for a failed job.
 
@@ -881,7 +915,9 @@ def compute_poll_state(jobs_manager: JobsManager, job_id: str, lang: str = DEFAU
     Monitor JSON payload carries canonical backend keys/values only — localized
     display text is confined to banners, toasts and column headers. Recent-jobs
     timestamps are converted to local time for display while the backend keeps
-    raw ISO UTC strings.
+    raw ISO UTC strings. In every state — including the idle "no selection"
+    branch — the returned ``recent`` field is populated via
+    :func:`recent_jobs_rows`, so polling never clears the Recent Jobs table.
 
     Args:
         jobs_manager: JobsManager instance (or duck-typed equivalent for tests).
@@ -901,7 +937,15 @@ def compute_poll_state(jobs_manager: JobsManager, job_id: str, lang: str = DEFAU
         {'status': 'NO_SELECTION'}
     """
     if not job_id:
-        return PollState(status={"status": "NO_SELECTION"})
+        # Idle state: there is no selected job to monitor, but the Recent Jobs
+        # table must still reflect the persisted history. Populate ``recent``
+        # explicitly so the always-on slow sync timer (and any poll tick) never
+        # overwrites the table with an empty list and blanks out the rows that
+        # were pre-populated on first render.
+        return PollState(
+            status={"status": "NO_SELECTION"},
+            recent=recent_jobs_rows(jobs_manager, limit=20),
+        )
 
     raw = jobs_manager.get_job_status(job_id)
     status_str = raw.get("status", "NOT_FOUND")
@@ -943,10 +987,7 @@ def compute_poll_state(jobs_manager: JobsManager, job_id: str, lang: str = DEFAU
     # Safe reflection: test Mocks may not implement get_job_image_artifacts.
     getter = getattr(jobs_manager, "get_job_image_artifacts", None)
     image_artifacts = getter(job_id) if callable(getter) else []
-    recent = [
-        [j["job_id"], j["task_type"], j["status"], format_created_at(j["created_at"])]
-        for j in jobs_manager.list_recent_jobs(limit=20)
-    ]
+    recent = recent_jobs_rows(jobs_manager, limit=20)
 
     return PollState(
         status=status,
@@ -1090,6 +1131,9 @@ def create_jobs_tab(jobs_manager: JobsManager, lang: str = DEFAULT_LANGUAGE) -> 
     with gr.Blocks() as jobs_tab:
         lang_state = gr.State(lang)
         title_md = gr.Markdown(f"# {get_text(lang, 'tab.title')}")
+        # Hide the Dataframe column-header options (three-dot) menu button across
+        # the read-only monitoring tables in this zone (see module constant).
+        gr.HTML(_DATAFRAME_HEADER_MENU_CSS)
 
         with gr.Row(equal_height=False):
             # ==================== Left Panel: Job Submission ====================
@@ -1209,6 +1253,7 @@ def create_jobs_tab(jobs_manager: JobsManager, lang: str = DEFAULT_LANGUAGE) -> 
                     recent_jobs_table = gr.Dataframe(
                         headers=get_columns(lang, "recent"),
                         label=get_text(lang, "df.recent"),
+                        value=recent_jobs_rows(jobs_manager, limit=20),
                         interactive=False,
                     )
                     poll_note_md = gr.Markdown(get_text(lang, "poll.note"))
