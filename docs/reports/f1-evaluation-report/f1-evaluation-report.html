@@ -5,34 +5,10 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>F1 课题完成度评估报告（v2） | YOLO-Master Studio 平台内核</title>
 
-  <style>
-    @font-face {
-      font-family: 'InstrumentSans';
-      src: url('./_shared/fonts/InstrumentSans-Regular.ttf') format('truetype');
-      font-weight: 400;
-    }
-    @font-face {
-      font-family: 'InstrumentSans';
-      src: url('./_shared/fonts/InstrumentSans-Bold.ttf') format('truetype');
-      font-weight: 700;
-    }
-    @font-face {
-      font-family: 'InstrumentSans';
-      src: url('./_shared/fonts/InstrumentSans-Italic.ttf') format('truetype');
-      font-weight: 400;
-      font-style: italic;
-    }
-    @font-face {
-      font-family: 'JetBrainsMono';
-      src: url('./_shared/fonts/JetBrainsMono-Regular.ttf') format('truetype');
-      font-weight: 400;
-    }
-    @font-face {
-      font-family: 'JetBrainsMono';
-      src: url('./_shared/fonts/JetBrainsMono-Bold.ttf') format('truetype');
-      font-weight: 700;
-    }
-  </style>
+  <!-- Fonts are served from the Google Fonts CDN instead of vendored .ttf binaries. -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:ital,wght@0,400;0,700;1,400&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
 
   <style>
     :root {
@@ -47,8 +23,8 @@
       --accent3: #d97706;
       --danger: #dc2626;
       --success: #16a34a;
-      --font: 'InstrumentSans', -apple-system, 'Segoe UI', sans-serif;
-      --font-mono: 'JetBrainsMono', 'Cascadia Code', monospace;
+      --font: 'Instrument Sans', -apple-system, 'Segoe UI', sans-serif;
+      --font-mono: 'JetBrains Mono', 'Cascadia Code', monospace;
       --max: 920px;
     }
 
@@ -1160,8 +1136,8 @@ flowchart TD
   </article>
 
   <!-- ======================== JS ======================== -->
-  <script src="./_shared/js/echarts.min.js"></script>
-  <script src="./_shared/js/mermaid.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/echarts@5.6.0/dist/echarts.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@11.0.0/dist/mermaid.min.js"></script>
   <script src="assets/charts.js"></script>
 </body>
 </html>

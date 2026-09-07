@@ -253,3 +253,10 @@ smoke/f1/smoke_run.log
 .trae-html-share-packages/
 .traerules
 .workbuddy/
+
+# ==========================================
+# F1 evaluation report — vendored third-party static assets
+# Fonts (.ttf) and minified JS (echarts/mermaid) are served from public CDNs;
+# never commit binary or third-party vendor files to the open-source repository.
+# ==========================================
+docs/reports/f1-evaluation-report/_shared/

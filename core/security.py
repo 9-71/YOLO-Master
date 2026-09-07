@@ -118,7 +118,7 @@ def _contains_sensitive_value(text: str) -> bool:
 
 
 def sanitize_env_dict(env_mapping: Mapping[str, Any]) -> dict[str, Any]:
-    """对环境变量字典进行过滤，命中敏感键名或敏感值特征的均掩码为 '***REDACTED***'。
+    """Sanitize an environment-variable mapping, masking sensitive keys and values as '***REDACTED***'.
 
     A key is redacted when its NAME matches :data:`SENSITIVE_KEY_PATTERN`
     (case-insensitive). Otherwise its VALUE (stringified for inspection) is
@@ -128,10 +128,10 @@ def sanitize_env_dict(env_mapping: Mapping[str, Any]) -> dict[str, Any]:
     values are copied through unchanged, preserving their original types.
 
     Args:
-        env_mapping: 原始环境变量映射字典。
+        env_mapping: The original environment-variable mapping.
 
     Returns:
-        dict[str, Any]: 脱敏后的新字典副本；输入字典不被修改。
+        dict[str, Any]: A new sanitized dict copy; the input mapping is never modified.
 
     Example:
         >>> sanitize_env_dict({"AWS_SECRET_ACCESS_KEY": "abc", "JOB_ID": "j-1"})
@@ -148,7 +148,7 @@ def sanitize_env_dict(env_mapping: Mapping[str, Any]) -> dict[str, Any]:
 
 
 def sanitize_log_text(text: str) -> str:
-    """对单行或多行文本日志中的敏感特征进行正则表达式匹配并打码替换为 '***REDACTED***'。
+    """Sanitize single-line or multi-line log text, redacting sensitive patterns as '***REDACTED***'.
 
     The text is scanned first for ``SENSITIVE_KEY=value`` assignments
     (:data:`SENSITIVE_ASSIGNMENT_PATTERN`, catches short secrets) and then for
@@ -156,10 +156,10 @@ def sanitize_log_text(text: str) -> str:
     function is idempotent: re-sanitizing already-redacted text is a no-op.
 
     Args:
-        text: 待处理的原始日志或堆栈文本。
+        text: The raw log or traceback text to sanitize.
 
     Returns:
-        str: 脱敏后的安全日志文本；空输入原样返回。
+        str: The sanitized, safe log text; empty input is returned unchanged.
 
     Example:
         >>> sanitize_log_text("Exporting API_KEY=secret_key_12345678")
