@@ -4,6 +4,12 @@ Launches the interactive Studio in which the classic inference playground and th
 Jobs tab (asynchronous job submission, adaptive polling, artifact browsing) share a
 single top-level tab container and one application-level JobsManager singleton.
 
+Localization:
+    A top-level language selector lifts the language state above the tab container;
+    one shared State drives the Inference Studio zone and the Jobs zone together
+    (see :meth:`YOLO_Master_WebUI.build_app` for the unidirectional broadcast
+    design: the top selector is the single source of truth).
+
 Usage:
     python app.py
 """
@@ -14,7 +20,7 @@ import gc
 import os
 import warnings
 from pathlib import Path
-from typing import ClassVar
+from typing import Any, ClassVar
 
 import cv2
 import gradio as gr
@@ -22,7 +28,8 @@ import numpy as np
 import pandas as pd
 import torch
 
-from smoke.f1.ui.jobs_tab import JobsManager, create_jobs_tab
+from smoke.f1.ui.i18n import DEFAULT_LANGUAGE, LANGUAGE_CHOICES, get_columns, get_text
+from smoke.f1.ui.jobs_tab import JobsManager, create_jobs_tab, jobs_tab_language_updates
 from ultralytics import YOLO
 
 # Ignore unnecessary warnings
@@ -143,15 +150,92 @@ class ModelManager:
         return "unknown"
 
 
+def studio_relabels(lang_value: str) -> tuple[Any, ...]:
+    """Build the localized relabel payload covering every Inference Studio component.
+
+    Pure presentation helper for the app-level language broadcast: element at
+    position ``i`` updates the component at position ``i`` of the studio zone
+    component tuple assembled in :meth:`YOLO_Master_WebUI.build_app`. Transient
+    content (inference result image, summary markdown, detections dataframe
+    body) is deliberately excluded so a language switch never discards runtime
+    output; only static labels, placeholders and headers are relabeled.
+
+    Args:
+        lang_value: ISO language code ("en" or "zh"); unknown codes fall back
+            to English via the i18n layer.
+
+    Returns:
+        tuple[Any, ...]: One ``gr.update`` per studio zone localizable component.
+    """
+    return (
+        gr.update(label=get_text(lang_value, "studio.subtab.visualization")),  # viz_tabitem
+        gr.update(label=get_text(lang_value, "studio.field.input_image")),  # inp_img
+        gr.update(label=get_text(lang_value, "studio.field.result_image")),  # out_img
+        gr.update(label=get_text(lang_value, "studio.subtab.data_analysis")),  # analysis_tabitem
+        gr.update(value=get_text(lang_value, "studio.heading.detections")),  # detections_md
+        gr.update(
+            label=get_text(lang_value, "studio.df.detections"),
+            headers=get_columns(lang_value, "detections"),
+        ),  # out_df
+        gr.update(value=get_text(lang_value, "studio.settings")),  # settings_md
+        gr.update(label=get_text(lang_value, "studio.field.task")),  # task_radio
+        gr.update(label=get_text(lang_value, "studio.field.model_weights")),  # model_dd
+        gr.update(value=get_text(lang_value, "studio.button.refresh")),  # refresh_btn
+        gr.update(
+            label=get_text(lang_value, "studio.field.custom_model_path"),
+            placeholder=get_text(lang_value, "studio.field.custom_model_path.placeholder"),
+        ),  # custom_model_txt
+        gr.update(value=get_text(lang_value, "studio.button.validate")),  # validate_btn
+        gr.update(label=get_text(lang_value, "studio.accordion.advanced")),  # advanced_accordion
+        gr.update(label=get_text(lang_value, "studio.field.conf")),  # conf_slider
+        gr.update(label=get_text(lang_value, "studio.field.iou")),  # iou_slider
+        gr.update(label=get_text(lang_value, "studio.field.max_objects")),  # max_det_num
+        gr.update(label=get_text(lang_value, "studio.field.line_width")),  # line_width_num
+        gr.update(label=get_text(lang_value, "studio.field.device")),  # device_txt
+        gr.update(label=get_text(lang_value, "studio.field.force_cpu")),  # cpu_chk
+        gr.update(label=get_text(lang_value, "studio.field.output_options")),  # options_chk
+        gr.update(value=get_text(lang_value, "studio.button.run")),  # run_btn
+        gr.update(value=get_text(lang_value, "studio.heading")),  # heading_md
+    )
+
+
 class YOLO_Master_WebUI:
     """Top-level WebUI application hosting the inference studio and the Jobs tab."""
 
     def __init__(self, ckpts_root: str):
         self.ckpts_root = Path(ckpts_root)
         self.model_manager = ModelManager(self.ckpts_root)
+        # model_map keeps FULL checkpoint paths for backend resolution; the dropdown
+        # only ever shows clean filenames via the derived display map.
         self.model_map = self.model_manager.scan_checkpoints()
+        self.model_display_map = self._display_names(self.model_map)
         # Application-level singleton: one JobsManager shared by the whole WebUI.
-        self.jobs_manager = JobsManager()
+        # storage_path enables JSON persistence of job state across restarts.
+        self.jobs_manager = JobsManager(storage_path="runs/jobs_state.json")
+
+    @staticmethod
+    def _display_names(model_map: dict[str, list[str]]) -> dict[str, list[str]]:
+        """Derive dropdown display names (Path(p).name) from scanned full paths."""
+        return {task: [Path(p).name for p in paths] for task, paths in model_map.items()}
+
+    def resolve_checkpoint_path(self, display_name: str, task: str) -> str:
+        """Resolve a dropdown display name back to the full scanned checkpoint path.
+
+        The dropdown shows clean filenames (``Path(p).name``); the YOLO engine still
+        needs the real file location. The active task's checkpoint list is searched
+        first, then every other task's list, so a stale dropdown selection after a
+        task switch still resolves. Values that are not scanned display names
+        (empty strings, custom paths) pass through unchanged.
+        """
+        if not display_name:
+            return display_name
+        task_lists = [self.model_map.get(task, [])]
+        task_lists.extend(paths for key, paths in self.model_map.items() if key != task)
+        for paths in task_lists:
+            for full_path in paths:
+                if Path(full_path).name == display_name:
+                    return full_path
+        return display_name
 
     def inference(
         self,
@@ -186,8 +270,12 @@ class YOLO_Master_WebUI:
             options["retina_masks"] = True
 
         # 2. Model Loading
-        # Prioritize custom path, then dropdown
-        model_path = (custom_model_path or "").strip() or (model_dropdown or "").strip()
+        # Prioritize custom path, then dropdown. The dropdown value is a display
+        # name (clean filename); resolve it back to the full scanned checkpoint
+        # path before handing it to the model manager / YOLO engine.
+        model_path = (custom_model_path or "").strip()
+        if not model_path:
+            model_path = self.resolve_checkpoint_path((model_dropdown or "").strip(), task)
         try:
             model = self.model_manager.load_model(model_path, task)
         except Exception as e:  # noqa: BLE001 - report any load failure to the UI
@@ -259,14 +347,23 @@ class YOLO_Master_WebUI:
 
         return res_img, df, summary
 
-    def describe_model(self, task: str, model_path: str) -> str:
-        """Validate and describe the model."""
+    def describe_model(self, task: str, model_path: str, lang: str = DEFAULT_LANGUAGE) -> str:
+        """Validate and describe the model, returning localized messages.
+
+        Args:
+            task: Current task type (detect, seg, cls, pose, obb).
+            model_path: User-entered custom model path.
+            lang: ISO language code for localized output messages.
+
+        Returns:
+            str: Localized validation result message.
+        """
         if not model_path or not model_path.strip():
-            return "⚠️ Please enter a model path."
+            return get_text(lang, "studio.validate.empty")
 
         path = Path(model_path.strip())
         if not path.exists():
-            return f"❌ Path does not exist: `{model_path}`"
+            return get_text(lang, "studio.validate.invalid")
 
         try:
             # Check if it's a directory, try to find pt file
@@ -284,27 +381,17 @@ class YOLO_Master_WebUI:
                         found = True
                         break
                 if not found:
-                    return f"❌ No model file (.pt) found in directory: `{model_path}`"
+                    return get_text(lang, "studio.validate.invalid")
 
-            # Load model to get info (temporary load, no caching here to avoid polluting main state)
-            model = YOLO(str(path))
-            names = model.names
-            nc = len(names)
-            model_task = model.task
-
-            return (
-                f"### ✅ Model Validated\n"
-                f"- **Path:** `{path}`\n"
-                f"- **Task:** `{model_task}` (Expected: `{task}`)\n"
-                f"- **Classes:** {nc}\n"
-                f"- **Names:** {list(names.values())[:5]}..."
-            )
-        except Exception as e:  # noqa: BLE001 - report any validation failure to the UI
-            return f"❌ Invalid Model: {e}"
+            # Load model to verify validity (temporary load, no caching here)
+            YOLO(str(path))
+            return get_text(lang, "studio.validate.valid")
+        except Exception:  # noqa: BLE001 - report any validation failure to the UI
+            return get_text(lang, "studio.validate.invalid")
 
     def update_model_dropdown(self, task: str):
-        """UI Event: Update model list when task changes."""
-        choices = self.model_map.get(task, [])
+        """UI Event: Update model list when task changes (clean display names only)."""
+        choices = self.model_display_map.get(task, [])
         if not choices:
             choices = [GlobalConfig.DEFAULT_MODELS.get(task, "yolov8n.pt")]
         return gr.update(choices=choices, value=choices[0])
@@ -312,6 +399,7 @@ class YOLO_Master_WebUI:
     def refresh_models(self, task: str):
         """UI Event: Manually refresh model list."""
         self.model_map = self.model_manager.scan_checkpoints()
+        self.model_display_map = self._display_names(self.model_map)
         return self.update_model_dropdown(task)
 
     def build_app(self) -> gr.Blocks:
@@ -320,20 +408,46 @@ class YOLO_Master_WebUI:
         The Jobs tab shares the top-level tab container with the inference studio and
         reuses the application-level JobsManager singleton (self.jobs_manager).
 
+        Language-state lifting (unidirectional broadcast):
+            The top-level selector and :class:`gr.State` live above the tab
+            container and are the SINGLE SOURCE OF TRUTH for the app-wide language
+            choice. Exactly one change event exists in the whole app:
+
+            - Top selector change -> app state, outer tab labels, every studio
+              component (``studio_relabels``), and the whole Jobs zone payload
+              (``jobs_tab_language_updates``, 27 explicit outputs).
+
+            There is no reverse path: the Jobs zone has no language listener of
+            its own, and the top selector never writes to itself, so no write in
+            this handler can re-trigger any language event (Gradio 6 re-fires
+            ``change`` on programmatic component writes, which made the previous
+            bidirectional wiring loop until the server crashed).
+
         Returns:
             gr.Blocks: The fully wired application; call .launch() to serve it.
         """
         # NOTE: Gradio 6 moved `theme` from the Blocks constructor to launch().
         with gr.Blocks(title="YOLO-Master WebUI") as app:
+            # ============ Top-level language broadcast (whole-app scope) ============
+            # The lifted state and selector live above the tab container and are the
+            # single source of truth: one change event relabels every zone below.
+            # Neither zone below has a language listener of its own, so this
+            # broadcast is strictly unidirectional.
+            app_lang_state = gr.State(DEFAULT_LANGUAGE)
+            app_lang_radio = gr.Radio(
+                choices=LANGUAGE_CHOICES,
+                value=DEFAULT_LANGUAGE,
+                label=get_text(DEFAULT_LANGUAGE, "lang.label"),
+            )
             with gr.Tabs():
                 # ================= Tab 1: Inference Studio =================
-                with gr.TabItem("🖼️ Inference Studio"):
-                    gr.Markdown("# 🚀 YOLO-Master Dashboard")
+                with gr.TabItem(get_text(DEFAULT_LANGUAGE, "app.tab.studio")) as studio_tabitem:
+                    heading_md = gr.Markdown("# 🚀 YOLO-Master Dashboard")
 
                     with gr.Row(equal_height=False):
                         # ================= Sidebar: Control Panel =================
                         with gr.Column(scale=1, variant="panel"):
-                            gr.Markdown("### 🛠 Settings")
+                            settings_md = gr.Markdown("### 🛠 Settings")
 
                             # Task and Model Selection
                             with gr.Group():
@@ -342,15 +456,19 @@ class YOLO_Master_WebUI:
                                     value="detect",
                                     label="Task",
                                 )
-                                with gr.Row():
-                                    model_dd = gr.Dropdown(
-                                        choices=self.model_map["detect"],
-                                        value=self.model_map["detect"][0] if self.model_map["detect"] else None,
-                                        label="Model Weights",
-                                        scale=5,
-                                        interactive=True,
-                                    )
-                                    refresh_btn = gr.Button("🔄", scale=1, min_width=10, size="sm")
+                                model_dd = gr.Dropdown(
+                                    choices=self.model_display_map["detect"],
+                                    value=self.model_display_map["detect"][0]
+                                    if self.model_display_map["detect"]
+                                    else None,
+                                    label="Model Weights",
+                                    interactive=True,
+                                )
+                                refresh_btn = gr.Button(
+                                    get_text(DEFAULT_LANGUAGE, "studio.button.refresh"),
+                                    size="sm",
+                                    variant="secondary",
+                                )
                                 custom_model_txt = gr.Textbox(
                                     value="",
                                     label="Custom Model Path (file or directory)",
@@ -360,7 +478,7 @@ class YOLO_Master_WebUI:
                                 validate_btn = gr.Button("✅ Validate Path", size="sm")
 
                             # Advanced Parameters
-                            with gr.Accordion("⚙️ Advanced Parameters", open=True):
+                            with gr.Accordion("⚙️ Advanced Parameters", open=True) as advanced_accordion:
                                 conf_slider = gr.Slider(0, 1, 0.25, step=0.01, label="Confidence (Conf)")
                                 iou_slider = gr.Slider(0, 1, 0.7, step=0.01, label="IoU Threshold")
 
@@ -396,7 +514,7 @@ class YOLO_Master_WebUI:
 
                         # ================= Main Area: Display Panel =================
                         with gr.Column(scale=3), gr.Tabs():
-                            with gr.TabItem("🖼️ Visualization"):
+                            with gr.TabItem("🖼️ Visualization") as viz_tabitem:
                                 with gr.Row():
                                     inp_img = gr.Image(type="numpy", label="Input Image", height=500)
                                     out_img = gr.Image(
@@ -404,8 +522,8 @@ class YOLO_Master_WebUI:
                                     )
                                 info_md = gr.Markdown(value="Waiting for input...")
 
-                            with gr.TabItem("📊 Data Analysis"):
-                                gr.Markdown("### Detections Data")
+                            with gr.TabItem("📊 Data Analysis") as analysis_tabitem:
+                                detections_md = gr.Markdown("### Detections Data")
                                 out_df = gr.Dataframe(
                                     headers=["Class ID", "Class Name", "Confidence", "x1", "y1", "x2", "y2"],
                                     label="Raw Detections",
@@ -415,15 +533,19 @@ class YOLO_Master_WebUI:
                 # Single mount: entering the child Blocks inside this active context
                 # auto-embeds it on context exit; an explicit .render() would mount
                 # every Jobs component a second time (duplicate tabs in the DOM).
-                with gr.TabItem("📋 Jobs"):
-                    create_jobs_tab(self.jobs_manager)
+                with gr.TabItem(get_text(DEFAULT_LANGUAGE, "app.tab.jobs")) as jobs_tabitem:
+                    jobs_zone = create_jobs_tab(self.jobs_manager)
 
             # ================= Event Binding =================
 
             # 1. Auto-refresh model list
             task_radio.change(fn=self.update_model_dropdown, inputs=task_radio, outputs=model_dd)
             refresh_btn.click(fn=self.refresh_models, inputs=task_radio, outputs=model_dd)
-            validate_btn.click(fn=self.describe_model, inputs=[task_radio, custom_model_txt], outputs=info_md)
+            validate_btn.click(
+                fn=self.describe_model,
+                inputs=[task_radio, custom_model_txt, app_lang_state],
+                outputs=info_md,
+            )
 
             # 2. Inference Logic
             run_btn.click(
@@ -442,6 +564,67 @@ class YOLO_Master_WebUI:
                     options_chk,
                 ],
                 outputs=[out_img, out_df, info_md],
+            )
+
+            # 3. Unified language broadcast -------------------------------------------------
+            # Studio zone localizable components, position-aligned 1-to-1 with the
+            # studio_relabels() payload (transient outputs such as info_md are excluded).
+            studio_components = [
+                viz_tabitem,
+                inp_img,
+                out_img,
+                analysis_tabitem,
+                detections_md,
+                out_df,
+                settings_md,
+                task_radio,
+                model_dd,
+                refresh_btn,
+                custom_model_txt,
+                validate_btn,
+                advanced_accordion,
+                conf_slider,
+                iou_slider,
+                max_det_num,
+                line_width_num,
+                device_txt,
+                cpu_chk,
+                options_chk,
+                run_btn,
+                heading_md,
+            ]
+
+            def apply_app_language(lang_value: str) -> tuple[Any, ...]:
+                """Broadcast one language choice from the top-level selector to every zone.
+
+                Unidirectional by design: the top-level selector is the single source
+                of truth and the only language change listener in the app. The Jobs
+                zone has no language listener of its own, and this handler never writes
+                back to the top selector, so no output in this tuple can re-trigger any
+                language event.
+                """
+                return (
+                    lang_value,  # app_lang_state
+                    gr.update(label=get_text(lang_value, "app.tab.studio")),  # studio_tabitem
+                    gr.update(label=get_text(lang_value, "app.tab.jobs")),  # jobs_tabitem
+                    *studio_relabels(lang_value),
+                    *jobs_tab_language_updates(lang_value),
+                )
+
+            # Top-level selector -> whole app (studio zone + Jobs zone). The
+            # selector is deliberately not among the outputs: a programmatic
+            # self-write could re-trigger its own change event in Gradio 6 and
+            # loop back into this handler.
+            app_lang_radio.change(
+                fn=apply_app_language,
+                inputs=app_lang_radio,
+                outputs=[
+                    app_lang_state,
+                    studio_tabitem,
+                    jobs_tabitem,
+                    *studio_components,
+                    *jobs_zone._language_outputs,
+                ],
             )
 
         return app
