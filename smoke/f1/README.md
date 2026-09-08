@@ -2,7 +2,7 @@
 
 **Topic**: F1 - YOLO-Master Studio Platform Core
 **Milestone**: Entry Check - 2026-08-24
-**Status**: ✅ **P0 Complete · P1 In Progress (3/4)** · v1.2.0
+**Status**: ✅ **P0 Complete · P1 Complete** · v1.3.0
 
 ---
 
@@ -298,24 +298,24 @@ The F1 Studio Platform implements the following mandatory security constraints:
 
 ### 5.2 Phase 1 (P1): Multi-Task Unification
 
-**Target**: 2026-09-07
-**Progress**: 3/4 items completed · regex whitelist enhancement remaining
+**Target**: 2026-09-07 
 **Deliverables**:
 
 - [X] Unify `train`, `val`, `predict`, `export` task contracts
 - [X] Implement job cancellation, watchdog timers, and timeout mechanisms
 - [X] Add batch image/video inference support
-- [ ] Enhance path whitelisting with regex patterns
+- [X] Enhance path whitelisting with regex patterns
 
-### 5.3 Phase 2 (P2): Production Hardening
+### 5.3 Phase 2 (P2): Standalone FastAPI Engine & Decoupled Architecture
 
-**Target**: 2026-09-12
+**Target**: 2026-09-12  
 **Deliverables**:
 
-- [ ] Provide standalone FastAPI backend endpoints alongside Gradio WebUI
-- [ ] Add real-time hardware telemetry (GPU/CPU utilization via NVML)
-- [ ] Basic authentication and access control
-- [ ] Comprehensive diagnostic and logging infrastructure
+- [ ] Standalone FastAPI Service: Expose core task dispatcher endpoints (`/api/v1/jobs/*` for train, val, predict, export, and diagnose) alongside Gradio WebUI
+- [ ] Schema & Contract Alignment: Native OpenAPI/Swagger documentation backed by `core/schema.py` (`JobRequest`, `JobStatus`, and error dictionaries)
+- [ ] Non-blocking Lifecycle & Log Streaming: Asynchronous job lifecycle polling, real-time incremental log retrieval, and cooperative cancellation via REST API
+- [ ] Artifact Delivery Endpoints: Direct file inspection, static mount, and artifact manifest download routes
+- [ ] Decoupled Frontend Demo: Lightweight React/SPA or OpenAPI verification console validating decoupled engine architecture
 
 ---
 
@@ -398,6 +398,6 @@ print('Contract validation passed')
 
 ---
 
-**Document Version**: 1.2.0
-**Last Updated**: 2026-09-04
+**Document Version**: 1.3.0
+**Last Updated**: 2026-09-08
 **Maintained By**: [@9-71](https://github.com/9-71) (`rhino-f1-dev` branch)
