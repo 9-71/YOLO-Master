@@ -18,6 +18,15 @@ dispatcher-produced artifact manifest (or the validated image-artifact scan).
 The route performs an exact manifest lookup and never joins client input onto
 filesystem paths, so unlisted files and traversal attempts always 404.
 
+The web root serves the zero-build verification console (``frontend/``):
+visiting ``http://127.0.0.1:8000/`` loads the single-page dispatch/monitoring
+UI with no separate Node.js server. The console can also be opened directly
+from disk via ``file://`` — the default CORS allowlist includes the ``null``
+origin browsers send for such pages, plus both engine origin spellings
+(``localhost``/``127.0.0.1`` on port 8000) because the console's default API
+base URL is ``http://localhost:8000``, making calls from the other spelling
+cross-origin.
+
 Configuration environment variables:
     - ``F1_JOBS_STATE_PATH``: JobsManager persistence file (default
       ``runs/jobs_state.json``, shared with the Gradio WebUI).
@@ -36,6 +45,7 @@ from pathlib import Path
 from fastapi import Depends, FastAPI, HTTPException, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 
 from api.v1.jobs import get_jobs_manager
 from api.v1.jobs import router as jobs_router
@@ -47,6 +57,16 @@ APP_VERSION = "0.1.0"
 
 #: Local frontend development origins allowed by the CORS middleware by default.
 DEV_CORS_ORIGINS: tuple[str, ...] = (
+    # The engine's own bind origins: the console (served at
+    # http://127.0.0.1:8000/) defaults its API base URL to
+    # http://localhost:8000, so browsers preflight calls between the two
+    # host spellings as cross-origin and need both spellings allowlisted.
+    "http://localhost:8000",
+    "http://127.0.0.1:8000",
+    # The "null" origin covers the zero-build verification console opened
+    # directly from disk (file://), where browsers send Origin: null on
+    # cross-origin calls against the local engine.
+    "null",
     "http://localhost:5173",  # Vite
     "http://127.0.0.1:5173",
     "http://localhost:3000",  # Create React App / Next.js
@@ -57,6 +77,9 @@ DEV_CORS_ORIGINS: tuple[str, ...] = (
 
 #: Environment variable overriding the CORS allowlist (comma-separated origins).
 CORS_ORIGINS_ENV = "F1_CORS_ORIGINS"
+#: Directory of the zero-build verification console served at the web root
+#: (``frontend/index.html`` + ``app.js``, plain ES6 + Tailwind CDN).
+FRONTEND_DIR = Path(__file__).resolve().parent / "frontend"
 #: Environment variables controlling the ``python main_engine.py`` bind address.
 ENGINE_HOST_ENV = "F1_ENGINE_HOST"
 ENGINE_PORT_ENV = "F1_ENGINE_PORT"
@@ -83,9 +106,11 @@ def build_cors_origins() -> list[str]:
 def create_app() -> FastAPI:
     """Build and configure the FastAPI application.
 
-    The returned app registers CORS for local frontend development origins,
-    includes the ``/api/v1/jobs`` router, and exposes the fail-closed artifact
-    delivery route at ``/static/artifacts``.
+    The returned app registers CORS for local frontend development origins
+    (including the ``null`` origin used by ``file://`` pages), includes the
+    ``/api/v1/jobs`` router, exposes the fail-closed artifact delivery route
+    at ``/static/artifacts`` and mounts the zero-build verification console
+    (``frontend/``) at the web root.
 
     Returns:
         FastAPI: The configured YOLO-Master F1 task engine application.
@@ -109,21 +134,11 @@ def create_app() -> FastAPI:
     app.add_middleware(
         CORSMiddleware,
         allow_origins=build_cors_origins(),
-        allow_methods=["GET", "POST", "OPTIONS"],
+        allow_methods=["*"],
         allow_headers=["*"],
     )
 
     app.include_router(jobs_router)
-
-    @app.get("/", include_in_schema=False)
-    def root() -> dict[str, str]:
-        """Return engine identity and documentation pointers."""
-        return {
-            "service": APP_TITLE,
-            "version": APP_VERSION,
-            "docs": "/docs",
-            "openapi": "/openapi.json",
-        }
 
     @app.get("/health", tags=["system"], summary="Liveness probe")
     def health() -> dict[str, str]:
@@ -175,6 +190,11 @@ def create_app() -> FastAPI:
 
         media_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
         return FileResponse(target, media_type=media_type, filename=filename)
+
+    # Serve the zero-build verification console (frontend/) at the web root.
+    # Registered last, so every API, health, docs and artifact route declared
+    # above keeps precedence over the static mount.
+    app.mount("/", StaticFiles(directory=FRONTEND_DIR, html=True), name="frontend")
 
     return app
 

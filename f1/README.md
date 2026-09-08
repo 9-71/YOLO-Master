@@ -2,7 +2,7 @@
 
 **Topic**: F1 - YOLO-Master Studio Platform Core
 **Milestone**: Entry Check - 2026-08-24
-**Status**: ✅ **P0 Complete · P1 Complete** · v1.3.0
+**Status**: ✅ **P0 Complete · P1 Complete · P2 Complete** · v1.4.0
 
 ---
 
@@ -315,7 +315,7 @@ The F1 Studio Platform implements the following mandatory security constraints:
 - [ ] Schema & Contract Alignment: Native OpenAPI/Swagger documentation backed by `core/schema.py` (`JobRequest`, `JobStatus`, and error dictionaries)
 - [ ] Non-blocking Lifecycle & Log Streaming: Asynchronous job lifecycle polling, real-time incremental log retrieval, and cooperative cancellation via REST API
 - [ ] Artifact Delivery Endpoints: Direct file inspection, static mount, and artifact manifest download routes
-- [ ] Decoupled Frontend Demo: Lightweight React/SPA or OpenAPI verification console validating decoupled engine architecture
+- [X] Decoupled Frontend Demo: Zero-build verification console (`frontend/index.html` + `app.js`, Tailwind CDN + vanilla ES6) served by the engine at `/` — job dispatch, lifecycle supervision, cursor-based log tailing and artifact inspection against the REST API, with `file://` standalone usage supported via the `null`-origin CORS entry
 
 ---
 
@@ -350,7 +350,23 @@ python smoke/test_f1_smoke.py
 # python smoke/test_f1_smoke.py | Out-File -Encoding utf8 smoke/smoke_run.log
 ```
 
-### 6.3 Inspect Results
+### 6.3 Run the Decoupled Verification Console (P2)
+
+```bash
+# Start the standalone FastAPI engine (no Gradio required)
+python main_engine.py
+
+# The zero-build verification console loads at the web root:
+#   http://127.0.0.1:8000/
+# API docs: http://127.0.0.1:8000/docs   ·   Health probe: http://127.0.0.1:8000/health
+
+# The console can also be opened directly from disk (frontend/index.html via
+# file://) — the engine's CORS allowlist includes the "null" origin such pages
+# send, and the API base defaults to http://localhost:8000. No npm install,
+# no Node.js server, no build step.
+```
+
+### 6.4 Inspect Results
 
 ```bash
 # View execution log

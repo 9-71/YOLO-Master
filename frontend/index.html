@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html lang="en" class="h-full">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="color-scheme" content="dark" />
+  <title>YOLO-Master F1 Verification Console</title>
+  <!-- Zero-build demo console: Tailwind Play CDN + vanilla ES6 in app.js. No npm install required. -->
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="min-h-screen bg-slate-950 text-slate-200 antialiased">
+
+  <!-- Global error / success banner (400 / 404 / 409 / 422 + network failures) -->
+  <div id="banner" class="hidden fixed top-0 inset-x-0 z-50 border-b px-4 py-3 text-sm shadow-lg" role="alert">
+    <div class="max-w-[1600px] mx-auto flex items-start gap-3">
+      <span id="banner-text" class="flex-1 whitespace-pre-wrap break-words"></span>
+      <button id="banner-dismiss" type="button" class="text-current opacity-70 hover:opacity-100 font-bold"
+              aria-label="Dismiss banner">&times;</button>
+    </div>
+  </div>
+
+  <!-- ==================== Connection Header ==================== -->
+  <header class="sticky top-0 z-40 border-b border-slate-800 bg-slate-900/90 backdrop-blur px-4 py-3">
+    <div class="max-w-[1600px] mx-auto flex flex-wrap items-center gap-x-6 gap-y-3">
+      <div class="flex items-baseline gap-2 mr-2">
+        <h1 class="text-lg font-bold tracking-tight text-cyan-400">YOLO-Master</h1>
+        <span class="text-sm text-slate-400">F1 Verification Console</span>
+      </div>
+
+      <div class="flex items-center gap-2">
+        <label for="base-url" class="text-xs uppercase tracking-wider text-slate-500">Engine</label>
+        <input id="base-url" type="text" inputmode="url" spellcheck="false" placeholder="http://localhost:8000"
+               class="w-64 rounded-md border border-slate-700 bg-slate-950 px-3 py-1.5 font-mono text-xs text-slate-200
+                      focus:border-cyan-500 focus:outline-none focus:ring-1 focus:ring-cyan-500" />
+        <button id="base-url-apply" type="button"
+                class="rounded-md border border-slate-700 bg-slate-800 px-3 py-1.5 text-xs font-semibold text-slate-200
+                       hover:bg-slate-700">Apply</button>
+      </div>
+
+      <span id="conn-pill" class="inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-semibold">
+        <span id="conn-dot" class="h-2 w-2 rounded-full bg-slate-500"></span>
+        <span id="conn-text">Checking&hellip;</span>
+      </span>
+
+      <div class="ml-auto flex flex-wrap items-center gap-x-5 gap-y-2 text-xs text-slate-400">
+        <label class="flex cursor-pointer items-center gap-2">
+          <input id="live-jobs" type="checkbox" checked
+                 class="h-3.5 w-3.5 rounded border-slate-600 bg-slate-900 accent-cyan-500" />
+          Live refresh (jobs)
+        </label>
+        <label class="flex cursor-pointer items-center gap-2">
+          <input id="live-logs" type="checkbox" checked
+                 class="h-3.5 w-3.5 rounded border-slate-600 bg-slate-900 accent-cyan-500" />
+          Tail logs
+        </label>
+      </div>
+    </div>
+  </header>
+
+  <main class="mx-auto max-w-[1600px] p-4 grid grid-cols-1 gap-4 lg:grid-cols-3">
+
+    <!-- ==================== Job Dispatch Form ==================== -->
+    <aside class="lg:col-span-1">
+      <section class="rounded-lg border border-slate-800 bg-slate-900">
+        <div class="border-b border-slate-800 px-4 py-3">
+          <h2 class="text-sm font-bold uppercase tracking-wider text-slate-300">Job Dispatch</h2>
+          <p class="mt-0.5 text-xs text-slate-500">POST /api/v1/jobs &mdash; payload follows core/schema.py</p>
+        </div>
+
+        <form id="dispatch-form" class="space-y-4 px-4 py-4">
+          <div>
+            <label for="task-type" class="mb-1 block text-xs font-semibold text-slate-400">Task Type</label>
+            <select id="task-type"
+                    class="w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm focus:border-cyan-500 focus:outline-none">
+              <option value="predict">predict</option>
+              <option value="val">val</option>
+              <option value="diagnose">diagnose</option>
+              <option value="train">train</option>
+              <option value="export">export</option>
+            </select>
+          </div>
+
+          <div>
+            <label for="model-path" class="mb-1 block text-xs font-semibold text-slate-400">Model Path</label>
+            <input id="model-path" type="text" spellcheck="false"
+                   class="w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 font-mono text-xs
+                          focus:border-cyan-500 focus:outline-none" />
+          </div>
+
+          <div>
+            <label for="data-source" class="mb-1 block text-xs font-semibold text-slate-400">Data Source</label>
+            <input id="data-source" type="text" spellcheck="false" placeholder="image / video / directory / dataset YAML"
+                   class="w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 font-mono text-xs
+                          focus:border-cyan-500 focus:outline-none" />
+          </div>
+
+          <div>
+            <label for="device" class="mb-1 block text-xs font-semibold text-slate-400">Device</label>
+            <input id="device" type="text" spellcheck="false" value="0"
+                   class="w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 font-mono text-xs
+                          focus:border-cyan-500 focus:outline-none" />
+            <p class="mt-1 text-[11px] text-slate-500">&quot;0&quot; (CUDA), &quot;cpu&quot;, &quot;mps&quot;, or &quot;0,1&quot;</p>
+          </div>
+
+          <details class="rounded-md border border-slate-800 bg-slate-900/60 px-3 py-2">
+            <summary class="cursor-pointer select-none text-xs font-semibold text-slate-400 hover:text-slate-300">
+              Advanced options
+            </summary>
+            <div class="mt-3 space-y-4">
+              <div>
+                <label for="conf" class="mb-1 block text-xs font-semibold text-slate-400">Confidence Threshold</label>
+                <input id="conf" type="number" min="0.01" max="1" step="0.01" value="0.25"
+                       class="w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 font-mono text-xs
+                              focus:border-cyan-500 focus:outline-none" />
+              </div>
+              <div>
+                <label for="output-dir" class="mb-1 block text-xs font-semibold text-slate-400">Output Directory</label>
+                <input id="output-dir" type="text" spellcheck="false"
+                       class="w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 font-mono text-xs
+                              focus:border-cyan-500 focus:outline-none" />
+              </div>
+              <div>
+                <label for="allowed-paths" class="mb-1 block text-xs font-semibold text-slate-400">
+                  Allowed Paths <span class="font-normal text-slate-500">(comma-separated whitelist roots)</span>
+                </label>
+                <input id="allowed-paths" type="text" spellcheck="false" value="., ultralytics/assets, runs, ckpts"
+                       class="w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 font-mono text-xs
+                              focus:border-cyan-500 focus:outline-none" />
+              </div>
+              <div>
+                <label for="extra-params" class="mb-1 block text-xs font-semibold text-slate-400">
+                  Extra Params <span class="font-normal text-slate-500">(optional JSON object merged into params)</span>
+                </label>
+                <textarea id="extra-params" rows="3" spellcheck="false"
+                          placeholder='e.g. {"epochs": 5, "imgsz": 320}'
+                          class="w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 font-mono text-xs
+                                 focus:border-cyan-500 focus:outline-none"></textarea>
+              </div>
+            </div>
+          </details>
+
+          <button id="dispatch-submit" type="submit"
+                  class="w-full rounded-md bg-cyan-600 px-4 py-2.5 text-sm font-bold text-white transition
+                         hover:bg-cyan-500 disabled:cursor-not-allowed disabled:opacity-50">
+            Dispatch Job
+          </button>
+          <p id="dispatch-feedback" class="hidden text-xs"></p>
+        </form>
+      </section>
+    </aside>
+
+    <!-- ==================== Job Supervision & History ==================== -->
+    <section class="lg:col-span-2 space-y-4">
+      <div class="rounded-lg border border-slate-800 bg-slate-900">
+        <div class="flex items-center justify-between border-b border-slate-800 px-4 py-3">
+          <h2 class="text-sm font-bold uppercase tracking-wider text-slate-300">Job Supervision &amp; History</h2>
+          <button id="jobs-refresh" type="button"
+                  class="rounded-md border border-slate-700 px-2.5 py-1 text-xs font-semibold hover:bg-slate-800">
+            Refresh
+          </button>
+        </div>
+        <div class="overflow-x-auto">
+          <table class="w-full text-left text-sm">
+            <thead class="text-xs uppercase tracking-wider text-slate-500">
+              <tr class="border-b border-slate-800">
+                <th class="px-4 py-2 font-semibold">Job ID</th>
+                <th class="px-4 py-2 font-semibold">Task Type</th>
+                <th class="px-4 py-2 font-semibold">Status</th>
+                <th class="px-4 py-2 font-semibold">Duration</th>
+                <th class="px-4 py-2 font-semibold">Created At</th>
+                <th class="px-4 py-2 text-right font-semibold">Actions</th>
+              </tr>
+            </thead>
+            <tbody id="jobs-body"></tbody>
+          </table>
+        </div>
+        <p id="jobs-empty" class="hidden px-4 py-6 text-center text-xs text-slate-500">
+          No jobs yet &mdash; dispatch one from the form on the left.
+        </p>
+      </div>
+
+      <!-- Selected job detail -->
+      <div id="job-detail" class="hidden rounded-lg border border-slate-800 bg-slate-900">
+        <div class="border-b border-slate-800 px-4 py-3">
+          <h2 class="text-sm font-bold uppercase tracking-wider text-slate-300">Job Details</h2>
+        </div>
+        <div id="job-detail-body" class="px-4 py-4 text-sm"></div>
+      </div>
+    </section>
+  </main>
+
+  <!-- ==================== Terminal + Artifacts ==================== -->
+  <div class="mx-auto max-w-[1600px] px-4 pb-6 grid grid-cols-1 gap-4 lg:grid-cols-2">
+
+    <section class="rounded-lg border border-slate-800 bg-slate-900">
+      <div class="flex flex-wrap items-center gap-3 border-b border-slate-800 px-4 py-3">
+        <h2 class="text-sm font-bold uppercase tracking-wider text-slate-300">Execution Terminal</h2>
+        <span id="terminal-job" class="rounded bg-slate-800 px-2 py-0.5 font-mono text-[11px] text-cyan-300">
+          no job selected
+        </span>
+        <span id="terminal-status" class="hidden"></span>
+        <div class="ml-auto flex items-center gap-4">
+          <label class="flex cursor-pointer items-center gap-2 text-xs text-slate-400">
+            <input id="auto-scroll" type="checkbox" checked
+                   class="h-3.5 w-3.5 rounded border-slate-600 bg-slate-900 accent-cyan-500" />
+            Auto-scroll
+          </label>
+          <button id="terminal-clear" type="button"
+                  class="rounded-md border border-slate-700 px-2.5 py-1 text-xs font-semibold hover:bg-slate-800">
+            Clear Screen
+          </button>
+        </div>
+      </div>
+      <div class="p-3">
+        <pre id="terminal-body"
+             class="h-80 overflow-y-auto rounded-md bg-black p-3 font-mono text-[11px] leading-relaxed text-emerald-400"></pre>
+      </div>
+    </section>
+
+    <section class="rounded-lg border border-slate-800 bg-slate-900">
+      <div class="flex flex-wrap items-center gap-3 border-b border-slate-800 px-4 py-3">
+        <h2 class="text-sm font-bold uppercase tracking-wider text-slate-300">Artifact Inspector</h2>
+        <span id="artifact-count" class="text-xs text-slate-500"></span>
+        <button id="artifacts-refresh" type="button"
+                class="ml-auto rounded-md border border-slate-700 px-2.5 py-1 text-xs font-semibold hover:bg-slate-800">
+          Refresh
+        </button>
+      </div>
+      <div class="max-h-96 overflow-y-auto p-3">
+        <div id="artifact-gallery" class="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-4"></div>
+        <ul id="artifact-files" class="space-y-1"></ul>
+        <p id="artifacts-empty" class="hidden py-6 text-center text-xs text-slate-500">
+          No artifacts yet &mdash; they appear once the selected job completes.
+        </p>
+      </div>
+    </section>
+  </div>
+
+  <!-- Lightbox for full-size artifact preview -->
+  <div id="lightbox" class="hidden fixed inset-0 z-50 cursor-zoom-out items-center justify-center bg-black/90 p-6">
+    <img id="lightbox-img" src="" alt="Artifact preview"
+         class="max-h-[90vh] max-w-full rounded-md border border-slate-700 object-contain" />
+  </div>
+
+  <footer class="mx-auto max-w-[1600px] px-4 pb-4 text-center text-[11px] text-slate-600">
+    Zero-build console &mdash; served by the engine at <span class="font-mono">/</span>, or open this file directly
+    (<span class="font-mono">file://</span>); API base defaults to
+    <span class="font-mono">http://localhost:8000</span>. Errors 400 / 404 / 409 / 422 surface as banners above.
+  </footer>
+
+  <script src="app.js"></script>
+</body>
+</html>
