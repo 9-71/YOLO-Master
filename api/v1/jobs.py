@@ -7,9 +7,10 @@ are validated with Pydantic against ``core/schema.py`` (``JobRequest``,
 ``JobStatus``, ``TaskType``), and every response log line / error message is
 routed through :func:`core.security.sanitize_log_text`.
 
-Endpoints:
-    POST   /api/v1/jobs/                    Submit a new job (201 Created)
-    GET    /api/v1/jobs/                    List recent jobs (limit/offset pagination)
+Endpoints (the collection routes accept both ``/api/v1/jobs`` and
+``/api/v1/jobs/`` — browsers and CLI clients disagree on the canonical form):
+    POST   /api/v1/jobs[/]                  Submit a new job (201 Created)
+    GET    /api/v1/jobs[/]                  List recent jobs (limit/offset pagination)
     GET    /api/v1/jobs/{job_id}            Current status and metadata (404 when unknown)
     POST   /api/v1/jobs/{job_id}/cancel     Cooperative cancellation (202/409/404)
     GET    /api/v1/jobs/{job_id}/logs       Sanitized logs (offset/limit windows)
@@ -149,6 +150,15 @@ class ArtifactsResponse(BaseModel):
     image_artifacts: list[str]
 
 
+# Collection routes are bound under both slash spellings so the frontend and
+# ad-hoc clients (which mix "/api/v1/jobs" and "/api/v1/jobs/") never fall
+# through to the root static mount's 404 for the unmatched one.
+@router.post(
+    "",
+    response_model=JobRequest,
+    status_code=status.HTTP_201_CREATED,
+    summary="Submit a new job",
+)
 @router.post(
     "/",
     response_model=JobRequest,
@@ -176,6 +186,11 @@ def create_job(payload: JobRequest, manager: JobsManager = MANAGER_DEPENDENCY) -
         ) from exc
 
 
+@router.get(
+    "",
+    response_model=JobListResponse,
+    summary="List recent jobs",
+)
 @router.get(
     "/",
     response_model=JobListResponse,

@@ -2,7 +2,7 @@
 
 This module persists the 48 verification checks executed against
 ``main_engine.app`` while the P2 core engine was validated interactively.
-The checks are organized into eight test functions — one per verified
+The checks are organized into ten test functions — one per verified
 behavior, six assertions each — and are intentionally CPU-only: every
 submission runs against an in-memory :class:`f1.jobs_manager.JobsManager`
 whose dispatcher is replaced by a stub, so no model is loaded and no
@@ -113,6 +113,18 @@ def test_submit_job_validation_and_conflict(client: TestClient) -> None:
     assert "dup-001" in duplicate.json()["detail"]
 
 
+def test_collection_endpoints_accept_both_slash_spellings(client: TestClient) -> None:
+    """``/api/v1/jobs`` and ``/api/v1/jobs/`` both list and submit (no redirects)."""
+    bare = client.get("/api/v1/jobs")
+    assert bare.status_code == 200
+    assert bare.json()["jobs"] == []
+    slashed = client.get("/api/v1/jobs/")
+    assert slashed.status_code == 200
+    assert slashed.json()["jobs"] == []
+    assert client.post("/api/v1/jobs", json=_job_payload("slash-001")).status_code == 201
+    assert client.post("/api/v1/jobs/", json=_job_payload("slash-002")).status_code == 201
+
+
 def test_security_fail_closed(client: TestClient) -> None:
     """Dangerous payload flags are overridden server-side and traversal always 404s."""
     shell = client.post(
@@ -165,6 +177,24 @@ def test_job_status_and_lifecycle(client: TestClient, api_manager: JobsManager) 
     assert body["status"] == "completed"
     assert body["duration"].endswith("s")
     assert body["artifact_count"] == 0
+
+
+def test_unhandled_execution_exception_populates_error(client: TestClient, api_manager: JobsManager) -> None:
+    """An unhandled dispatcher exception fails the job with a non-null structured error."""
+
+    def _raise(job: JobRequest) -> JobRequest:
+        """Dispatcher stub raising an unexpected exception mid-execution."""
+        raise KeyError("missing model param 'weights'")
+
+    api_manager.dispatcher.execute = _raise  # type: ignore[method-assign]
+    submitted = client.post("/api/v1/jobs/", json=_job_payload("boom-001"))
+    assert submitted.status_code == 201
+    body = _poll_status(client, "boom-001")
+    assert body["status"] == "failed"
+    assert body["error_code"] == "EXECUTION_FAILED"
+    assert "missing model param" in body["error_message"]
+    logs = client.get("/api/v1/jobs/boom-001/logs").json()["logs"]
+    assert any("KeyError" in line and "missing model param" in line for line in logs)
 
 
 def test_job_cancellation(client: TestClient, api_manager: JobsManager) -> None:

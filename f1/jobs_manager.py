@@ -21,6 +21,9 @@ Security invariants (unchanged from the UI path):
       dispatcher may populate it after a successful execution.
     - All log lines are appended via ``JobRequest.append_log``, which routes
       every line through :func:`core.security.sanitize_log_text`.
+    - An unhandled exception in the execution worker fails the job with
+      ``error_code="EXECUTION_FAILED"`` and a sanitized traceback appended to
+      its logs, so a failed job never reports ``null`` error fields.
 
 Example:
     >>> from core.schema import JobRequest, TaskType
@@ -36,12 +39,14 @@ from __future__ import annotations
 import json
 import os
 import threading
+import traceback
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from core.schema import JobRequest, JobStatus, SecurityConstraints, TaskType
+from core.schema import ErrorInfo, JobRequest, JobStatus, SecurityConstraints, TaskType
+from core.security import sanitize_log_text
 from f1.dispatcher import JobDispatcherStateMachine
 
 #: Job states that still require high-frequency lifecycle polling.
@@ -398,6 +403,15 @@ class JobsManager:
             with self.lock:
                 if job_id in self.jobs:
                     self.jobs[job_id].status = JobStatus.FAILED
+                    # Fail-closed error attribution: the unhandled exception is
+                    # recorded (sanitized) as the job's structured error so the
+                    # API never reports null error_code/error_message on a
+                    # FAILED job; the sanitized traceback follows in the logs.
+                    self.jobs[job_id].error = ErrorInfo(
+                        code="EXECUTION_FAILED",
+                        message=sanitize_log_text(str(e)),
+                    )
+                    self.job_logs.setdefault(job_id, []).append(sanitize_log_text(traceback.format_exc()))
                     self._save()
 
     def _append_log(self, job_id: str, message: str) -> None:

@@ -31,6 +31,12 @@
 const BASE_URL_STORAGE_KEY = "f1.console.baseUrl";
 /** Default engine address (matches `python main_engine.py`). */
 const DEFAULT_BASE_URL = "http://localhost:8000";
+/**
+ * Canonical job-collection path (no trailing slash). The engine serves both
+ * `/api/v1/jobs` and `/api/v1/jobs/`, so keeping every call site on this
+ * constant stays clean regardless of slash formatting.
+ */
+const JOBS_PATH = "/api/v1/jobs";
 
 /** Polling intervals in milliseconds. */
 const POLL_MS = { jobs: 2000, logs: 1000, health: 5000 };
@@ -367,7 +373,7 @@ async function onDispatchSubmit(event) {
   submitBtn.disabled = true;
   submitBtn.textContent = "Dispatching…";
   try {
-    const job = await api("/api/v1/jobs/", { method: "POST", body: JSON.stringify(payload) });
+    const job = await api(JOBS_PATH, { method: "POST", body: JSON.stringify(payload) });
     feedback.textContent = `✅ Job ${job.job_id} submitted (201) — selected in console`;
     feedback.className = "text-xs font-semibold text-emerald-400";
     showBanner("success", `Job ${job.job_id} dispatched successfully — monitoring now.`);
@@ -498,7 +504,7 @@ function renderJobs() {
 /** Fetch the recent-jobs listing and re-render the table. */
 async function refreshJobs() {
   try {
-    const body = await api(`/api/v1/jobs?limit=${JOBS_LIST_LIMIT}`);
+    const body = await api(`${JOBS_PATH}?limit=${JOBS_LIST_LIMIT}`);
     state.jobs = body.jobs;
     renderJobs();
     setConnState("online");
