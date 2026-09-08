@@ -362,7 +362,7 @@ ls -lh runs/detect/runs/predict/job_20260824_f1_001/
 # Validate contract schema
 python -c "
 import json
-from smoke.f1.test_f1_smoke import JobRequest
+from f1.test_f1_smoke import JobRequest
 with open('smoke/f1/job_request_draft.json') as f:
     JobRequest(**json.load(f))
 print('Contract validation passed')

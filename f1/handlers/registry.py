@@ -18,7 +18,7 @@ from typing import TYPE_CHECKING, ClassVar, TypeVar
 if TYPE_CHECKING:
     from collections.abc import Callable
 
-    from smoke.f1.handlers.base import BaseTaskHandler
+    from f1.handlers.base import BaseTaskHandler
 
 # Type variable for handler classes (must inherit BaseTaskHandler)
 THandler = TypeVar("THandler", bound="BaseTaskHandler")
@@ -36,8 +36,8 @@ class TaskHandlerRegistry:
         at module import time (before any concurrent dispatch operations).
 
     Example:
-        >>> from smoke.f1.handlers.registry import TaskHandlerRegistry
-        >>> from smoke.f1.handlers.base import BaseTaskHandler
+        >>> from f1.handlers.registry import TaskHandlerRegistry
+        >>> from f1.handlers.base import BaseTaskHandler
         >>>
         >>> @TaskHandlerRegistry.register("predict")
         ... class PredictHandler(BaseTaskHandler):
@@ -111,7 +111,7 @@ class TaskHandlerRegistry:
 
             # Type safety check (runtime verification of BaseTaskHandler inheritance)
             # Note: Abstract method implementation is checked by Python's ABC at instantiation
-            from smoke.f1.handlers.base import BaseTaskHandler
+            from f1.handlers.base import BaseTaskHandler
 
             if not issubclass(handler_class, BaseTaskHandler):
                 raise TypeError(

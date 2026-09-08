@@ -24,9 +24,9 @@ import pytest
 project_root = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(project_root))
 
-from smoke.f1.handlers import PathWhitelistViolationError, TaskHandlerRegistry
-from smoke.f1.handlers.export import SUPPORTED_EXPORT_FORMATS, ExportHandler
-from smoke.f1.handlers.train import TrainHandler
+from f1.handlers import PathWhitelistViolationError, TaskHandlerRegistry
+from f1.handlers.export import SUPPORTED_EXPORT_FORMATS, ExportHandler
+from f1.handlers.train import TrainHandler
 
 # Smoke checkpoint shipped with the F1 entry smoke test (smoke/f1/yolov8n.pt)
 SMOKE_MODEL = Path(__file__).parent / "yolov8n.pt"

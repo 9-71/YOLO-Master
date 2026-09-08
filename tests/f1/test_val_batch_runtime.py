@@ -28,11 +28,11 @@ project_root = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(project_root))
 
 from core.schema import JobRequest, JobStatus, OutputConfig, RuntimeTracking, SecurityConstraints, TaskType
-from smoke.f1.dispatcher import JobDispatcherStateMachine
-from smoke.f1.handlers import TaskHandlerRegistry
-from smoke.f1.handlers.base import BaseTaskHandler, CooperativeCancellationError, PathWhitelistViolationError
-from smoke.f1.handlers.predict import PredictHandler
-from smoke.f1.handlers.val import ValHandler
+from f1.dispatcher import JobDispatcherStateMachine
+from f1.handlers import TaskHandlerRegistry
+from f1.handlers.base import BaseTaskHandler, CooperativeCancellationError, PathWhitelistViolationError
+from f1.handlers.predict import PredictHandler
+from f1.handlers.val import ValHandler
 
 # Smoke checkpoint shipped with the F1 entry smoke test (smoke/f1/yolov8n.pt)
 SMOKE_MODEL = Path(__file__).parent / "yolov8n.pt"

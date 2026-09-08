@@ -21,8 +21,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from smoke.f1.handlers.base import BaseTaskHandler, PathWhitelistViolationError
-from smoke.f1.handlers.registry import TaskHandlerRegistry
+from f1.handlers.base import BaseTaskHandler, PathWhitelistViolationError
+from f1.handlers.registry import TaskHandlerRegistry
 
 # Media file extensions recognized when expanding a directory data_source.
 # Fail-closed policy: files with other extensions inside a directory are ignored.

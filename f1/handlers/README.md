@@ -7,7 +7,7 @@ Decorator-based task handler decoupling framework providing type-safe, security-
 ### Define a Handler
 
 ```python
-from smoke.f1.handlers import BaseTaskHandler, TaskHandlerRegistry
+from f1.handlers import BaseTaskHandler, TaskHandlerRegistry
 
 
 @TaskHandlerRegistry.register("predict")

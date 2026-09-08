@@ -17,8 +17,8 @@ import shutil
 from pathlib import Path
 from typing import Any
 
-from smoke.f1.handlers.base import BaseTaskHandler, PathWhitelistViolationError
-from smoke.f1.handlers.registry import TaskHandlerRegistry
+from f1.handlers.base import BaseTaskHandler, PathWhitelistViolationError
+from f1.handlers.registry import TaskHandlerRegistry
 
 # Closed allowlist of Ultralytics YOLO export formats supported by the F1 platform.
 # Fail-closed policy: any format outside this set is rejected at validation stage

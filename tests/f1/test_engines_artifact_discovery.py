@@ -23,11 +23,11 @@ from typing import Any
 project_root = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(project_root))
 
-from smoke.f1.handlers.diagnose import DiagnoseHandler
-from smoke.f1.handlers.export import ExportHandler
-from smoke.f1.handlers.predict import PredictHandler
-from smoke.f1.handlers.train import TrainHandler
-from smoke.f1.handlers.val import ValHandler
+from f1.handlers.diagnose import DiagnoseHandler
+from f1.handlers.export import ExportHandler
+from f1.handlers.predict import PredictHandler
+from f1.handlers.train import TrainHandler
+from f1.handlers.val import ValHandler
 
 
 def _preplace_full_tree(job_dir: Path) -> None:

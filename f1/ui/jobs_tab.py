@@ -42,8 +42,8 @@ from typing import Any
 import gradio as gr
 
 from core.schema import JobRequest, JobStatus, SecurityConstraints, TaskType
-from smoke.f1.dispatcher import JobDispatcherStateMachine
-from smoke.f1.ui.i18n import DEFAULT_LANGUAGE, get_columns, get_text
+from f1.dispatcher import JobDispatcherStateMachine
+from f1.ui.i18n import DEFAULT_LANGUAGE, get_columns, get_text
 
 #: Job states that still require high-frequency lifecycle polling.
 ACTIVE_STATUSES = frozenset({"PENDING", "RUNNING"})

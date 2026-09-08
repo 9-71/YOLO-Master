@@ -44,8 +44,8 @@ from typing import Any
 
 from core.schema import ErrorInfo, JobRequest, JobStatus
 from core.security import REDACTED, sanitize_env_dict, sanitize_log_text
-from smoke.f1.handlers.base import CooperativeCancellationError, PathWhitelistViolationError
-from smoke.f1.handlers.registry import TaskHandlerRegistry
+from f1.handlers.base import CooperativeCancellationError, PathWhitelistViolationError
+from f1.handlers.registry import TaskHandlerRegistry
 
 # How often the dispatcher polls cancel_requested while a job is in flight (seconds).
 # A small interval keeps cancellation latency low without busy-waiting.

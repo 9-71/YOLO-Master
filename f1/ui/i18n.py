@@ -14,7 +14,7 @@ Chinese. It backs the whole Studio app:
 Unknown languages and missing keys always fall back to English.
 
 Example:
-    >>> from smoke.f1.ui.i18n import get_text
+    >>> from f1.ui.i18n import get_text
     >>> get_text("zh", "button.submit")
     '🔥 提交任务'
 """

@@ -27,8 +27,8 @@ import gradio as gr
 import pytest
 
 from core.schema import ErrorInfo, JobRequest, JobStatus, OutputConfig, TaskType
-from smoke.f1.ui.i18n import get_text
-from smoke.f1.ui.jobs_tab import (
+from f1.ui.i18n import get_text
+from f1.ui.jobs_tab import (
     _DATAFRAME_HEADER_MENU_CSS,
     POLL_SLOW_SECONDS,
     JobsManager,

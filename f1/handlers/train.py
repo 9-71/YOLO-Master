@@ -21,8 +21,8 @@ import warnings
 from pathlib import Path
 from typing import Any
 
-from smoke.f1.handlers.base import BaseTaskHandler, PathWhitelistViolationError
-from smoke.f1.handlers.registry import TaskHandlerRegistry
+from f1.handlers.base import BaseTaskHandler, PathWhitelistViolationError
+from f1.handlers.registry import TaskHandlerRegistry
 
 
 @TaskHandlerRegistry.register("train")

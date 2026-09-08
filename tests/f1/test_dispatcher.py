@@ -21,8 +21,8 @@ from __future__ import annotations
 import pytest
 
 from core.schema import JobRequest, JobStatus, OutputConfig, RuntimeTracking, SecurityConstraints, TaskType
-from smoke.f1.dispatcher import JobDispatcherStateMachine
-from smoke.f1.handlers.registry import TaskHandlerRegistry
+from f1.dispatcher import JobDispatcherStateMachine
+from f1.handlers.registry import TaskHandlerRegistry
 
 
 class TestJobDispatcherDynamicDispatch:

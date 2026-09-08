@@ -20,9 +20,9 @@ import pytest
 project_root = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(project_root))
 
-from smoke.f1.handlers import PathWhitelistViolationError, TaskHandlerRegistry
-from smoke.f1.handlers.diagnose import DiagnoseHandler
-from smoke.f1.handlers.predict import PredictHandler
+from f1.handlers import PathWhitelistViolationError, TaskHandlerRegistry
+from f1.handlers.diagnose import DiagnoseHandler
+from f1.handlers.predict import PredictHandler
 
 
 class TestPredictHandlerRegistration:

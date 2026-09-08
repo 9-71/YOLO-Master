@@ -28,8 +28,8 @@ import numpy as np
 import pandas as pd
 import torch
 
-from smoke.f1.ui.i18n import DEFAULT_LANGUAGE, LANGUAGE_CHOICES, get_columns, get_text
-from smoke.f1.ui.jobs_tab import JobsManager, create_jobs_tab, jobs_tab_language_updates
+from f1.ui.i18n import DEFAULT_LANGUAGE, LANGUAGE_CHOICES, get_columns, get_text
+from f1.ui.jobs_tab import JobsManager, create_jobs_tab, jobs_tab_language_updates
 from ultralytics import YOLO
 
 # Ignore unnecessary warnings

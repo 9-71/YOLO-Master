@@ -32,7 +32,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from smoke.f1.skills import PredictSkill, SystemDoctorSkill
+from f1.skills import PredictSkill, SystemDoctorSkill
 
 
 class TestSystemDoctorSkill:

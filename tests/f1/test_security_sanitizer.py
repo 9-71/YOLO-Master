@@ -24,9 +24,9 @@ import pytest
 
 from core.schema import JobRequest, JobStatus, RuntimeTracking, SecurityConstraints, TaskType
 from core.security import REDACTED, sanitize_env_dict, sanitize_log_text
-from smoke.f1.dispatcher import JobDispatcherStateMachine
-from smoke.f1.handlers.base import BaseTaskHandler
-from smoke.f1.handlers.registry import TaskHandlerRegistry
+from f1.dispatcher import JobDispatcherStateMachine
+from f1.handlers.base import BaseTaskHandler
+from f1.handlers.registry import TaskHandlerRegistry
 
 # Plaintext secret used by the end-to-end test. Defined as a constant (never
 # inline in the raising statement) so the traceback's source line does not

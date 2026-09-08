@@ -20,7 +20,7 @@ smoke/f1/handlers/
 Defines the core contract for task handlers:
 
 ```python
-from smoke.f1.handlers import BaseTaskHandler
+from f1.handlers import BaseTaskHandler
 
 
 class YourTaskHandler(BaseTaskHandler):
@@ -44,7 +44,7 @@ class YourTaskHandler(BaseTaskHandler):
 Provides decorator registration and factory method retrieval:
 
 ```python
-from smoke.f1.handlers import TaskHandlerRegistry, BaseTaskHandler
+from f1.handlers import TaskHandlerRegistry, BaseTaskHandler
 
 
 @TaskHandlerRegistry.register("predict")
@@ -87,7 +87,7 @@ class PredictHandler(BaseTaskHandler):
 Dispatcher usage example:
 
 ```python
-from smoke.f1.handlers import PathWhitelistViolationError, TaskHandlerRegistry
+from f1.handlers import PathWhitelistViolationError, TaskHandlerRegistry
 
 
 def dispatch_job(job_request):

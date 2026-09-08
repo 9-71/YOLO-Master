@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import gradio as gr
 
-from smoke.f1.ui.jobs_tab import JobsManager, create_jobs_tab
+from f1.ui.jobs_tab import JobsManager, create_jobs_tab
 
 
 def create_demo_app() -> gr.Blocks:
@@ -133,7 +133,7 @@ def create_demo_app() -> gr.Blocks:
                     ### JobsManager Class
 
                     ```python
-                    from smoke.f1.ui.jobs_tab import JobsManager
+                    from f1.ui.jobs_tab import JobsManager
 
                     manager = JobsManager()
 
@@ -169,7 +169,7 @@ def create_demo_app() -> gr.Blocks:
                     ### create_jobs_tab Function
 
                     ```python
-                    from smoke.f1.ui.jobs_tab import create_jobs_tab
+                    from f1.ui.jobs_tab import create_jobs_tab
 
                     jobs_manager = JobsManager()
                     jobs_tab = create_jobs_tab(jobs_manager)

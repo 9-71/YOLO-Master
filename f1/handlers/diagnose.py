@@ -18,8 +18,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
-from smoke.f1.handlers.base import BaseTaskHandler
-from smoke.f1.handlers.registry import TaskHandlerRegistry
+from f1.handlers.base import BaseTaskHandler
+from f1.handlers.registry import TaskHandlerRegistry
 
 
 @TaskHandlerRegistry.register("diagnose")

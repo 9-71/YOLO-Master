@@ -37,7 +37,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from core.schema import JobRequest, JobStatus, SecurityConstraints, TaskType
-from smoke.f1.dispatcher import JobDispatcherStateMachine
+from f1.dispatcher import JobDispatcherStateMachine
 
 
 class SystemDoctorSkill:

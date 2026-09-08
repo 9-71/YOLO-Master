@@ -17,8 +17,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
-from smoke.f1.handlers.base import BaseTaskHandler, CooperativeCancellationError, PathWhitelistViolationError
-from smoke.f1.handlers.registry import TaskHandlerRegistry
+from f1.handlers.base import BaseTaskHandler, CooperativeCancellationError, PathWhitelistViolationError
+from f1.handlers.registry import TaskHandlerRegistry
 
 
 @TaskHandlerRegistry.register("val")

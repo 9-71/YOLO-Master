@@ -22,8 +22,8 @@ from pathlib import Path
 import gradio as gr
 import pytest
 
-from smoke.f1.ui.i18n import DEFAULT_LANGUAGE, get_columns, get_text
-from smoke.f1.ui.jobs_tab import (
+from f1.ui.i18n import DEFAULT_LANGUAGE, get_columns, get_text
+from f1.ui.jobs_tab import (
     SECURITY_ALERT_CODES,
     JobsManager,
     alert_banner,

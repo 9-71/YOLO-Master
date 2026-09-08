@@ -5,7 +5,7 @@ This package provides the core architecture for YOLO-Master F1 platform task exe
 - TaskHandlerRegistry: Decorator-based registration and factory for handler lookup
 
 Usage:
-    from smoke.f1.handlers import BaseTaskHandler, TaskHandlerRegistry
+    from f1.handlers import BaseTaskHandler, TaskHandlerRegistry
 
     @TaskHandlerRegistry.register("predict")
     class PredictHandler(BaseTaskHandler):
@@ -24,8 +24,8 @@ Usage:
 """
 
 # Auto-import concrete handlers to trigger @register decorators
-from smoke.f1.handlers import diagnose, export, predict, train, val  # noqa: F401
-from smoke.f1.handlers.base import BaseTaskHandler, PathWhitelistViolationError
-from smoke.f1.handlers.registry import TaskHandlerRegistry
+from f1.handlers import diagnose, export, predict, train, val  # noqa: F401
+from f1.handlers.base import BaseTaskHandler, PathWhitelistViolationError
+from f1.handlers.registry import TaskHandlerRegistry
 
 __all__ = ["BaseTaskHandler", "PathWhitelistViolationError", "TaskHandlerRegistry"]
