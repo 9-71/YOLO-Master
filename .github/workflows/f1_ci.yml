@@ -35,8 +35,8 @@ jobs:
           python -m pip install --upgrade pip
           # CPU-only PyTorch wheels: small and fast to download on CI, sufficient for smoke tests
           pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
-          # Lightweight tooling, UI/schema deps and ONNX export deps required by f1 and core
-          pip install ruff pytest pytest-cov pydantic gradio pyyaml onnx onnxslim onnxruntime
+          # Lightweight tooling, UI/schema deps and ONNX export deps required by f1, core and the API engine
+          pip install ruff pytest pytest-cov pydantic gradio fastapi httpx pyyaml onnx onnxslim onnxruntime
           # Install the local package structure only; runtime deps are provided by the steps above
           pip install -e . --no-deps || true
           # Best-effort install of the remaining runtime deps (opencv, numpy, pandas, etc.)
@@ -50,14 +50,14 @@ jobs:
             -o tests/f1/yolov8n.pt
 
       - name: Ruff lint (restricted scope)
-        run: ruff check f1/ tests/f1/ smoke/ core/ app.py
+        run: ruff check f1/ tests/f1/ smoke/ core/ api/ main_engine.py tests/api/ app.py
 
       - name: Ruff format check (restricted scope)
-        run: ruff format --check f1/ tests/f1/ smoke/ core/ app.py
+        run: ruff format --check f1/ tests/f1/ smoke/ core/ api/ main_engine.py tests/api/ app.py
 
       - name: Run F1 unit tests with coverage
         run: |
-          pytest tests/f1/ smoke/ \
+          pytest tests/f1/ smoke/ tests/api/ \
             --cov=f1 \
             --cov=core \
             --cov-report=term-missing \
