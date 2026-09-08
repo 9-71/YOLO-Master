@@ -11,7 +11,7 @@ Covers:
       component (regression for the language switch crash)
 
 Run:
-    pytest smoke/f1/ui/test_app_integration.py -v
+    pytest f1/ui/test_app_integration.py -v
 """
 
 from __future__ import annotations

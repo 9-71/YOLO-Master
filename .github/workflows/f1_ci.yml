@@ -42,10 +42,10 @@ jobs:
 
       - name: Fetch F1 checkpoint
         run: |
-          # f1/yolov8n.pt is gitignored (*.pt); fetch it so the export E2E tests can run
-          mkdir -p f1
+          # tests/f1/yolov8n.pt is gitignored (*.pt); fetch it so the export E2E tests can run
+          mkdir -p tests/f1
           curl -fL https://github.com/ultralytics/assets/releases/download/v8.4.0/yolov8n.pt \
-            -o f1/yolov8n.pt
+            -o tests/f1/yolov8n.pt
 
       - name: Ruff lint (restricted scope)
         run: ruff check f1/ tests/f1/ smoke/ core/ app.py

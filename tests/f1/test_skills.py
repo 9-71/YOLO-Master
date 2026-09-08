@@ -18,9 +18,9 @@ Test Coverage:
         * Error code mapping (security violations, validation failures)
 
 Usage:
-    pytest smoke/f1/test_skills.py -v
-    pytest smoke/f1/test_skills.py::TestSystemDoctorSkill -v
-    pytest smoke/f1/test_skills.py::TestPredictSkill -v
+    pytest f1/test_skills.py -v
+    pytest f1/test_skills.py::TestSystemDoctorSkill -v
+    pytest f1/test_skills.py::TestPredictSkill -v
 """
 
 from __future__ import annotations

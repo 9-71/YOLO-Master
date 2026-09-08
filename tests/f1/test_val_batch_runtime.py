@@ -34,7 +34,7 @@ from f1.handlers.base import BaseTaskHandler, CooperativeCancellationError, Path
 from f1.handlers.predict import PredictHandler
 from f1.handlers.val import ValHandler
 
-# Smoke checkpoint shipped with the F1 entry smoke test (smoke/f1/yolov8n.pt)
+# Smoke checkpoint shipped with the F1 entry smoke test (f1/yolov8n.pt)
 SMOKE_MODEL = Path(__file__).parent / "yolov8n.pt"
 
 # Reference image for real inference tests (bundled with Ultralytics)

@@ -4,7 +4,7 @@ This module validates the Jobs Tab functionality including job submission,
 status monitoring, log streaming, artifact capture, and cancellation handling.
 
 Run:
-    pytest smoke/f1/ui/test_jobs_tab.py -v
+    pytest f1/ui/test_jobs_tab.py -v
 """
 
 from __future__ import annotations

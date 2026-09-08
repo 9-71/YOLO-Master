@@ -82,7 +82,7 @@ handlers/
 ## Testing
 
 ```bash
-cd smoke/f1
+cd f1
 python -m pytest test_handlers_framework.py -v
 ```
 

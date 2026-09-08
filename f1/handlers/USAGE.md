@@ -7,7 +7,7 @@ This is the decoupled task handler framework for the YOLO-Master F1 platform, pr
 ## Architecture
 
 ```
-smoke/f1/handlers/
+f1/handlers/
 ├── __init__.py          # Module entry point, exports BaseTaskHandler and TaskHandlerRegistry
 ├── base.py              # BaseTaskHandler abstract base class
 └── registry.py          # TaskHandlerRegistry and factory
@@ -237,7 +237,7 @@ handler = TaskHandlerRegistry.get("unknown_task")
 Run unit tests:
 
 ```bash
-cd smoke/f1
+cd f1
 python -m pytest test_handlers_framework.py -v
 ```
 
@@ -309,9 +309,9 @@ class TrainHandler(BaseTaskHandler):
 
 ## References
 
-- **F1 Smoke Test**: `smoke/f1/test_f1_smoke.py`
-- **JobRequest Contract**: `smoke/f1/README.md` (Section 2.2)
-- **Security Model**: `smoke/f1/README.md` (Section 4)
+- **F1 Smoke Test**: `f1/test_f1_smoke.py`
+- **JobRequest Contract**: `f1/README.md` (Section 2.2)
+- **Security Model**: `f1/README.md` (Section 4)
 - **Ultralytics YOLO**: https://docs.ultralytics.com/
 
 ---

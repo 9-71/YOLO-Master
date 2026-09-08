@@ -9,7 +9,7 @@ mocked Ultralytics engine, and asserts the returned artifact list equals the
 full sorted tree exactly.  No real model work is performed.
 
 Run:
-    pytest smoke/f1/test_engines_artifact_discovery.py -v
+    pytest f1/test_engines_artifact_discovery.py -v
 """
 
 from __future__ import annotations

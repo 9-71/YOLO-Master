@@ -5,7 +5,7 @@ contract consumed by the dispatcher runtime, the handler framework, the Gradio
 Jobs UI and the agent skill layer.
 
 History: the models below originally lived in the entry contract module
-``smoke/f1/test_f1_smoke.py`` (P0 legacy debt). P1 relocated them here so that
+``f1/test_f1_smoke.py`` (P0 legacy debt). P1 relocated them here so that
 production modules stop importing data structures from a test file; the legacy
 module now re-imports them from this module.
 

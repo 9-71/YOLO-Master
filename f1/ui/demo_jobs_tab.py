@@ -4,7 +4,7 @@ This script demonstrates how to integrate the Jobs Tab into the existing Gradio 
 It provides a minimal example that can be extended with the full Studio UI from app.py.
 
 Usage:
-    python smoke/f1/ui/demo_jobs_tab.py
+    python f1/ui/demo_jobs_tab.py
 
 Requirements:
     - gradio >= 4.0

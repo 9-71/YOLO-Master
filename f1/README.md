@@ -341,11 +341,11 @@ python -c "from ultralytics import YOLO; print(YOLO.__version__)"
 cd path/to/YOLO-Master
 
 # Execute multi-scenario smoke test suite
-python smoke/f1/test_f1_smoke.py
+python f1/test_f1_smoke.py
 
 # Optional: Capture and update run log
 # Linux / macOS / Git Bash:
-# python smoke/f1/test_f1_smoke.py > smoke/f1/smoke_run.log 2>&1
+# python f1/test_f1_smoke.py > f1/smoke_run.log 2>&1
 # Windows PowerShell:
 # python smoke\f1\test_f1_smoke.py | Out-File -Encoding utf8 smoke\f1\smoke_run.log
 ```
@@ -354,7 +354,7 @@ python smoke/f1/test_f1_smoke.py
 
 ```bash
 # View execution log
-cat smoke/f1/smoke_run.log
+cat f1/smoke_run.log
 
 # Verify artifacts
 ls -lh runs/detect/runs/predict/job_20260824_f1_001/
@@ -363,7 +363,7 @@ ls -lh runs/detect/runs/predict/job_20260824_f1_001/
 python -c "
 import json
 from f1.test_f1_smoke import JobRequest
-with open('smoke/f1/job_request_draft.json') as f:
+with open('f1/job_request_draft.json') as f:
     JobRequest(**json.load(f))
 print('Contract validation passed')
 "

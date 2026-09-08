@@ -142,7 +142,7 @@ def run_smoke_test_suite():
     # Scenario 1: E2E Happy Path Execution
     print("\n[Case 1] Contract Parsing & E2E Real Inference Execution...")
     t0 = time.time()
-    with open("smoke/f1/job_request_draft.json", encoding="utf-8-sig") as f:
+    with open("f1/job_request_draft.json", encoding="utf-8-sig") as f:
         data = json.load(f)
     job1 = JobRequest(**data)
     final_job1 = dispatcher.execute(job1)

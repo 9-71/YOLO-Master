@@ -6,8 +6,8 @@
 | **Version** | 1.0 |
 | **Author** | F1 Platform Security Engineering & Technical Writing |
 | **Date** | 2026-09-08 |
-| **Target Scope** | F1 Task Dispatcher (`smoke/f1/dispatcher.py`) & Core Handlers (`smoke/f1/handlers/`), including the credential sanitizer (`core/security.py`) and strongly-typed job contract (`core/schema.py`) |
-| **Test Evidence** | `smoke/f1/test_security_sanitizer.py`, `smoke/f1/test_handlers_framework.py` |
+| **Target Scope** | F1 Task Dispatcher (`f1/dispatcher.py`) & Core Handlers (`f1/handlers/`), including the credential sanitizer (`core/security.py`) and strongly-typed job contract (`core/schema.py`) |
+| **Test Evidence** | `f1/test_security_sanitizer.py`, `f1/test_handlers_framework.py` |
 | **Overall Result** | **13 passed (6 sanitizer + 7 path-whitelist) · 1 skipped (Windows OS symlink privilege) · 0 failed** |
 
 ---
@@ -35,8 +35,8 @@ This report verifies three **official security red lines** and confirms complian
 **In scope:**
 
 - `core/security.py` — log & environment sanitizer (regex redaction patterns + `sanitize_env_dict` / `sanitize_log_text`).
-- `smoke/f1/handlers/base.py` — `BaseTaskHandler`, `_is_path_safe` (directory containment + regex whitelist), `PathWhitelistViolationError`, `allow_shell` prohibition contract.
-- `smoke/f1/dispatcher.py` — `JobDispatcherStateMachine` pre-execution security guard (`SEC_ERR_001`) and exception/log sanitization on the `FAILED` path.
+- `f1/handlers/base.py` — `BaseTaskHandler`, `_is_path_safe` (directory containment + regex whitelist), `PathWhitelistViolationError`, `allow_shell` prohibition contract.
+- `f1/dispatcher.py` — `JobDispatcherStateMachine` pre-execution security guard (`SEC_ERR_001`) and exception/log sanitization on the `FAILED` path.
 - `core/schema.py` — `SecurityConstraints` (fail-closed defaults) and `JobRequest.append_log` (sanitizing log interface).
 
 **Out of scope (future P2):** network-facing API authentication, role-based access control (RBAC), multi-tenant isolation, and cross-process dispatch hardening — documented in §5 Residual Risk.
@@ -128,7 +128,7 @@ Redaction behavior:
 
 ## 4. Execution Results & Coverage
 
-The full sanitizer suite was executed on 2026-09-08 under the project virtual environment (`python -m pytest`) and produced **6 passed in 0.19 s**. Below is the complete verification matrix for `smoke/f1/test_security_sanitizer.py`.
+The full sanitizer suite was executed on 2026-09-08 under the project virtual environment (`python -m pytest`) and produced **6 passed in 0.19 s**. Below is the complete verification matrix for `f1/test_security_sanitizer.py`.
 
 | # | Test Case | Status | Key Assertions | Log / Output Snippet |
 | --- | --- | --- | --- | --- |
