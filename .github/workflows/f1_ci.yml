@@ -15,7 +15,7 @@ permissions:
 
 jobs:
   f1-lint-and-test:
-    name: Lint & Test (smoke/f1 + core)
+    name: Lint & Test (f1 + core)
     runs-on: ubuntu-latest
 
     steps:
@@ -33,30 +33,30 @@ jobs:
           python -m pip install --upgrade pip
           # CPU-only PyTorch wheels: small and fast to download on CI, sufficient for smoke tests
           pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
-          # Lightweight tooling, UI/schema deps and ONNX export deps required by smoke/f1 and core
+          # Lightweight tooling, UI/schema deps and ONNX export deps required by f1 and core
           pip install ruff pytest pytest-cov pydantic gradio pyyaml onnx onnxslim onnxruntime
           # Install the local package structure only; runtime deps are provided by the steps above
           pip install -e . --no-deps || true
           # Best-effort install of the remaining runtime deps (opencv, numpy, pandas, etc.)
           pip install -r requirements.txt || true
 
-      - name: Fetch F1 smoke checkpoint
+      - name: Fetch F1 checkpoint
         run: |
-          # smoke/f1/yolov8n.pt is gitignored (*.pt); fetch it so the export E2E tests can run
-          mkdir -p smoke/f1
+          # f1/yolov8n.pt is gitignored (*.pt); fetch it so the export E2E tests can run
+          mkdir -p f1
           curl -fL https://github.com/ultralytics/assets/releases/download/v8.4.0/yolov8n.pt \
-            -o smoke/f1/yolov8n.pt
+            -o f1/yolov8n.pt
 
       - name: Ruff lint (restricted scope)
-        run: ruff check smoke/ core/ app.py
+        run: ruff check f1/ tests/f1/ smoke/ core/ app.py
 
       - name: Ruff format check (restricted scope)
-        run: ruff format --check smoke/ core/ app.py
+        run: ruff format --check f1/ tests/f1/ smoke/ core/ app.py
 
       - name: Run F1 unit tests with coverage
         run: |
-          pytest smoke/f1/ \
-            --cov=smoke/f1 \
+          pytest tests/f1/ smoke/ \
+            --cov=f1 \
             --cov=core \
             --cov-report=term-missing \
             --cov-report=xml
