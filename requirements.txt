@@ -19,3 +19,9 @@ seaborn>=0.11.0
 
 # LoRA dependencies
 peft>=0.18.0,<0.20.0
+
+# F1 Studio & FastAPI Engine dependencies
+gradio
+pydantic
+fastapi
+uvicorn[standard]

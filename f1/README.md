@@ -55,7 +55,7 @@ The shared `JobRequest` contract serves as the inter-component interface:
 ```json
 {
   "job_id": "string",                    // Unique job identifier
-  "task_type": "predict|train|export|diagnose",
+  "task_type": "predict|train|val|export|diagnose",
   "status": "pending|running|completed|failed",
   "metadata": {
     "created_at": "ISO8601 timestamp",
@@ -341,13 +341,13 @@ python -c "from ultralytics import YOLO; print(YOLO.__version__)"
 cd path/to/YOLO-Master
 
 # Execute multi-scenario smoke test suite
-python f1/test_f1_smoke.py
+python smoke/test_f1_smoke.py
 
 # Optional: Capture and update run log
 # Linux / macOS / Git Bash:
-# python f1/test_f1_smoke.py > f1/smoke_run.log 2>&1
+# python smoke/test_f1_smoke.py > smoke/smoke_run.log 2>&1
 # Windows PowerShell:
-# python smoke\f1\test_f1_smoke.py | Out-File -Encoding utf8 smoke\f1\smoke_run.log
+# python smoke/test_f1_smoke.py | Out-File -Encoding utf8 smoke/smoke_run.log
 ```
 
 ### 6.3 Inspect Results
@@ -362,7 +362,7 @@ ls -lh runs/detect/runs/predict/job_20260824_f1_001/
 # Validate contract schema
 python -c "
 import json
-from f1.test_f1_smoke import JobRequest
+from core.schema import JobRequest
 with open('f1/job_request_draft.json') as f:
     JobRequest(**json.load(f))
 print('Contract validation passed')
@@ -376,7 +376,7 @@ print('Contract validation passed')
 ### 7.1 Current Constraints
 
 - **Single-Task Execution**: No concurrent job execution
-- **Limited Task Types**: Only `predict` implemented in smoke test
+- **Smoke Coverage Focus**: Entry smoke script (`smoke/test_f1_smoke.py`) exercises end-to-end inference (`predict`); all 5 task types are thoroughly covered in `tests/f1/`.
 - **Local-Only Storage**: Artifacts stored on local filesystem
 - **No Retry Mechanism**: Failed jobs require manual resubmission
 

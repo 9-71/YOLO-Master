@@ -5,10 +5,12 @@ on:
     branches:
       - main
       - rhino-f1-dev
+      - feat/p2-fastapi-engine
   pull_request:
     branches:
       - main
       - rhino-f1-dev
+      - feat/p2-fastapi-engine
 
 permissions:
   contents: read
