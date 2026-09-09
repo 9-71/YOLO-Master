@@ -191,6 +191,11 @@ def create_app() -> FastAPI:
         media_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
         return FileResponse(target, media_type=media_type, filename=filename)
 
+    @app.get("/favicon.ico", include_in_schema=False, tags=["system"])
+    def favicon() -> FileResponse:
+        """Serve the official mascot favicon (frontend/favicon.png) at /favicon.ico."""
+        return FileResponse(FRONTEND_DIR / "favicon.png", media_type="image/png")
+
     # Serve the zero-build verification console (frontend/) at the web root.
     # Registered last, so every API, health, docs and artifact route declared
     # above keeps precedence over the static mount.
