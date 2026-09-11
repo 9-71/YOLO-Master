@@ -56,7 +56,7 @@ The shared `JobRequest` contract serves as the inter-component interface:
 {
   "job_id": "string",                    // Unique job identifier
   "task_type": "predict|train|val|export|diagnose",
-  "status": "pending|running|completed|failed",
+  "status": "pending|running|completed|failed|cancelled",
   "metadata": {
     "created_at": "ISO8601 timestamp",
     "created_by": "string",
@@ -102,19 +102,22 @@ The dispatcher enforces strict state transitions to prevent race conditions and 
 
 ```
 PENDING ──┬──> RUNNING ──┬──> COMPLETED (terminal)
-          │              │
-          │              └──> FAILED (terminal)
+          │              ├──> FAILED (terminal)
+          │              └──> CANCELLED (terminal)
           │
-          └──> FAILED (terminal)
+          ├──> FAILED (terminal)
+          └──> CANCELLED (terminal)
 ```
 
 **Transition Rules**:
 
 - `PENDING → RUNNING`: Job execution started
 - `PENDING → FAILED`: Pre-execution validation failure (e.g., security violation)
+- `PENDING → CANCELLED`: User cancellation before worker launch
 - `RUNNING → COMPLETED`: Successful task completion with artifacts
 - `RUNNING → FAILED`: Runtime execution error
-- `COMPLETED` and `FAILED` are **terminal states** with no outgoing transitions
+- `RUNNING → CANCELLED`: Cooperative user cancellation
+- `COMPLETED`, `FAILED` and `CANCELLED` are **terminal states** with no outgoing transitions
 
 **Illegal Transitions** (enforced by `JobDispatcherStateMachine`):
 

@@ -7,7 +7,9 @@ import os
 import signal
 import subprocess
 import sys
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -16,7 +18,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from api.v1.jobs import get_jobs_manager
-from core.schema import JobRequest, JobStatus, TaskType
+from core.schema import ErrorInfo, JobRequest, JobStatus, TERMINAL_STATUSES, TaskType
 from f1.jobs_manager import JobsManager
 from f1.worker_runtime import ManagedWorker, execute_job
 from main_engine import create_app
@@ -135,7 +137,7 @@ def pids(root, job_id):
 
 
 def terminal(manager, job_id):
-    wait_for(lambda: manager.get_job(job_id).status in (JobStatus.COMPLETED, JobStatus.FAILED))
+    wait_for(lambda: manager.get_job(job_id).status in TERMINAL_STATUSES)
     assert job_id not in manager._workers
     return manager.get_job(job_id)
 
@@ -168,12 +170,14 @@ def test_stop_confirms_entire_tree_before_persisting(manager, tmp_path, reason):
         "crash": "WORKER_LOST",
     }
     assert result.error.code == expected[reason]
+    assert result.status == (JobStatus.CANCELLED if reason == "cancel" else JobStatus.FAILED)
     assert result.metadata.started_at is not None
     assert result.metadata.completed_at is not None
     assert manager.get_job_status(reason)["duration"] >= 0
     assert not any(live(pid) for pid in owned)
     saved = json.loads((tmp_path / "state.json").read_text())["jobs"][reason]
-    assert saved["status"] == "failed" and saved["error"]["code"] == expected[reason]
+    assert saved["status"] == ("cancelled" if reason == "cancel" else "failed")
+    assert saved["error"]["code"] == expected[reason]
     assert "duration" not in saved and "duration" not in saved["metadata"]
 
 
@@ -354,8 +358,105 @@ def test_api_cancel_ack_precedes_confirmed_tree_exit(manager, tmp_path):
         assert response.status_code == 202 and response.json()["status"] == "cancel_requested"
         terminal(manager, "api-cancel")
         body = client.get("/api/v1/jobs/api-cancel").json()
-        assert body["status"] == "failed" and body["error_code"] == "USER_CANCELLED"
+        assert body["status"] == "cancelled" and body["error_code"] == "USER_CANCELLED"
         assert not any(live(pid) for pid in owned)
+
+
+@pytest.mark.parametrize("natural_status", [JobStatus.COMPLETED, JobStatus.FAILED])
+def test_natural_terminal_publication_wins_cancel_api_race(monkeypatch, tmp_path, natural_status):
+    """A cancel request with a stale RUNNING read cannot overwrite a published terminal result."""
+    import f1.jobs_manager as jobs_manager_module
+
+    manager = JobsManager(output_root=tmp_path, model_roots=[tmp_path], data_roots=[tmp_path])
+    job_id = f"natural-{natural_status.value}"
+    job = JobRequest(job_id=job_id, task_type=TaskType.PREDICT, output={"output_dir": str(tmp_path)})
+    manager.jobs[job_id] = job
+    manager.job_logs[job_id] = []
+
+    worker_started = threading.Event()
+    release_result = threading.Event()
+    terminal_published = threading.Event()
+    cancel_observed_running = threading.Event()
+    allow_cancel_recheck = threading.Event()
+
+    result = job.model_copy(deep=True)
+    result.status = natural_status
+    if natural_status == JobStatus.FAILED:
+        result.error = ErrorInfo(code="NATURAL_FAILURE", message="worker failed naturally")
+
+    class FakeProcess:
+        @staticmethod
+        def is_alive():
+            return True
+
+    class FakeWorker:
+        def __init__(self, *_args, **_kwargs):
+            self.process = FakeProcess()
+
+        def start(self):
+            worker_started.set()
+
+        def receive(self):
+            assert release_result.wait(timeout=5)
+            return "result", result.model_dump(mode="json")
+
+        def stop(self, _grace):
+            return None
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr(jobs_manager_module, "ManagedWorker", FakeWorker)
+    original_save = manager._save
+
+    def observe_terminal_save():
+        original_save()
+        if manager.jobs[job_id].status in TERMINAL_STATUSES:
+            terminal_published.set()
+
+    monkeypatch.setattr(manager, "_save", observe_terminal_save)
+    original_get_job = manager.get_job
+    gate_lock = threading.Lock()
+    gate_used = False
+
+    def gate_cancel_after_running_read(requested_job_id):
+        nonlocal gate_used
+        current = original_get_job(requested_job_id)
+        with gate_lock:
+            should_gate = not gate_used and current is not None and current.status == JobStatus.RUNNING
+            if should_gate:
+                gate_used = True
+        if should_gate:
+            cancel_observed_running.set()
+            assert allow_cancel_recheck.wait(timeout=5)
+        return current
+
+    monkeypatch.setattr(manager, "get_job", gate_cancel_after_running_read)
+    execution = threading.Thread(target=manager._execute_job, args=(job_id,), daemon=True)
+    execution.start()
+    assert worker_started.wait(timeout=5)
+
+    app = create_app()
+    app.dependency_overrides[get_jobs_manager] = lambda: manager
+    with TestClient(app) as client, ThreadPoolExecutor(max_workers=1) as pool:
+        cancel_response = pool.submit(client.post, f"/api/v1/jobs/{job_id}/cancel")
+        assert cancel_observed_running.wait(timeout=5)
+        release_result.set()
+        assert terminal_published.wait(timeout=5)
+        published_snapshot = manager.jobs[job_id].model_dump(mode="json")
+        allow_cancel_recheck.set()
+        response = cancel_response.result(timeout=5)
+
+    execution.join(timeout=5)
+    assert not execution.is_alive()
+    assert response.status_code == 200
+    assert response.json()["status"] == natural_status.value
+    assert "Cancellation requested" not in response.json()["message"]
+    assert manager.jobs[job_id].model_dump(mode="json") == published_snapshot
+    assert manager.jobs[job_id].runtime_tracking.cancel_requested is False
+    assert manager.jobs[job_id].metadata.started_at is not None
+    assert manager.jobs[job_id].metadata.completed_at is not None
+    assert manager.get_job_status(job_id)["duration"] >= 0
 
 
 def test_restart_reconciles_and_persists_structured_failure(tmp_path):

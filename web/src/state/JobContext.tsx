@@ -52,12 +52,12 @@ function reducer(state: State, action: Action): State {
     case "cancelClear": return state.cancellationPending === action.jobId ? { ...state, cancellationPending: null } : state;
     case "cancelOutcome": {
       if (action.epoch !== state.epoch || state.cancellationPending !== action.jobId || ACTIVE_STATUSES.has(action.value.status)) return state;
-      const cancelled = action.value.status === "failed" && action.value.error_code === "USER_CANCELLED";
+      const cancelled = action.value.status === "cancelled" && action.value.error_code === "USER_CANCELLED";
       return {
         ...state,
         cancellationPending: null,
         banner: cancelled
-          ? { kind: "success", message: `Job ${action.jobId} reached failed / USER_CANCELLED. Cancellation completed.` }
+          ? { kind: "success", message: `Job ${action.jobId} reached cancelled / USER_CANCELLED. Cancellation completed.` }
           : { kind: "error", message: `Cancellation race for ${action.jobId}: job reached ${action.value.status}${action.value.error_code ? ` / ${action.value.error_code}` : ""} before USER_CANCELLED was observed.` },
       };
     }
@@ -218,7 +218,7 @@ export function JobProvider({ children }: { children: ReactNode }) {
       dispatch({ type: "cancelStart", jobId });
       try {
         const result = await api<{ message: string }>(state.baseUrl, `${JOBS_PATH}/${encodeURIComponent(jobId)}/cancel`, { method: "POST" });
-        dispatch({ type: "banner", value: { kind: "success", message: `${result.message || "Cancellation accepted"} Waiting for USER_CANCELLED terminal state…` } });
+        dispatch({ type: "banner", value: { kind: "success", message: `${result.message || "Cancellation accepted"} Waiting for cancelled / USER_CANCELLED terminal state…` } });
         dispatch({ type: "select", value: jobId, epoch }); await refreshJobs();
       } catch (error) {
         cancellationInFlight.current = null;

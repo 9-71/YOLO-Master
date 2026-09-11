@@ -15,7 +15,7 @@ standalone FastAPI engine:
 Cooperative cancellation is exercised against a deliberately slow mock job
 (four sequential CPU predictions of a local sample image, one engine call per
 chunk): the job is observed RUNNING, cancelled over the API, and must land in
-``FAILED`` with ``error_code == "USER_CANCELLED"`` — never in ``COMPLETED``.
+``CANCELLED`` with ``error_code == "USER_CANCELLED"`` — never in ``COMPLETED``.
 
 The script is intentionally standalone and CPU-only: it talks to the engine
 exactly like a browser or CLI client would, uses only the standard library
@@ -50,7 +50,7 @@ from urllib.parse import urlparse
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
 #: Terminal states returned by ``GET /api/v1/jobs/{job_id}``.
-_TERMINAL_STATUSES = frozenset({"completed", "failed"})
+_TERMINAL_STATUSES = frozenset({"completed", "failed", "cancelled"})
 
 #: HTTP client preference: httpx is the FastAPI-stack client, requests ships
 #: with Ultralytics itself; either one satisfies the "already-installed only"
@@ -465,13 +465,13 @@ def verify_log_streaming(http: SmokeHttp, job_id: str, expected_marker: str) -> 
 def verify_cancellation(
     http: SmokeHttp, job_id: str, start_deadline: float, terminal_deadline: float, poll_interval: float
 ) -> str:
-    """Check 5: cancel the mock long-running job and assert USER_CANCELLED.
+    """Check 5: cancel the mock long-running job and assert CANCELLED.
 
     Flow: dispatch the predict mock job, wait until it is observed RUNNING
     (so the exercise targets the dispatcher's *in-flight* cooperative
     cancellation path rather than the pre-execution short-circuit), POST the
     cancel request (expect 202 + ``cancel_requested``) and poll to the
-    terminal state, which must be ``FAILED`` with error code
+    terminal state, which must be ``CANCELLED`` with error code
     ``USER_CANCELLED`` — a COMPLETED transition would fail the check.
 
     Args:
@@ -516,22 +516,22 @@ def verify_cancellation(
     if cancel_body.get("status") != "cancel_requested":
         raise SmokeError(f"cancel response missing 'cancel_requested' status: {cancel_body}")
 
-    # Phase C: the job must land in FAILED with the USER_CANCELLED error code.
+    # Phase C: the job must land in CANCELLED with the USER_CANCELLED error code.
     terminal = time.monotonic() + terminal_deadline
     while time.monotonic() < terminal:
         response = http.get(f"/api/v1/jobs/{job_id}")
         body = response.json()
         if body["status"] in _TERMINAL_STATUSES:
-            if body["status"] != "failed":
+            if body["status"] != "cancelled":
                 raise SmokeError(
-                    f"cancelled job ended {body['status']!r} instead of failed (error_code={body.get('error_code')!r})"
+                    f"cancelled job ended {body['status']!r} instead of cancelled (error_code={body.get('error_code')!r})"
                 )
             if body.get("error_code") != "USER_CANCELLED":
                 raise SmokeError(
-                    f"cancelled job failed with error_code={body.get('error_code')!r} "
+                    f"cancelled job ended with error_code={body.get('error_code')!r} "
                     f"instead of 'USER_CANCELLED' (error_message={body.get('error_message')!r})"
                 )
-            return f"202 cancel_requested → FAILED (USER_CANCELLED) in {body.get('duration', 'N/A')}"
+            return f"202 cancel_requested → CANCELLED (USER_CANCELLED) in {body.get('duration', 'N/A')}"
         time.sleep(poll_interval)
     raise SmokeError(f"cancelled job did not reach a terminal state within {terminal_deadline:.0f}s")
 

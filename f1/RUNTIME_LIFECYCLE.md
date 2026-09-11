@@ -1,8 +1,8 @@
 # Studio runtime lifecycle
 
 This round preserves the existing job ID, trusted path, artifact manifest and
-redaction implementation. It does not change public status enums, Agent code,
-Ultralytics code or Gradio components.
+redaction implementation. It does not change Agent code, Ultralytics code or
+Gradio components.
 
 ## Execution
 
@@ -68,9 +68,9 @@ hack, `shell=True`, shell interpolation or client-selected worker executable.
 
 ## History and errors
 
-The public enum remains `pending`, `running`, `completed`, `failed`.
+The public status set is `pending | running | completed | failed | cancelled`.
 
-- Cancel: `failed` + `USER_CANCELLED`, after tree exit.
+- Cancel: `cancelled` + `USER_CANCELLED`, after tree exit.
 - Deadline: `failed` + `TIMEOUT`, after tree exit.
 - Worker crash/missing result: `failed` + `WORKER_LOST`.
 - Startup/unhandled execution exception: `failed` + `EXECUTION_FAILED`.

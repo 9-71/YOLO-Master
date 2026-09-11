@@ -49,6 +49,7 @@ __all__ = [
     "OutputConfig",
     "RuntimeTracking",
     "SecurityConstraints",
+    "TERMINAL_STATUSES",
     "TaskType",
     "__version__",
 ]
@@ -71,6 +72,10 @@ class JobStatus(str, Enum):
     RUNNING = "running"
     COMPLETED = "completed"
     FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
+TERMINAL_STATUSES = frozenset({JobStatus.COMPLETED, JobStatus.FAILED, JobStatus.CANCELLED})
 
 
 class Metadata(BaseModel):

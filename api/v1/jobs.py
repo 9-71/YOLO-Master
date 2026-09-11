@@ -12,7 +12,7 @@ Endpoints (the collection routes accept both ``/api/v1/jobs`` and
     POST   /api/v1/jobs[/]                  Submit a new job (201 Created)
     GET    /api/v1/jobs[/]                  List recent jobs (limit/offset pagination)
     GET    /api/v1/jobs/{job_id}            Current status and metadata (404 when unknown)
-    POST   /api/v1/jobs/{job_id}/cancel     Cooperative cancellation (202/409/404)
+    POST   /api/v1/jobs/{job_id}/cancel     Cooperative cancellation (202/200/409/404)
     GET    /api/v1/jobs/{job_id}/logs       Sanitized logs (offset/limit windows)
     GET    /api/v1/jobs/{job_id}/artifacts  Artifact manifest and image paths
 
@@ -29,7 +29,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from pydantic import BaseModel
 
 from core.schema import ErrorInfo, JobRequest, JobStatus, TaskType
@@ -293,16 +293,17 @@ def read_job(job_id: str, manager: JobsManager = MANAGER_DEPENDENCY) -> JobStatu
     status_code=status.HTTP_202_ACCEPTED,
     summary="Request worker cancellation",
 )
-def cancel_job(job_id: str, manager: JobsManager = MANAGER_DEPENDENCY) -> CancelResponse:
+def cancel_job(
+    job_id: str, response: Response, manager: JobsManager = MANAGER_DEPENDENCY
+) -> CancelResponse:
     """Request cooperative cancellation of a PENDING/RUNNING job (202).
 
-    The manager stops the owned process tree and only then persists FAILED with
-    error code ``USER_CANCELLED``. A 202 response acknowledges the request; poll
-    the job endpoint to observe confirmed termination.
+    The manager stops the owned process tree and only then persists CANCELLED
+    with error code ``USER_CANCELLED``. A 202 response acknowledges a new request;
+    an idempotent replay against a terminal job returns 200 and its existing state.
 
     Raises:
-        HTTPException: 404 when the job is unknown, 409 when it is already in
-            a terminal state or not cancellable.
+        HTTPException: 404 when the job is unknown, 409 when it is not cancellable.
     """
     job = manager.get_job(job_id)
     if job is None:
@@ -310,17 +311,22 @@ def cancel_job(job_id: str, manager: JobsManager = MANAGER_DEPENDENCY) -> Cancel
             status_code=status.HTTP_404_NOT_FOUND,
             detail=sanitize_log_text(f"Job '{job_id}' not found"),
         )
-    if job.status in (JobStatus.COMPLETED, JobStatus.FAILED):
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=sanitize_log_text(f"Job '{job_id}' already in terminal state: {job.status.value}"),
-        )
-    if not job.runtime_tracking.cancellable:
+    message = manager.cancel_job(job_id)
+    if "not cancellable" in message:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail=sanitize_log_text(f"Job '{job_id}' is not cancellable"),
         )
-    message = manager.cancel_job(job_id)
+    if "already in terminal state" in message:
+        # Idempotent replay: manager made this decision while holding its lock,
+        # so a stale active-state read above cannot produce a false 202.
+        current = manager.get_job(job_id)
+        response.status_code = status.HTTP_200_OK
+        return CancelResponse(
+            job_id=job_id,
+            status=current.status.value,
+            message=sanitize_log_text(message),
+        )
     return CancelResponse(
         job_id=job_id,
         status="cancel_requested",

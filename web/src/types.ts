@@ -1,5 +1,5 @@
 export type TaskType = "predict" | "train" | "val" | "export" | "diagnose";
-export type JobStatus = "pending" | "running" | "completed" | "failed";
+export type JobStatus = "pending" | "running" | "completed" | "failed" | "cancelled";
 
 export interface JobRequest {
   job_id: string;

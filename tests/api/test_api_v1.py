@@ -184,7 +184,7 @@ def _poll_status(client: TestClient, job_id: str, timeout: float = 10.0) -> dict
     deadline = time.monotonic() + timeout
     while True:
         body = client.get(f"/api/v1/jobs/{job_id}").json()
-        if body["status"] in ("completed", "failed") or time.monotonic() >= deadline:
+        if body["status"] in ("completed", "failed", "cancelled") or time.monotonic() >= deadline:
             return body
         time.sleep(0.05)
 
@@ -226,7 +226,7 @@ def test_unhandled_execution_exception_populates_error(client: TestClient, api_m
 
 
 def test_job_cancellation(client: TestClient, api_manager: JobsManager) -> None:
-    """Cancellation returns 202 for active jobs and 409/404 for terminal or unknown jobs."""
+    """Pending cancellation is accepted while terminal retries are idempotent."""
     pending = JobRequest(job_id="cancel-pending", task_type=TaskType.PREDICT)
     completed = JobRequest(job_id="cancel-done", task_type=TaskType.PREDICT, status=JobStatus.COMPLETED)
     failed = JobRequest(
@@ -235,19 +235,50 @@ def test_job_cancellation(client: TestClient, api_manager: JobsManager) -> None:
         status=JobStatus.FAILED,
         error=ErrorInfo(code="EXEC_ERR_500", message="boom"),
     )
-    for job in (pending, completed, failed):
+    cancelled = JobRequest(
+        job_id="cancel-cancelled",
+        task_type=TaskType.PREDICT,
+        status=JobStatus.CANCELLED,
+        error=ErrorInfo(code="USER_CANCELLED", message="cancelled"),
+    )
+    terminal_snapshots = {}
+    for job in (pending, completed, failed, cancelled):
+        if job.status != JobStatus.PENDING:
+            job.metadata.started_at = "2026-09-11T01:00:00+00:00"
+            job.metadata.completed_at = "2026-09-11T01:00:05+00:00"
+            job.output.artifacts = ["existing-result.json"]
         api_manager.jobs[job.job_id] = job
-        api_manager.job_logs[job.job_id] = []
+        api_manager.job_logs[job.job_id] = ["existing terminal log"] if job.status != JobStatus.PENDING else []
+        if job.status != JobStatus.PENDING:
+            terminal_snapshots[job.job_id] = (job.model_dump(mode="json"), list(api_manager.job_logs[job.job_id]))
     accepted = client.post("/api/v1/jobs/cancel-pending/cancel")
     assert accepted.status_code == 202
     assert accepted.json()["status"] == "cancel_requested"
     assert api_manager.jobs["cancel-pending"].runtime_tracking.cancel_requested is True
     cancelled = client.get("/api/v1/jobs/cancel-pending").json()
+    assert cancelled["status"] == "cancelled"
     assert cancelled["started_at"] is None
     assert cancelled["completed_at"] is not None
     assert cancelled["duration"] is None
-    assert client.post("/api/v1/jobs/cancel-done/cancel").status_code == 409
-    assert client.post("/api/v1/jobs/cancel-failed/cancel").status_code == 409
+    pending_terminal_snapshot = api_manager.jobs["cancel-pending"].model_dump(mode="json")
+    pending_log_snapshot = list(api_manager.job_logs["cancel-pending"])
+    replay = client.post("/api/v1/jobs/cancel-pending/cancel")
+    assert replay.status_code == 200
+    assert replay.json()["status"] == "cancelled"
+    assert "Cancellation requested" not in replay.json()["message"]
+    assert api_manager.jobs["cancel-pending"].model_dump(mode="json") == pending_terminal_snapshot
+    assert api_manager.job_logs["cancel-pending"] == pending_log_snapshot
+    for job_id, expected_status in (
+        ("cancel-done", "completed"),
+        ("cancel-failed", "failed"),
+        ("cancel-cancelled", "cancelled"),
+    ):
+        response = client.post(f"/api/v1/jobs/{job_id}/cancel")
+        assert response.status_code == 200
+        assert response.json()["status"] == expected_status
+        assert "Cancellation requested" not in response.json()["message"]
+        assert api_manager.jobs[job_id].model_dump(mode="json") == terminal_snapshots[job_id][0]
+        assert api_manager.job_logs[job_id] == terminal_snapshots[job_id][1]
     assert client.post("/api/v1/jobs/unknown/cancel").status_code == 404
 
 

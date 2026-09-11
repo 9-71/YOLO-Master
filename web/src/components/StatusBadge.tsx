@@ -5,6 +5,7 @@ const STYLES: Record<JobStatus, string> = {
   running: "border-sky-500/40 bg-sky-500/15 text-sky-300",
   completed: "border-emerald-500/40 bg-emerald-500/15 text-emerald-300",
   failed: "border-rose-500/40 bg-rose-500/15 text-rose-300",
+  cancelled: "border-slate-500/40 bg-slate-500/15 text-slate-300",
 };
 
 export function StatusBadge({ status, small = false }: { status: JobStatus; small?: boolean }) {

@@ -42,7 +42,8 @@ terminal states cannot be restarted or reset.
 ```
 PENDING ──► RUNNING ──► COMPLETED   (success)
    │            │
-   └────────────┴──► FAILED         (failure, cancellation, or timeout)
+   ├────────────┴──► FAILED         (failure or timeout)
+   └───────────────► CANCELLED      (user cancellation)
 ```
 
 ---
@@ -204,18 +205,16 @@ The right-hand panel has four monitoring sub-tabs:
 
 The *Status Monitor* shows a JSON snapshot containing the canonical job state:
 
+Public job statuses: `pending | running | completed | failed | cancelled`.
+
 | State | Meaning | Terminal? |
 |---|---|---|
 | `PENDING` | Job accepted but not yet started. | No |
 | `RUNNING` | Handler is executing on the engine. | No |
 | `COMPLETED` | Execution finished successfully; artifacts captured. | Yes |
 | `FAILED` | Execution failed — see the error code for the cause. | Yes |
+| `CANCELLED` | Execution stopped after a user cancellation request; see `USER_CANCELLED`. | Yes |
 | `NOT_FOUND` | The selected Job ID does not exist. | Yes |
-
-> **Note on `CANCELLED`** — there is no standalone `CANCELLED` lifecycle state. A cancellation
-> request transitions a running job to `FAILED` with the error code `USER_CANCELLED`. The UI
-> additionally treats a `CANCELLED` label as terminal as a forward-compatibility safeguard, but the
-> authoritative signal in the platform today is `FAILED` + `USER_CANCELLED`.
 
 While a job is `PENDING` or `RUNNING`, the console refreshes **every second** and stops
 automatically once the job reaches a terminal state. A slower **30-second** background sync keeps
@@ -232,8 +231,8 @@ execution, and after the engine returns, and handlers check again between long-r
 
 > **Warning** — constraints on cancellation:
 > - You can only cancel a job that is `PENDING` or `RUNNING`. A job already in `COMPLETED` or
->   `FAILED` is terminal and cannot be cancelled.
-> - Cancellation marks the job as `FAILED` with error code `USER_CANCELLED`; it is *not* resumable.
+>   `FAILED` or `CANCELLED` is terminal and cannot be cancelled.
+> - Cancellation marks the job as `CANCELLED` with error code `USER_CANCELLED`; it is *not* resumable.
 >   Re-submit the job to run it again.
 
 ### 4.4 Timeouts
@@ -258,7 +257,7 @@ Every job carries a **default execution limit of 300 seconds** (`timeout_seconds
 Open the **📜 Live Logs** sub-tab while a job is active. The console streams a timestamped,
 line-by-line record including:
 
-- Submission and state-machine transitions (`transitioned to: RUNNING/COMPLETED/FAILED`).
+- Submission and state-machine transitions (`transitioned to: RUNNING/COMPLETED/FAILED/CANCELLED`).
 - Handler progress (e.g. the number of artifacts captured).
 - A sanitized environment audit line.
 - Any tracebacks from a failed execution.

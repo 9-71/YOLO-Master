@@ -49,7 +49,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
-from core.schema import ErrorInfo, JobRequest, JobStatus, SecurityConstraints, TaskType
+from core.schema import ErrorInfo, JobRequest, JobStatus, SecurityConstraints, TERMINAL_STATUSES, TaskType
 from core.security import sanitize_for_persistence, sanitize_log_text
 from f1.dispatcher import JobDispatcherStateMachine
 from f1.worker_runtime import ManagedWorker, execute_job
@@ -492,6 +492,15 @@ class JobsManager:
         self.job_logs.setdefault(job.job_id, []).append(sanitize_log_text(f"[{code}] {message}"))
         self._save()
 
+    def _cancel_job(self, job: JobRequest, message: str) -> None:
+        """Publish confirmed cancellation after no owned computation remains; lock held."""
+        job.status = JobStatus.CANCELLED
+        job.metadata.completed_at = datetime.now(timezone.utc).isoformat()
+        job.error = ErrorInfo(code="USER_CANCELLED", message=sanitize_log_text(message))
+        job.append_log(f"[USER_CANCELLED] {message}")
+        self.job_logs.setdefault(job.job_id, []).append(sanitize_log_text(f"[USER_CANCELLED] {message}"))
+        self._save()
+
     def _execute_job(self, job_id: str) -> None:
         """Supervise one process through execution, tree cleanup and final persistence."""
         with self.lock:
@@ -499,8 +508,10 @@ class JobsManager:
             if not job or job.status not in (JobStatus.PENDING, JobStatus.RUNNING):
                 return
             if self._closing or job.runtime_tracking.cancel_requested:
-                code = "SERVICE_SHUTDOWN" if self._closing else "USER_CANCELLED"
-                self._fail_job(job, code, "Job stopped before worker launch")
+                if self._closing:
+                    self._fail_job(job, "SERVICE_SHUTDOWN", "Job stopped before worker launch")
+                else:
+                    self._cancel_job(job, "Job cancelled before worker launch")
                 return
             job.metadata.started_at = datetime.now(timezone.utc).isoformat()
             worker = ManagedWorker(job, self._worker_executor)
@@ -532,7 +543,7 @@ class JobsManager:
                     break
                 if kind == "result":
                     result = JobRequest.model_validate(payload)
-                    if result.status not in (JobStatus.COMPLETED, JobStatus.FAILED):
+                    if result.status not in TERMINAL_STATUSES:
                         code, message = "WORKER_LOST", "Worker returned without a terminal result"
                     break
                 if not worker.process.is_alive():
@@ -558,21 +569,26 @@ class JobsManager:
             worker.close()
             with self.lock:
                 self._workers.pop(job_id, None)
-                # An accepted cancel during result transfer/cleanup still wins.
-                if job.runtime_tracking.cancel_requested:
-                    code, message = "USER_CANCELLED", "Job execution cancelled by user request"
-                elif self._closing:
-                    code, message = "SERVICE_SHUTDOWN", "Service is shutting down"
-                if code:
-                    self._fail_job(job, code, message)
-                else:
-                    self._normalize_job_artifacts(result)
-                    result.metadata.created_at = job.metadata.created_at
-                    result.metadata.started_at = job.metadata.started_at
-                    result.metadata.completed_at = datetime.now(timezone.utc).isoformat()
-                    self.jobs[job_id] = result
-                    self.job_logs[job_id].extend(sanitize_log_text(line) for line in result.logs)
-                    self._save()
+                # Publish only from RUNNING. A natural terminal result already
+                # published under this lock wins over a later cancellation.
+                current = self.jobs[job_id]
+                if current.status not in TERMINAL_STATUSES:
+                    if current.runtime_tracking.cancel_requested:
+                        code, message = "USER_CANCELLED", "Job execution cancelled by user request"
+                    elif self._closing:
+                        code, message = "SERVICE_SHUTDOWN", "Service is shutting down"
+                    if code == "USER_CANCELLED":
+                        self._cancel_job(current, message)
+                    elif code:
+                        self._fail_job(current, code, message)
+                    else:
+                        self._normalize_job_artifacts(result)
+                        result.metadata.created_at = current.metadata.created_at
+                        result.metadata.started_at = current.metadata.started_at
+                        result.metadata.completed_at = datetime.now(timezone.utc).isoformat()
+                        self.jobs[job_id] = result
+                        self.job_logs[job_id].extend(sanitize_log_text(line) for line in result.logs)
+                        self._save()
 
     def shutdown(self) -> None:
         """Reject submissions, end pending jobs and join all owned execution slots."""
@@ -782,16 +798,17 @@ class JobsManager:
             if not job:
                 return "❌ Job not found"
 
-            if job.status in [JobStatus.COMPLETED, JobStatus.FAILED]:
-                return f"⚠️ Job already in terminal state: {job.status.value}"
+            if job.status in TERMINAL_STATUSES:
+                return f"ℹ️ Job already in terminal state: {job.status.value}"
 
             if not job.runtime_tracking.cancellable:
                 return "⚠️ Job is not cancellable"
 
             job.runtime_tracking.cancel_requested = True
             if job_id not in self._workers:
-                self._fail_job(job, "USER_CANCELLED", "Job cancelled before worker launch")
-            self._save()
+                self._cancel_job(job, "Job cancelled before worker launch")
+            else:
+                self._save()
 
         # Append log AFTER releasing the lock: _append_log acquires self.lock
         # internally and threading.Lock is not reentrant (self-deadlock).
@@ -827,9 +844,8 @@ class JobsManager:
 def is_terminal_status(status: str) -> bool:
     """Return True when a job status string is terminal (not PENDING/RUNNING).
 
-    COMPLETED, FAILED and NOT_FOUND are terminal from the poller's perspective;
-    a cancelled job also surfaces as FAILED (USER_CANCELLED) via the state machine,
-    and CANCELLED is treated as terminal for forward compatibility.
+    COMPLETED, FAILED, CANCELLED and NOT_FOUND are terminal from the poller's
+    perspective.
 
     Args:
         status: Uppercase backend status string.
