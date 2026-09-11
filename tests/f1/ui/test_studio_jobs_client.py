@@ -209,7 +209,13 @@ def test_monitoring_operations_read_only_from_studio_api() -> None:
     """Status, logs, artifacts, listing and cancellation all use REST routes."""
     session = _Session(
         [
-            {"status": "running", "duration": "1.2s", "artifact_count": 0},
+            {
+                "status": "running",
+                "duration": 1.2,
+                "started_at": "2026-09-11T00:00:00+00:00",
+                "completed_at": None,
+                "artifact_count": 0,
+            },
             {"logs": ["submitted", "running"]},
             {
                 "artifacts": [
@@ -238,7 +244,11 @@ def test_monitoring_operations_read_only_from_studio_api() -> None:
     )
     client = StudioJobsApiClient("http://studio.test", session=session)
 
-    assert client.get_job_status("job-1")["status"] == "RUNNING"
+    status = client.get_job_status("job-1")
+    assert status["status"] == "RUNNING"
+    assert status["duration"] == 1.2
+    assert status["started_at"] == "2026-09-11T00:00:00+00:00"
+    assert status["completed_at"] is None
     assert client.get_job_logs("job-1") == "submitted\nrunning"
     assert client.get_job_artifacts("job-1") == [
         ("nested/result.png", "http://studio.test/static/artifacts/job-1/nested/result.png")

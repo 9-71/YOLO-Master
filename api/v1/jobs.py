@@ -98,6 +98,9 @@ class JobSummary(BaseModel):
     task_type: TaskType
     status: JobStatus
     created_at: str
+    started_at: str | None
+    completed_at: str | None
+    duration: float | None
 
 
 class JobListResponse(BaseModel):
@@ -116,7 +119,9 @@ class JobStatusResponse(BaseModel):
     task_type: TaskType
     status: JobStatus
     created_at: str | None
-    duration: str
+    started_at: str | None
+    completed_at: str | None
+    duration: float | None
     error_code: str | None
     error_message: str | None
     artifact_count: int
@@ -232,6 +237,9 @@ def list_jobs(
                 task_type=TaskType(row["task_type"]),
                 status=JobStatus(row["status"].lower()),
                 created_at=row["created_at"],
+                started_at=row["started_at"],
+                completed_at=row["completed_at"],
+                duration=row["duration"],
             )
             for row in rows
         ],
@@ -267,7 +275,9 @@ def read_job(job_id: str, manager: JobsManager = MANAGER_DEPENDENCY) -> JobStatu
         task_type=job.task_type,
         status=job.status,
         created_at=job.metadata.created_at,
-        duration=info.get("duration", "N/A"),
+        started_at=job.metadata.started_at,
+        completed_at=job.metadata.completed_at,
+        duration=info.get("duration"),
         error_code=info.get("error_code"),
         # Defense in depth: dispatcher-attached messages are already sanitized,
         # but re-sanitizing at the response boundary is idempotent.

@@ -1,10 +1,11 @@
 import { useJobs } from "../state/JobContext";
+import { formatDuration } from "../types";
 import { StatusBadge } from "./StatusBadge";
 
 export function JobDetail() {
   const { detail, cancellationPending } = useJobs(); if (!detail) return null;
   const facts = [
-    ["Task Type", detail.task_type.toUpperCase()], ["Duration", detail.duration || "N/A"],
+    ["Task Type", detail.task_type.toUpperCase()], ["Duration", formatDuration(detail.duration)],
     ["Created At", detail.created_at ? new Date(detail.created_at).toLocaleString() : "—"], ["Artifacts", String(detail.artifact_count)],
     ["Created By", String(detail.metadata.created_by ?? "—")], ["Priority", String(detail.metadata.priority ?? "—")],
   ];

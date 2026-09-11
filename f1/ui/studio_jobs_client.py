@@ -246,6 +246,8 @@ class StudioJobsApiClient:
         return {
             "status": self._status(payload.get("status")),
             "duration": payload.get("duration"),
+            "started_at": payload.get("started_at"),
+            "completed_at": payload.get("completed_at"),
             "error_code": payload.get("error_code"),
             "error_message": payload.get("error_message"),
             "artifact_count": payload.get("artifact_count", 0),

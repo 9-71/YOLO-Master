@@ -77,6 +77,8 @@ class Metadata(BaseModel):
     """Job bookkeeping metadata attached to every ``JobRequest``."""
 
     created_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+    started_at: str | None = None
+    completed_at: str | None = None
     created_by: str = "anonymous"
     description: str | None = None
     priority: str = "normal"

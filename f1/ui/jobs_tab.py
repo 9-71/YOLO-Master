@@ -50,7 +50,6 @@ from f1.jobs_manager import (
     IMAGE_EXTENSIONS,
     JobsManager,
     _compute_duration,
-    _resolve_completion_time,
     get_job_image_artifacts,
     is_terminal_status,
 )
@@ -415,21 +414,19 @@ def compute_poll_state(
         "artifact_count": raw.get("artifact_count"),
     }
 
-    # Live read-seconds apply strictly to RUNNING jobs. Terminal statuses must
-    # freeze to a previously computed value when no completion timestamp is
-    # available. NOT_FOUND has no job record and is left untouched so its empty
-    # duration payload remains ``None``.
-    if status_str != "NOT_FOUND" and not status["duration"]:
-        created_at: str | None = None
-        completed_at: str | None = None
+    # Trust the API's canonical execution duration. A legacy payload may omit it;
+    # only terminal jobs can then derive seconds from started_at + completed_at.
+    # RUNNING jobs never synthesize a live value, and jobs that never started
+    # intentionally keep duration=None.
+    if status["duration"] is None and status_str not in ACTIVE_STATUSES | {"NOT_FOUND"}:
+        started_at = raw.get("started_at")
+        completed_at = raw.get("completed_at")
         jobs = getattr(jobs_manager, "jobs", None)
         job = jobs.get(job_id) if isinstance(jobs, dict) else None
         if job is not None:
-            created_at = getattr(job.metadata, "created_at", None)
-            completed_at = _resolve_completion_time(job)
-        resolved = _compute_duration(status_str, created_at, completed_at)
-        if resolved:
-            status["duration"] = resolved
+            started_at = getattr(job.metadata, "started_at", None)
+            completed_at = getattr(job.metadata, "completed_at", None)
+        status["duration"] = _compute_duration(started_at, completed_at)
 
     error_text = ""
     banner = ""

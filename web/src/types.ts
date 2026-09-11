@@ -15,13 +15,15 @@ export interface JobSummary {
   task_type: TaskType;
   status: JobStatus;
   created_at: string;
+  started_at: string | null;
+  completed_at: string | null;
+  duration: number | null;
 }
 
 export interface JobsResponse { jobs: JobSummary[]; total: number; limit: number; offset: number }
 
 export interface JobDetail extends Omit<JobSummary, "created_at"> {
   created_at: string | null;
-  duration: string;
   error_code: string | null;
   error_message: string | null;
   artifact_count: number;
@@ -45,3 +47,7 @@ export interface BannerState { kind: "error" | "success" | "security"; message: 
 
 export const ACTIVE_STATUSES = new Set<JobStatus>(["pending", "running"]);
 export const EMPTY_ARTIFACTS: ArtifactsResponse = { job_id: "", artifacts: [], image_artifacts: [] };
+
+export function formatDuration(duration: number | null): string {
+  return duration === null ? "—" : `${duration.toFixed(2)}s`;
+}

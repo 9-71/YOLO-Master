@@ -144,7 +144,11 @@ def test_normal_completion_cleans_leftover_children(manager, tmp_path):
     submit(manager, tmp_path, "normal")
     owned = pids(tmp_path, "normal")
     (tmp_path / "normal.release").touch()
-    assert terminal(manager, "normal").status == JobStatus.COMPLETED
+    result = terminal(manager, "normal")
+    assert result.status == JobStatus.COMPLETED
+    assert result.metadata.started_at is not None
+    assert result.metadata.completed_at is not None
+    assert manager.get_job_status("normal")["duration"] >= 0
     assert not any(live(pid) for pid in owned)
 
 
@@ -164,9 +168,13 @@ def test_stop_confirms_entire_tree_before_persisting(manager, tmp_path, reason):
         "crash": "WORKER_LOST",
     }
     assert result.error.code == expected[reason]
+    assert result.metadata.started_at is not None
+    assert result.metadata.completed_at is not None
+    assert manager.get_job_status(reason)["duration"] >= 0
     assert not any(live(pid) for pid in owned)
     saved = json.loads((tmp_path / "state.json").read_text())["jobs"][reason]
     assert saved["status"] == "failed" and saved["error"]["code"] == expected[reason]
+    assert "duration" not in saved and "duration" not in saved["metadata"]
 
 
 def test_cpu_gpu_limits_and_pending_cancellation(manager, tmp_path):
@@ -186,7 +194,11 @@ def test_cpu_gpu_limits_and_pending_cancellation(manager, tmp_path):
         assert manager.get_job(job_id).status == JobStatus.PENDING
         assert not (tmp_path / f"{job_id}.started").exists()
     manager.cancel_job("gpu2")
-    assert terminal(manager, "gpu2").error.code == "USER_CANCELLED"
+    cancelled = terminal(manager, "gpu2")
+    assert cancelled.error.code == "USER_CANCELLED"
+    assert cancelled.metadata.started_at is None
+    assert cancelled.metadata.completed_at is not None
+    assert manager.get_job_status("gpu2")["duration"] is None
     for job_id in ("cpu1", "gpu1"):
         manager.cancel_job(job_id)
         terminal(manager, job_id)
@@ -351,6 +363,7 @@ def test_restart_reconciles_and_persists_structured_failure(tmp_path):
         state: JobRequest(job_id=state, task_type=TaskType.PREDICT, status=JobStatus(state)).model_dump(mode="json")
         for state in ("pending", "running", "completed", "failed")
     }
+    jobs["running"]["metadata"]["started_at"] = jobs["running"]["metadata"]["created_at"]
     path = tmp_path / "state.json"
     path.write_text(json.dumps({"jobs": jobs, "job_logs": {}}))
     instance = JobsManager(storage_path=str(path))
@@ -360,10 +373,28 @@ def test_restart_reconciles_and_persists_structured_failure(tmp_path):
         for job_id in ("pending", "running"):
             body = client.get(f"/api/v1/jobs/{job_id}").json()
             assert body["status"] == "failed" and body["error_code"] == "SERVICE_RESTARTED"
-            assert body["duration"].endswith("s")
+            assert body["completed_at"] is not None
+            if job_id == "pending":
+                assert body["started_at"] is None and body["duration"] is None
+            else:
+                assert body["started_at"] is not None and body["duration"] >= 0
         assert client.get("/api/v1/jobs/completed").json()["status"] == "completed"
     saved = json.loads(path.read_text())["jobs"]
     assert saved["running"]["error"]["code"] == "SERVICE_RESTARTED"
+
+
+def test_old_persistence_without_execution_timestamps_loads(tmp_path):
+    job = JobRequest(job_id="legacy", task_type=TaskType.PREDICT, status=JobStatus.COMPLETED).model_dump(mode="json")
+    job["metadata"].pop("started_at")
+    job["metadata"].pop("completed_at")
+    path = tmp_path / "legacy-state.json"
+    path.write_text(json.dumps({"jobs": {"legacy": job}, "job_logs": {}}))
+
+    restored = JobsManager(storage_path=str(path)).get_job("legacy")
+
+    assert restored.status == JobStatus.COMPLETED
+    assert restored.metadata.started_at is None
+    assert restored.metadata.completed_at is None
 
 
 @pytest.mark.parametrize("task", ["train", "val", "predict", "export"])

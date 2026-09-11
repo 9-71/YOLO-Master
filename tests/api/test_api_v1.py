@@ -70,6 +70,7 @@ def _complete_execute(job: JobRequest) -> JobRequest:
     """Spawn-safe fake computation for the API lifecycle test."""
     time.sleep(0.2)
     job.status = JobStatus.COMPLETED
+    job.metadata.created_at = "2000-01-01T00:00:00+00:00"
     return job
 
 
@@ -107,6 +108,10 @@ def test_submit_job_success(client: TestClient) -> None:
     assert body["task_type"] == "predict"
     assert body["status"] == "pending"
     assert _ISO_8601.fullmatch(body["metadata"]["created_at"])
+    assert body["metadata"]["started_at"] is None
+    assert body["metadata"]["completed_at"] is None
+    detail = client.get("/api/v1/jobs/predict-001").json()
+    assert detail["started_at"] is None and detail["completed_at"] is None and detail["duration"] is None
     diagnose = client.post("/api/v1/jobs/", json=_job_payload("diagnose-001", task_type="diagnose"))
     assert diagnose.status_code == 201 and diagnose.json()["task_type"] == "diagnose"
 
@@ -148,6 +153,9 @@ def test_collection_endpoints_accept_both_slash_spellings(client: TestClient) ->
     assert slashed.json()["jobs"] == []
     assert client.post("/api/v1/jobs", json=_job_payload("slash-001")).status_code == 201
     assert client.post("/api/v1/jobs/", json=_job_payload("slash-002")).status_code == 201
+    row = client.get("/api/v1/jobs").json()["jobs"][0]
+    assert {"created_at", "started_at", "completed_at", "duration"} <= row.keys()
+    assert row["started_at"] is None and row["completed_at"] is None and row["duration"] is None
 
 
 def test_security_fail_closed(client: TestClient) -> None:
@@ -187,11 +195,15 @@ def test_job_status_and_lifecycle(client: TestClient, api_manager: JobsManager) 
     api_manager._worker_executor = _complete_execute
     submitted = client.post("/api/v1/jobs/", json=_job_payload("life-001"))
     assert submitted.status_code == 201
+    accepted_at = submitted.json()["metadata"]["created_at"]
     pending = client.get("/api/v1/jobs/life-001")
     assert pending.status_code == 200 and pending.json()["status"] in ("pending", "running")
     body = _poll_status(client, "life-001")
     assert body["status"] == "completed"
-    assert body["duration"].endswith("s")
+    assert body["created_at"] == accepted_at
+    assert body["started_at"] is not None
+    assert body["completed_at"] is not None
+    assert body["duration"] >= 0
     assert body["artifact_count"] == 0
 
 
@@ -204,6 +216,9 @@ def test_unhandled_execution_exception_populates_error(client: TestClient, api_m
     assert submitted.status_code == 201
     body = _poll_status(client, "boom-001")
     assert body["status"] == "failed"
+    assert body["started_at"] is not None
+    assert body["completed_at"] is not None
+    assert body["duration"] >= 0
     assert body["error_code"] == "EXECUTION_FAILED"
     assert "missing model param" in body["error_message"]
     logs = client.get("/api/v1/jobs/boom-001/logs").json()["logs"]
@@ -227,6 +242,10 @@ def test_job_cancellation(client: TestClient, api_manager: JobsManager) -> None:
     assert accepted.status_code == 202
     assert accepted.json()["status"] == "cancel_requested"
     assert api_manager.jobs["cancel-pending"].runtime_tracking.cancel_requested is True
+    cancelled = client.get("/api/v1/jobs/cancel-pending").json()
+    assert cancelled["started_at"] is None
+    assert cancelled["completed_at"] is not None
+    assert cancelled["duration"] is None
     assert client.post("/api/v1/jobs/cancel-done/cancel").status_code == 409
     assert client.post("/api/v1/jobs/cancel-failed/cancel").status_code == 409
     assert client.post("/api/v1/jobs/unknown/cancel").status_code == 404

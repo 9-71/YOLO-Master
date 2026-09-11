@@ -146,7 +146,7 @@ def _assert_update_fits_component(update, component):
 
 RUNNING_STATUS = {
     "status": "RUNNING",
-    "duration": "3.0s",
+    "duration": 3.0,
     "error_code": None,
     "error_message": None,
     "artifact_count": 2,
@@ -154,7 +154,7 @@ RUNNING_STATUS = {
 
 SECURITY_STATUS = {
     "status": "FAILED",
-    "duration": "0.1s",
+    "duration": 0.1,
     "error_code": "SEC_ERR_001",
     "error_message": "Security policy violation: Data_source path '../../etc/passwd' not in whitelist",
     "artifact_count": 0,
@@ -211,13 +211,64 @@ class TestPollingState:
         assert state.status == {
             "job_id": "j1",
             "status": "RUNNING",
-            "duration": "3.0s",
+            "duration": 3.0,
             "error_code": None,
             "error_message": None,
             "artifact_count": 2,
         }
         assert state.banner == ""
         assert state.error_text == ""
+
+    def test_running_job_does_not_synthesize_duration(self):
+        status = {
+            **RUNNING_STATUS,
+            "duration": None,
+            "started_at": "2026-09-11T00:00:00+00:00",
+            "completed_at": "2026-09-11T00:00:03+00:00",
+        }
+
+        state = compute_poll_state(FakeJobsManager(status), "j1", "en")
+
+        assert state.status["duration"] is None
+
+    def test_terminal_legacy_fallback_uses_started_and_completed_at(self):
+        status = {
+            **RUNNING_STATUS,
+            "status": "COMPLETED",
+            "duration": None,
+            "started_at": "2026-09-11T00:00:01+00:00",
+            "completed_at": "2026-09-11T00:00:03.500000+00:00",
+        }
+
+        state = compute_poll_state(FakeJobsManager(status), "j1", "en")
+
+        assert state.status["duration"] == 2.5
+
+    def test_api_duration_takes_precedence_over_timestamp_fallback(self):
+        status = {
+            **RUNNING_STATUS,
+            "status": "COMPLETED",
+            "duration": 0.0,
+            "started_at": "2026-09-11T00:00:01+00:00",
+            "completed_at": "2026-09-11T00:00:03+00:00",
+        }
+
+        state = compute_poll_state(FakeJobsManager(status), "j1", "en")
+
+        assert state.status["duration"] == 0.0
+
+    def test_terminal_legacy_fallback_without_started_at_stays_null(self):
+        status = {
+            **RUNNING_STATUS,
+            "status": "FAILED",
+            "duration": None,
+            "started_at": None,
+            "completed_at": "2026-09-11T00:00:03+00:00",
+        }
+
+        state = compute_poll_state(FakeJobsManager(status), "j1", "en")
+
+        assert state.status["duration"] is None
 
     def test_terminal_job_stops_polling_and_includes_final_artifacts(self):
         manager = FakeJobsManager(
@@ -814,7 +865,7 @@ class TestStudioApiPollingSynchronization:
             self.current_status = self.statuses.pop(0)
             return {
                 "status": self.current_status,
-                "duration": "1.0s",
+                "duration": 1.0,
                 "error_code": None,
                 "error_message": None,
                 "artifact_count": 2 if self.current_status == "COMPLETED" else 0,

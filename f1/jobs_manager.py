@@ -79,74 +79,26 @@ __all__ = [
 ]
 
 
-def _format_elapsed(created_at: str | None) -> str | None:
-    """Return ``now - created_at`` as a ``"{seconds:.1f}s"`` string (live read).
-
-    Args:
-        created_at: Raw ISO 8601 creation timestamp (may be ``None``/malformed).
-
-    Returns:
-        str | None: The elapsed duration, or ``None`` when it cannot be parsed.
-    """
-    if not created_at:
+def _compute_duration(
+    started_at: str | None, completed_at: str | None, legacy_completed_at: str | None = None
+) -> float | None:
+    """Return exact execution seconds derived from lifecycle timestamps."""
+    # ``f1.ui.jobs_tab`` still imports this private helper with its historical
+    # ``(status, created_at, completed_at)`` signature. It has no started_at in
+    # that compatibility path, so returning None is the only valid duration.
+    if legacy_completed_at is not None or started_at in ACTIVE_STATUSES:
+        return None
+    if not started_at or not completed_at:
         return None
     try:
-        created = datetime.fromisoformat(created_at)
-        return f"{(datetime.now(timezone.utc) - created).total_seconds():.1f}s"
-    except (ValueError, TypeError):
-        return None
-
-
-def _compute_duration(status_str: str, created_at: str | None, completed_at: str | None = None) -> str | None:
-    """Return a stable duration string, or ``None`` when it cannot be resolved.
-
-    RUNNING keeps a live read (``now - created_at``). Non-RUNNING states are
-    frozen to the exact ``completed_at - created_at`` total; a missing
-    completion timestamp returns ``None`` so the caller can retain a previous
-    valid value instead of falling back to ``"N/A"``.
-
-    Args:
-        status_str: Uppercase lifecycle status string.
-        created_at: Raw ISO 8601 creation timestamp (may be ``None``/malformed).
-        completed_at: Raw ISO 8601 completion timestamp (may be ``None``).
-
-    Returns:
-        str | None: A ``"{seconds:.1f}s"`` duration, or ``None`` when the exact
-        total cannot be computed deterministically.
-    """
-    if status_str == "RUNNING":
-        return _format_elapsed(created_at)
-    if not created_at or not completed_at:
-        return None
-    try:
-        created = datetime.fromisoformat(created_at)
-        completed = datetime.fromisoformat(completed_at)
-        return f"{(completed - created).total_seconds():.1f}s"
+        return (datetime.fromisoformat(completed_at) - datetime.fromisoformat(started_at)).total_seconds()
     except (ValueError, TypeError):
         return None
 
 
 def _resolve_completion_time(job: Any) -> str | None:
-    """Return the first available completion timestamp for a job.
-
-    Completion time may live under different metadata fields depending on the
-    backend that produced the job. Metadata fields are checked in order, then
-    the failure error timestamp (``error.timestamp``) as a final fallback.
-
-    Args:
-        job: A ``JobRequest`` (or duck-typed equivalent).
-
-    Returns:
-        str | None: The completion timestamp, or ``None`` when absent.
-    """
-    metadata = getattr(job, "metadata", None)
-    for meta_field in ("completed_at", "finished_at", "updated_at"):
-        value = getattr(metadata, meta_field, None)
-        if value:
-            return value
-    error = getattr(job, "error", None)
-    timestamp = getattr(error, "timestamp", None)
-    return timestamp if timestamp else None
+    """Return the canonical completion timestamp for legacy UI callers."""
+    return getattr(getattr(job, "metadata", None), "completed_at", None)
 
 
 def _configured_roots(env_name: str, defaults: list[Path]) -> list[Path]:
@@ -210,7 +162,6 @@ class JobsManager:
         """
         self.jobs: dict[str, JobRequest] = {}
         self.job_logs: dict[str, list[str]] = {}
-        self._durations: dict[str, str] = {}
         self.lock = threading.Lock()
         self.dispatcher = JobDispatcherStateMachine()
         self._limits = {
@@ -305,6 +256,7 @@ class JobsManager:
                 job = JobRequest.model_validate(raw)
                 if job.status in (JobStatus.PENDING, JobStatus.RUNNING):
                     job.status = JobStatus.FAILED
+                    job.metadata.completed_at = datetime.now(timezone.utc).isoformat()
                     job.error = ErrorInfo(
                         code="SERVICE_RESTARTED",
                         message="Service restarted; the previous job has no owned worker and will not be resumed",
@@ -437,6 +389,8 @@ class JobsManager:
         request.status = JobStatus.PENDING
         request.error = None
         request.logs = []
+        request.metadata.started_at = None
+        request.metadata.completed_at = None
         request.runtime_tracking.cancel_requested = False
         request.security_constraints.allow_shell = False
         request.security_constraints.path_whitelisted = True
@@ -532,6 +486,7 @@ class JobsManager:
     def _fail_job(self, job: JobRequest, code: str, message: str) -> None:
         """Set a terminal result only when there is no live owned computation; lock held."""
         job.status = JobStatus.FAILED
+        job.metadata.completed_at = datetime.now(timezone.utc).isoformat()
         job.error = ErrorInfo(code=code, message=sanitize_log_text(message))
         job.append_log(f"[{code}] {message}")
         self.job_logs.setdefault(job.job_id, []).append(sanitize_log_text(f"[{code}] {message}"))
@@ -547,6 +502,7 @@ class JobsManager:
                 code = "SERVICE_SHUTDOWN" if self._closing else "USER_CANCELLED"
                 self._fail_job(job, code, "Job stopped before worker launch")
                 return
+            job.metadata.started_at = datetime.now(timezone.utc).isoformat()
             worker = ManagedWorker(job, self._worker_executor)
             self._workers[job_id] = worker
             # The child's request remains PENDING for the existing dispatcher FSM.
@@ -611,6 +567,9 @@ class JobsManager:
                     self._fail_job(job, code, message)
                 else:
                     self._normalize_job_artifacts(result)
+                    result.metadata.created_at = job.metadata.created_at
+                    result.metadata.started_at = job.metadata.started_at
+                    result.metadata.completed_at = datetime.now(timezone.utc).isoformat()
                     self.jobs[job_id] = result
                     self.job_logs[job_id].extend(sanitize_log_text(line) for line in result.logs)
                     self._save()
@@ -709,29 +668,17 @@ class JobsManager:
                 return {"status": "NOT_FOUND", "message": "Job not found"}
 
             status = job.status.value.upper()
-            created_at = job.metadata.created_at if hasattr(job.metadata, "created_at") else None
-            completed_at = _resolve_completion_time(job)
-            output_duration = getattr(job.output, "duration", None)
-
-            # Prefer an explicitly recorded duration, then an exact computed total.
-            duration = output_duration or _compute_duration(status, created_at, completed_at)
-
-            if status == "RUNNING":
-                # Cache the live reading so a later terminal transition can freeze on it.
-                if duration:
-                    self._durations[job_id] = duration
-            elif status not in ACTIVE_STATUSES:
-                # Terminal states must freeze instead of re-ticking across polls.
-                if not duration:
-                    duration = self._durations.get(job_id)
-                if not duration:
-                    duration = _format_elapsed(created_at)
-                if duration:
-                    self._durations[job_id] = duration
+            created_at = job.metadata.created_at
+            started_at = job.metadata.started_at
+            completed_at = job.metadata.completed_at
+            duration = _compute_duration(started_at, completed_at)
 
             return {
                 "status": status,
-                "duration": duration if duration else "N/A",
+                "created_at": created_at,
+                "started_at": started_at,
+                "completed_at": completed_at,
+                "duration": duration,
                 "error_code": job.error.code if job.error else None,
                 "error_message": job.error.message if job.error else None,
                 "artifact_count": len(job.output.artifacts) if hasattr(job.output, "artifacts") else 0,
@@ -851,7 +798,7 @@ class JobsManager:
         self._append_log(job_id, f"[{datetime.now(timezone.utc).isoformat()}] 🚫 Cancellation requested")
         return f"✅ Cancellation requested for {job_id}"
 
-    def list_recent_jobs(self, limit: int = 10) -> list[dict[str, str]]:
+    def list_recent_jobs(self, limit: int = 10) -> list[dict[str, Any]]:
         """List recent jobs with summary info.
 
         Args:
@@ -869,6 +816,9 @@ class JobsManager:
                         "task_type": job.task_type.value,
                         "status": job.status.value.upper(),
                         "created_at": job.metadata.created_at,
+                        "started_at": job.metadata.started_at,
+                        "completed_at": job.metadata.completed_at,
+                        "duration": _compute_duration(job.metadata.started_at, job.metadata.completed_at),
                     }
                 )
             return jobs_list
