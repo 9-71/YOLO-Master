@@ -158,16 +158,27 @@ def test_api_backed_ui_transitions_to_completed_with_artifacts(task_type, data_n
         assert completed[0]["status"] == "COMPLETED"
         assert completed[0]["artifact_count"] == len(artifact_names)
         assert len(completed[4]) == len(artifact_names)
+
+        # The REST manifest is the public API boundary: it contains only safe
+        # artifact IDs and delivery URLs, never source_path or server paths.
+        manifest = api.get(f"/api/v1/jobs/{job_id}/artifacts").json()
+        assert manifest["job_id"] == job_id
+        assert len(manifest["artifacts"]) == len(artifact_names)
+        assert manifest["image_artifacts"] == ["preview.png"]
+        assert str(output_root.resolve()) not in str(manifest)
+        for entry in manifest["artifacts"]:
+            assert "source_path" not in entry
+            assert not Path(entry["artifact_id"]).is_absolute()
+            assert entry["download_url"].startswith("/static/artifacts/")
+
+        # These dual-path values are local Gradio adapter state, not REST data.
         preview_path = completed[8]["value"]
         artifact_metadata = completed[10]
-        source_path = next(item["source_path"] for item in artifact_metadata if item["filename"] == "preview.png")
         assert Path(preview_path).is_file()
         assert not preview_path.startswith(("http://", "https://"))
-        assert preview_path != source_path
-        assert source_path == str((artifact_dir / "preview.png").resolve())
+        assert preview_path != str((artifact_dir / "preview.png").resolve())
         assert gr.Image(type="filepath").postprocess(preview_path).path
-        assert completed[11]["value"] == source_path
-        assert gr.DownloadButton().postprocess(source_path).path == source_path
+        assert completed[11]["value"].endswith("preview.png")
         assert completed[9][0][2] == "COMPLETED"
         assert completed[-1].active is False
 
@@ -177,6 +188,7 @@ def test_api_backed_ui_transitions_to_completed_with_artifacts(task_type, data_n
         open_fn = next(bf.fn for bf in tab.fns.values() if bf.fn and (open_button._id, "click") in bf.targets)
         opened: list[str] = []
         monkeypatch.setattr(os, "startfile", lambda path: opened.append(path), raising=False)
+        monkeypatch.setattr("f1.ui.jobs_tab.subprocess.Popen", lambda command: opened.append(command[-1]))
         open_fn(job_id, artifact_metadata, "en")
         assert opened == [str(artifact_dir.resolve())]
 
