@@ -293,9 +293,7 @@ def read_job(job_id: str, manager: JobsManager = MANAGER_DEPENDENCY) -> JobStatu
     status_code=status.HTTP_202_ACCEPTED,
     summary="Request worker cancellation",
 )
-def cancel_job(
-    job_id: str, response: Response, manager: JobsManager = MANAGER_DEPENDENCY
-) -> CancelResponse:
+def cancel_job(job_id: str, response: Response, manager: JobsManager = MANAGER_DEPENDENCY) -> CancelResponse:
     """Request cooperative cancellation of a PENDING/RUNNING job (202).
 
     The manager stops the owned process tree and only then persists CANCELLED
