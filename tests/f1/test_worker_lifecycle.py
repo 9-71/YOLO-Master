@@ -18,7 +18,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from api.v1.jobs import get_jobs_manager
-from core.schema import ErrorInfo, JobRequest, JobStatus, TERMINAL_STATUSES, TaskType
+from core.schema import TERMINAL_STATUSES, ErrorInfo, JobRequest, JobStatus, TaskType
 from f1.jobs_manager import JobsManager
 from f1.worker_runtime import ManagedWorker, execute_job
 from main_engine import create_app

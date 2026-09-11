@@ -49,7 +49,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
-from core.schema import ErrorInfo, JobRequest, JobStatus, SecurityConstraints, TERMINAL_STATUSES, TaskType
+from core.schema import TERMINAL_STATUSES, ErrorInfo, JobRequest, JobStatus, SecurityConstraints, TaskType
 from core.security import sanitize_for_persistence, sanitize_log_text
 from f1.dispatcher import JobDispatcherStateMachine
 from f1.worker_runtime import ManagedWorker, execute_job

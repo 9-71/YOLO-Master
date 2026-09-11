@@ -419,7 +419,7 @@ def verify_polling(http: SmokeHttp, job_id: str, deadline: float, poll_interval:
     return body
 
 
-def verify_log_streaming(http: SmokeHttp, job_id: str, expected_marker: str) -> str:
+def verify_log_streaming(http: SmokeHttp, job_id: str, completion_markers: tuple[str, ...]) -> str:
     """Check 4: page the whole log buffer and assert cursor integrity + marker.
 
     The buffer is walked in ``?offset=...`` windows from the start (without
@@ -432,14 +432,13 @@ def verify_log_streaming(http: SmokeHttp, job_id: str, expected_marker: str) -> 
     Args:
         http: Bound HTTP client.
         job_id: Diagnose job identifier.
-        expected_marker: Log fragment that must appear (e.g. the state-machine
-            completion line ``"transitioned to: COMPLETED"``).
+        completion_markers: Log fragments where at least one must appear.
 
     Returns:
         str: Human-readable success detail.
 
     Raises:
-        SmokeError: When the cursor math is inconsistent or the marker missing.
+        SmokeError: When the cursor math is inconsistent or no marker is found.
     """
     offset = 0
     seen: list[str] = []
@@ -457,9 +456,9 @@ def verify_log_streaming(http: SmokeHttp, job_id: str, expected_marker: str) -> 
         offset = next_offset
     if not seen:
         raise SmokeError("job produced no log lines at all")
-    if not any(expected_marker in line for line in seen):
-        raise SmokeError(f"completion marker {expected_marker!r} missing from {len(seen)} logged lines")
-    return f"{len(seen)} lines streamed incrementally (cursor clean to the tail), marker {expected_marker!r} found"
+    if not any(marker in line for line in seen for marker in completion_markers):
+        raise SmokeError(f"completion markers {completion_markers!r} missing from {len(seen)} logged lines")
+    return f"{len(seen)} lines streamed incrementally (cursor clean to the tail), completion marker found"
 
 
 def verify_cancellation(
@@ -668,7 +667,11 @@ def run_checks(http: SmokeHttp, args: argparse.Namespace) -> int:
         def _logs() -> str:
             if not polling_ok:
                 raise SmokeError("skipped: Polling check failed")
-            return verify_log_streaming(http, diagnose_job_id, "Completed. Artifacts:")
+            completion_markers = (
+                "Completed. Artifacts:",
+                "Execution successful. Artifacts:",
+            )
+            return verify_log_streaming(http, diagnose_job_id, completion_markers)
 
         run_step("Logs Streaming", _logs)
     else:

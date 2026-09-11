@@ -41,6 +41,7 @@ from core.security import sanitize_log_text
 __version__ = "1.0.0"
 
 __all__ = [
+    "TERMINAL_STATUSES",
     "ArtifactManifest",
     "ErrorInfo",
     "JobRequest",
@@ -49,7 +50,6 @@ __all__ = [
     "OutputConfig",
     "RuntimeTracking",
     "SecurityConstraints",
-    "TERMINAL_STATUSES",
     "TaskType",
     "__version__",
 ]
