@@ -34,7 +34,7 @@ from datetime import datetime, timezone
 from enum import Enum
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from core.security import sanitize_log_text
 
@@ -145,7 +145,7 @@ class JobRequest(BaseModel):
             UI-facing and persisted logs never carry plaintext secrets.
     """
 
-    job_id: str
+    job_id: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9_-]+$")
     task_type: TaskType
     status: JobStatus = JobStatus.PENDING
     metadata: Metadata = Metadata()
@@ -155,6 +155,14 @@ class JobRequest(BaseModel):
     runtime_tracking: RuntimeTracking = RuntimeTracking()
     error: ErrorInfo | None = None
     logs: list[str] = Field(default_factory=list)
+
+    @field_validator("job_id")
+    @classmethod
+    def validate_job_id(cls, value: str) -> str:
+        """Reject path-like reserved identifiers even though they contain allowed characters."""
+        if value in {".", ".."}:
+            raise ValueError("job_id must not be '.' or '..'")
+        return value
 
     @property
     def error_message(self) -> str:

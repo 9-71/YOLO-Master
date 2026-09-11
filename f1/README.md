@@ -298,7 +298,7 @@ The F1 Studio Platform implements the following mandatory security constraints:
 
 ### 5.2 Phase 1 (P1): Multi-Task Unification
 
-**Target**: 2026-09-07 
+**Target**: 2026-09-07
 **Deliverables**:
 
 - [X] Unify `train`, `val`, `predict`, `export` task contracts
@@ -308,13 +308,12 @@ The F1 Studio Platform implements the following mandatory security constraints:
 
 ### 5.3 Phase 2 (P2): Standalone FastAPI Engine & Decoupled Architecture
 
-**Target**: 2026-09-12  
-**Deliverables**:
+**Target**: 2026-09-12**Deliverables**:
 
-- [ ] Standalone FastAPI Service: Expose core task dispatcher endpoints (`/api/v1/jobs/*` for train, val, predict, export, and diagnose) alongside Gradio WebUI
-- [ ] Schema & Contract Alignment: Native OpenAPI/Swagger documentation backed by `core/schema.py` (`JobRequest`, `JobStatus`, and error dictionaries)
-- [ ] Non-blocking Lifecycle & Log Streaming: Asynchronous job lifecycle polling, real-time incremental log retrieval, and cooperative cancellation via REST API
-- [ ] Artifact Delivery Endpoints: Direct file inspection, static mount, and artifact manifest download routes
+- [X] Standalone FastAPI Service: Expose core task dispatcher endpoints (`/api/v1/jobs/*` for train, val, predict, export, and diagnose) alongside Gradio WebUI
+- [X] Schema & Contract Alignment: Native OpenAPI/Swagger documentation backed by `core/schema.py` (`JobRequest`, `JobStatus`, and error dictionaries)
+- [X] Non-blocking Lifecycle & Log Streaming: Asynchronous job lifecycle polling, real-time incremental log retrieval, and cooperative cancellation via REST API
+- [X] Artifact Delivery Endpoints: Direct file inspection, static mount, and artifact manifest download routes
 - [X] Decoupled Frontend Demo: Zero-build verification console (`frontend/index.html` + `app.js`, Tailwind CDN + vanilla ES6) served by the engine at `/` — job dispatch, lifecycle supervision, cursor-based log tailing and artifact inspection against the REST API, with `file://` standalone usage supported via the `null`-origin CORS entry
 
 ---

@@ -131,6 +131,18 @@ I18N: dict[str, dict[str, str]] = {
         "msg.cancel_requested": "✅ Cancellation requested for {job_id}",
         "msg.job_not_found": "❌ Job not found",
         "msg.terminal_state": "⚠️ Job already in terminal state: {status}",
+        # Platform/API errors (not Job lifecycle states)
+        "platform.backend_unavailable": (
+            "Studio Job API is unavailable at {api_url}. Start the complete Studio with `python start_studio.py`, "
+            "or start `python main_engine.py` before `python app.py`. No job was created or changed."
+        ),
+        "platform.api_response_error": (
+            "Studio Job API rejected the request or returned an invalid response. No job was created or changed."
+        ),
+        "platform.api_response_error.http": (
+            "Studio Job API rejected the request (HTTP {status_code}). No job was created or changed."
+        ),
+        "platform.api_error": "Studio Job API communication failed. No job was created or changed.",
         # Security / validation alerts
         "alert.SEC_ERR_001.title": "🔒 Security Policy Violation",
         "alert.SEC_ERR_001.body": (
@@ -224,6 +236,14 @@ I18N: dict[str, dict[str, str]] = {
         "msg.cancel_requested": "✅ 已请求取消任务 {job_id}",
         "msg.job_not_found": "❌ 未找到任务",
         "msg.terminal_state": "⚠️ 任务已处于终态：{status}",
+        # 平台/API 错误（不属于任务生命周期状态）
+        "platform.backend_unavailable": (
+            "无法连接位于 {api_url} 的 Studio Job API。请使用 `python start_studio.py` 启动完整 Studio，"
+            "或先运行 `python main_engine.py`，再运行 `python app.py`。未创建或修改任何任务。"
+        ),
+        "platform.api_response_error": "Studio Job API 拒绝了请求或返回了无效响应。未创建或修改任何任务。",
+        "platform.api_response_error.http": "Studio Job API 拒绝了请求（HTTP {status_code}）。未创建或修改任何任务。",
+        "platform.api_error": "Studio Job API 通信失败。未创建或修改任何任务。",
         # Security / validation alerts
         "alert.SEC_ERR_001.title": "🔒 安全策略违规",
         "alert.SEC_ERR_001.body": "该任务被 fail-closed 安全策略拦截。请确保所有输入/输出路径均位于允许路径白名单内。",

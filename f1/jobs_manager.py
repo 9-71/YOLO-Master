@@ -36,28 +36,44 @@ Example:
 
 from __future__ import annotations
 
+import atexit
 import json
 import os
+import queue
 import threading
+import time
 import traceback
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from core.schema import ErrorInfo, JobRequest, JobStatus, SecurityConstraints, TaskType
-from core.security import sanitize_log_text
+from core.security import sanitize_for_persistence, sanitize_log_text
 from f1.dispatcher import JobDispatcherStateMachine
+from f1.worker_runtime import ManagedWorker, execute_job
 
 #: Job states that still require high-frequency lifecycle polling.
 ACTIVE_STATUSES = frozenset({"PENDING", "RUNNING"})
 #: Image file extensions recognized by the artifact preview gallery.
 IMAGE_EXTENSIONS: frozenset[str] = frozenset({".jpg", ".jpeg", ".png", ".bmp", ".webp"})
+MODEL_ROOTS_ENV = "F1_MODEL_ROOTS"
+DATA_ROOTS_ENV = "F1_DATA_ROOTS"
+OUTPUT_ROOT_ENV = "F1_OUTPUT_ROOT"
+NETWORK_INPUT_HOSTS_ENV = "F1_NETWORK_INPUT_HOSTS"
+MAX_PENDING_JOBS_ENV = "F1_MAX_PENDING_JOBS"
+#: Default number of jobs allowed to wait for an execution slot.
+MAX_PENDING_JOBS = 100
+NETWORK_INPUT_SCHEMES: frozenset[str] = frozenset({"http", "https", "rtmp", "rtsp", "tcp"})
 
 __all__ = [
     "ACTIVE_STATUSES",
     "IMAGE_EXTENSIONS",
+    "MAX_PENDING_JOBS",
+    "MAX_PENDING_JOBS_ENV",
     "JobsManager",
+    "QueueFullError",
     "get_job_image_artifacts",
     "is_terminal_status",
 ]
@@ -133,10 +149,58 @@ def _resolve_completion_time(job: Any) -> str | None:
     return timestamp if timestamp else None
 
 
-class JobsManager:
-    """Thread-safe job management with real-time state tracking."""
+def _configured_roots(env_name: str, defaults: list[Path]) -> list[Path]:
+    """Resolve a server-owned root list; request payloads never participate."""
+    raw = os.environ.get(env_name)
+    entries = raw.split(os.pathsep) if raw else [str(path) for path in defaults]
+    return [Path(entry).resolve() for entry in entries if entry.strip()]
 
-    def __init__(self, storage_path: str | None = None) -> None:
+
+def _resolve_contained(path_value: str, roots: list[Path], label: str) -> Path:
+    """Resolve a local path (including symlinks) and require containment in a trusted root."""
+    if not path_value or any(ord(char) < 32 for char in path_value):
+        raise ValueError(f"{label} is empty or contains control characters")
+    try:
+        resolved = Path(path_value).resolve()
+    except (OSError, ValueError) as exc:
+        raise ValueError(f"{label} is not a valid local path") from exc
+    for root in roots:
+        try:
+            resolved.relative_to(root)
+            return resolved
+        except ValueError:
+            continue
+    raise ValueError(f"{label} is outside the server-configured trusted roots")
+
+
+def _is_network_input(source: str) -> bool:
+    """Return whether the source is an explicitly supported non-file URL."""
+    parsed = urlsplit(source)
+    return parsed.scheme.lower() in NETWORK_INPUT_SCHEMES and bool(parsed.netloc)
+
+
+class QueueFullError(RuntimeError):
+    """Raised when the configured pending-job capacity is exhausted."""
+
+    code = "QUEUE_FULL"
+
+
+class JobsManager:
+    """Bounded process execution with parent-owned lifecycle and persisted history."""
+
+    def __init__(
+        self,
+        storage_path: str | None = None,
+        *,
+        model_roots: list[str | Path] | None = None,
+        data_roots: list[str | Path] | None = None,
+        output_root: str | Path | None = None,
+        network_input_hosts: list[str] | None = None,
+        cpu_concurrency: int | None = None,
+        gpu_concurrency: int | None = None,
+        max_pending_jobs: int | None = None,
+        stop_grace_seconds: float | None = None,
+    ) -> None:
         """Initialize job manager; in-memory only unless storage_path is given.
 
         Args:
@@ -149,6 +213,51 @@ class JobsManager:
         self._durations: dict[str, str] = {}
         self.lock = threading.Lock()
         self.dispatcher = JobDispatcherStateMachine()
+        self._limits = {
+            "cpu": int(os.environ.get("F1_CPU_CONCURRENCY", "2")) if cpu_concurrency is None else cpu_concurrency,
+            "gpu": int(os.environ.get("F1_GPU_CONCURRENCY", "1")) if gpu_concurrency is None else gpu_concurrency,
+        }
+        if any(type(value) is not int or value < 1 for value in self._limits.values()):
+            raise ValueError("CPU/GPU concurrency must be positive integers")
+        self.max_pending_jobs = (
+            int(os.environ.get(MAX_PENDING_JOBS_ENV, str(MAX_PENDING_JOBS)))
+            if max_pending_jobs is None
+            else max_pending_jobs
+        )
+        if type(self.max_pending_jobs) is not int or self.max_pending_jobs < 1:
+            raise ValueError("Maximum pending jobs must be a positive integer")
+        self._stop_grace = (
+            float(os.environ.get("F1_STOP_GRACE_SECONDS", "2")) if stop_grace_seconds is None else stop_grace_seconds
+        )
+        if not 0 <= self._stop_grace <= 30:
+            raise ValueError("Stop grace must be between 0 and 30 seconds")
+        self._queues = {resource: queue.Queue() for resource in self._limits}
+        self._supervisors: list[threading.Thread] = []
+        self._workers: dict[str, ManagedWorker] = {}
+        self._closing = False
+        self._worker_executor = execute_job  # Server-only injection seam for lightweight process tests.
+        cwd = Path.cwd().resolve()
+        self._model_roots = (
+            [Path(path).resolve() for path in model_roots]
+            if model_roots is not None
+            else _configured_roots(MODEL_ROOTS_ENV, [cwd])
+        )
+        self._data_roots = (
+            [Path(path).resolve() for path in data_roots]
+            if data_roots is not None
+            else _configured_roots(DATA_ROOTS_ENV, [cwd])
+        )
+        self._output_root = (
+            Path(output_root).resolve()
+            if output_root is not None
+            else _configured_roots(OUTPUT_ROOT_ENV, [cwd / "runs"])[0]
+        )
+        configured_hosts = (
+            network_input_hosts
+            if network_input_hosts is not None
+            else os.environ.get(NETWORK_INPUT_HOSTS_ENV, "").split(",")
+        )
+        self._network_input_hosts = {host.strip().casefold() for host in configured_hosts if host.strip()}
         self._storage_path = Path(storage_path) if storage_path else None
         if self._storage_path is not None:
             self._load()
@@ -165,11 +274,13 @@ class JobsManager:
         """
         if self._storage_path is None:
             return
-        payload = {
-            "version": 1,
-            "jobs": {jid: job.model_dump(mode="json") for jid, job in self.jobs.items()},
-            "job_logs": self.job_logs,
-        }
+        payload = sanitize_for_persistence(
+            {
+                "version": 1,
+                "jobs": {jid: job.model_dump(mode="json") for jid, job in self.jobs.items()},
+                "job_logs": self.job_logs,
+            }
+        )
         tmp_path = self._storage_path.with_suffix(self._storage_path.suffix + ".tmp")
         try:
             self._storage_path.parent.mkdir(parents=True, exist_ok=True)
@@ -181,8 +292,8 @@ class JobsManager:
     def _load(self) -> None:
         """Restore persisted state from the storage file, if present.
 
-        Jobs left in PENDING/RUNNING are orphaned (their execution threads died
-        with the previous process) and are healed to FAILED so the UI never
+        Jobs left in PENDING/RUNNING have no owned worker in this manager and
+        are healed to FAILED with an explicit restart reason so the UI never
         shows them as eternally active. A missing or corrupt file silently
         degrades to an empty in-memory state.
         """
@@ -194,8 +305,17 @@ class JobsManager:
                 job = JobRequest.model_validate(raw)
                 if job.status in (JobStatus.PENDING, JobStatus.RUNNING):
                     job.status = JobStatus.FAILED
+                    job.error = ErrorInfo(
+                        code="SERVICE_RESTARTED",
+                        message="Service restarted; the previous job has no owned worker and will not be resumed",
+                    )
+                    job.append_log(f"[SERVICE_RESTARTED] {job.error.message}")
                 self.jobs[jid] = job
             self.job_logs.update(payload.get("job_logs", {}))
+            for jid, job in self.jobs.items():
+                if job.error and job.error.code == "SERVICE_RESTARTED":
+                    self.job_logs.setdefault(jid, []).append(sanitize_log_text(job.error.message))
+            self._save()
         except (OSError, ValueError):
             pass
 
@@ -227,9 +347,6 @@ class JobsManager:
         timestamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
         job_id = f"{task_type}_{timestamp}_{uuid.uuid4().hex[:8]}"
 
-        # Construct dynamic whitelist: include all input/output paths
-        dynamic_whitelist = list(set(allowed_paths + [output_dir]))
-
         # Build params dict based on task type
         params = {}
         if task_type in ["predict", "train", "val"]:
@@ -258,7 +375,7 @@ class JobsManager:
             security_constraints=SecurityConstraints(
                 path_whitelisted=True,
                 allow_shell=False,  # Permanently disabled
-                allowed_paths=dynamic_whitelist,
+                allowed_paths=allowed_paths,
             ),
             runtime_tracking={
                 "stream_logs": True,
@@ -288,8 +405,10 @@ class JobsManager:
         - ``security_constraints.allow_shell`` is forced to ``False`` and
           ``path_whitelisted`` forced to ``True``, regardless of the caller's
           payload.
-        - ``security_constraints.allowed_paths`` gains the job's ``output_dir``
-          (dynamic whitelist), mirroring the UI submission path.
+        - Client path lists and regex patterns are discarded. Only trusted,
+          server-configured model/data roots are passed to handlers.
+        - Model, data and output paths are independently resolved and checked;
+          output must remain beneath the trusted output root.
         - ``output.artifacts`` is reset to ``[]``: only the dispatcher may
           populate the manifest after a successful execution, so clients can
           never pre-load arbitrary files into the artifact delivery routes.
@@ -303,27 +422,16 @@ class JobsManager:
                 registered; callers should use the returned instance.
 
         Returns:
-            JobRequest: The registered job, with ``status=PENDING`` and the
-            submission log line appended.
+            JobRequest: The registered job. It starts PENDING and may already be
+            RUNNING when the caller reads it after a capacity slot is assigned.
 
         Raises:
             ValueError: If ``request.job_id`` is already registered.
+            QueueFullError: If the pending-job capacity is exhausted.
 
-        Example:
-            >>> from core.schema import JobRequest, JobStatus, TaskType
-            >>> manager = JobsManager()
-            >>> def _noop_execute(job):  # dispatcher stub: no engine work, no stdout
-            ...     job.status = JobStatus.COMPLETED
-            ...     return job
-            >>> manager.dispatcher.execute = _noop_execute
-            >>> request = JobRequest(job_id="doc-001", task_type=TaskType.PREDICT)
-            >>> submitted = manager.submit_job_request(request)
-            >>> submitted.job_id
-            'doc-001'
-            >>> manager.submit_job_request(request)  # doctest: +IGNORE_EXCEPTION_DETAIL
-            Traceback (most recent call last):
-                ...
-            ValueError: Duplicate job_id ...
+        Execution uses a fresh Python interpreter. Parent-side handler/dispatcher
+        monkeypatches are not inherited; lifecycle tests supply an importable
+        server-owned executor through ``_worker_executor`` instead.
         """
         # ---- Server-side normalization (fail-closed) ----
         request.status = JobStatus.PENDING
@@ -332,9 +440,25 @@ class JobsManager:
         request.runtime_tracking.cancel_requested = False
         request.security_constraints.allow_shell = False
         request.security_constraints.path_whitelisted = True
-        request.security_constraints.allowed_paths = list(
-            set(request.security_constraints.allowed_paths + [request.output.output_dir])
+        request.security_constraints.allowed_paths = sorted(
+            {str(path) for path in (*self._model_roots, *self._data_roots)}
         )
+        request.security_constraints.allowed_path_patterns = []
+        _resolve_contained(request.output.output_dir, [self._output_root], "output_dir")
+        model_path = request.params.get("model_path")
+        if model_path:
+            _resolve_contained(str(model_path), self._model_roots, "model_path")
+        data_source = request.params.get("data_source")
+        if data_source is not None:
+            sources = data_source if isinstance(data_source, (list, tuple)) else [data_source]
+            for source in sources:
+                source_value = str(source)
+                if _is_network_input(source_value):
+                    hostname = urlsplit(source_value).hostname
+                    if hostname is None or hostname.casefold() not in self._network_input_hosts:
+                        raise ValueError("data_source network host is not server-authorized")
+                else:
+                    _resolve_contained(source_value, self._data_roots, "data_source")
         request.output.artifacts = []
 
         # Engine-required defaults (mirroring the UI form path)
@@ -351,76 +475,204 @@ class JobsManager:
         request.metadata.created_at = datetime.now(timezone.utc).isoformat()
 
         with self.lock:
+            if self._closing:
+                raise ValueError("Job manager is shutting down")
             if request.job_id in self.jobs:
                 raise ValueError(f"Duplicate job_id '{request.job_id}': a job with this identifier already exists")
+            pending_count = sum(job.status == JobStatus.PENDING for job in self.jobs.values())
+            if pending_count >= self.max_pending_jobs:
+                raise QueueFullError(f"Pending job capacity exhausted ({pending_count}/{self.max_pending_jobs})")
             self.jobs[request.job_id] = request
             self.job_logs[request.job_id] = [
                 f"[{datetime.now(timezone.utc).isoformat()}] Job {request.job_id} submitted"
             ]
             self._save()
-
-        # Execute job in background thread
-        thread = threading.Thread(target=self._execute_job, args=(request.job_id,), daemon=True)
-        thread.start()
+            self._start_supervisors()
+            self._queues[self._resource_class(request)].put(request.job_id)
 
         return request
 
-    def _execute_job(self, job_id: str) -> None:
-        """Execute job in background thread with log capture.
+    @staticmethod
+    def _resource_class(job: JobRequest) -> str:
+        """Explicit CPU uses CPU slots; auto, CUDA, multi-GPU and MPS share GPU slots."""
+        device = job.params.get("device", "cpu")
+        return "cpu" if str(device).strip().lower() == "cpu" else "gpu"
 
-        Args:
-            job_id: Job identifier
-        """
+    def _start_supervisors(self) -> None:
+        """Start a fixed number of supervisors once, while holding the manager lock."""
+        if self._supervisors:
+            return
+        for resource, capacity in self._limits.items():
+            for index in range(capacity):
+                thread = threading.Thread(
+                    target=self._consume_queue, args=(resource,), name=f"studio-{resource}-{index}", daemon=True
+                )
+                self._supervisors.append(thread)
+                thread.start()
+        atexit.register(self.shutdown)
+
+    def _consume_queue(self, resource: str) -> None:
+        """Own one capacity slot; no thread or process is allocated to waiting jobs."""
+        pending = self._queues[resource]
+        while True:
+            job_id = pending.get()
+            try:
+                if job_id is None:
+                    return
+                try:
+                    self._execute_job(job_id)
+                except Exception as exc:
+                    with self.lock:
+                        if job_id in self._workers:
+                            raise  # Never discard ownership of an unexpectedly live worker.
+                        self._fail_job(self.jobs[job_id], "EXECUTION_FAILED", str(exc))
+            finally:
+                pending.task_done()
+
+    def _fail_job(self, job: JobRequest, code: str, message: str) -> None:
+        """Set a terminal result only when there is no live owned computation; lock held."""
+        job.status = JobStatus.FAILED
+        job.error = ErrorInfo(code=code, message=sanitize_log_text(message))
+        job.append_log(f"[{code}] {message}")
+        self.job_logs.setdefault(job.job_id, []).append(sanitize_log_text(f"[{code}] {message}"))
+        self._save()
+
+    def _execute_job(self, job_id: str) -> None:
+        """Supervise one process through execution, tree cleanup and final persistence."""
         with self.lock:
             job = self.jobs.get(job_id)
-            if not job:
+            if not job or job.status not in (JobStatus.PENDING, JobStatus.RUNNING):
                 return
-
-        self._append_log(job_id, f"[{datetime.now(timezone.utc).isoformat()}] Starting execution...")
-
+            if self._closing or job.runtime_tracking.cancel_requested:
+                code = "SERVICE_SHUTDOWN" if self._closing else "USER_CANCELLED"
+                self._fail_job(job, code, "Job stopped before worker launch")
+                return
+            worker = ManagedWorker(job, self._worker_executor)
+            self._workers[job_id] = worker
+            # The child's request remains PENDING for the existing dispatcher FSM.
+            job.status = JobStatus.RUNNING
+            self._save()
+        result = None
+        code, message = None, None
+        deadline = time.monotonic() + max(float(job.runtime_tracking.timeout_seconds), 0)
         try:
-            # Execute via dispatcher
-            result = self.dispatcher.execute(job)
-
+            worker.start()
+            # Run our cleanup before multiprocessing's interpreter-exit join.
+            atexit.unregister(self.shutdown)
+            atexit.register(self.shutdown)
+            while True:
+                with self.lock:
+                    if self._closing:
+                        code, message = "SERVICE_SHUTDOWN", "Service is shutting down"
+                    elif job.runtime_tracking.cancel_requested:
+                        code, message = "USER_CANCELLED", "Job execution cancelled by user request"
+                    elif time.monotonic() >= deadline:
+                        code, message = "TIMEOUT", "Job execution exceeded its configured timeout"
+                if code:
+                    break
+                kind, payload = worker.receive()
+                if kind == "lost":
+                    code, message = "WORKER_LOST", "Computation process exited without reporting a result"
+                    break
+                if kind == "result":
+                    result = JobRequest.model_validate(payload)
+                    if result.status not in (JobStatus.COMPLETED, JobStatus.FAILED):
+                        code, message = "WORKER_LOST", "Worker returned without a terminal result"
+                    break
+                if not worker.process.is_alive():
+                    code, message = "WORKER_LOST", "Worker exited without reporting a result"
+                    break
+        except (EOFError, BrokenPipeError):
+            code, message = "WORKER_LOST", "Worker connection closed without a result"
+        except Exception as exc:  # noqa: BLE001 - parent must always clean up the tree
+            code, message = "EXECUTION_FAILED", str(exc)
+            self._append_log(job_id, traceback.format_exc())
+        finally:
+            # Never detach a worker or release its resource slot on cleanup failure.
+            # Keep RUNNING and a structured reason while retaining/retrying ownership.
+            while True:
+                try:
+                    worker.stop(self._stop_grace if code else 0)
+                    break
+                except Exception as exc:  # noqa: BLE001 - retain ownership on OS cleanup failure
+                    with self.lock:
+                        job.error = ErrorInfo(code="WORKER_STOP_FAILED", message=sanitize_log_text(str(exc)))
+                        self._save()
+                    time.sleep(0.2)
+            worker.close()
             with self.lock:
-                self.jobs[job_id] = result
-                self._save()
-
-            if result.status == JobStatus.COMPLETED:
-                self._append_log(
-                    job_id,
-                    f"[{datetime.now(timezone.utc).isoformat()}] ✅ Completed. "
-                    f"Artifacts: {len(result.output.artifacts)}",
-                )
-            elif result.status == JobStatus.FAILED:
-                error_msg = result.error.message if result.error else "Unknown error"
-                self._append_log(job_id, f"[{datetime.now(timezone.utc).isoformat()}] ❌ Failed: {error_msg}")
-
-        except Exception as e:  # noqa: BLE001
-            self._append_log(
-                job_id, f"[{datetime.now(timezone.utc).isoformat()}] ❌ Exception: {type(e).__name__}: {e}"
-            )
-            with self.lock:
-                if job_id in self.jobs:
-                    self.jobs[job_id].status = JobStatus.FAILED
-                    # Fail-closed error attribution: the unhandled exception is
-                    # recorded (sanitized) as the job's structured error so the
-                    # API never reports null error_code/error_message on a
-                    # FAILED job; the sanitized traceback follows in the logs.
-                    self.jobs[job_id].error = ErrorInfo(
-                        code="EXECUTION_FAILED",
-                        message=sanitize_log_text(str(e)),
-                    )
-                    self.job_logs.setdefault(job_id, []).append(sanitize_log_text(traceback.format_exc()))
+                self._workers.pop(job_id, None)
+                # An accepted cancel during result transfer/cleanup still wins.
+                if job.runtime_tracking.cancel_requested:
+                    code, message = "USER_CANCELLED", "Job execution cancelled by user request"
+                elif self._closing:
+                    code, message = "SERVICE_SHUTDOWN", "Service is shutting down"
+                if code:
+                    self._fail_job(job, code, message)
+                else:
+                    self._normalize_job_artifacts(result)
+                    self.jobs[job_id] = result
+                    self.job_logs[job_id].extend(sanitize_log_text(line) for line in result.logs)
                     self._save()
+
+    def shutdown(self) -> None:
+        """Reject submissions, end pending jobs and join all owned execution slots."""
+        with self.lock:
+            if not self._closing:
+                self._closing = True
+                for job_id, job in self.jobs.items():
+                    if job.status == JobStatus.PENDING and job_id not in self._workers:
+                        self._fail_job(job, "SERVICE_SHUTDOWN", "Service stopped before worker launch")
+                for resource, capacity in self._limits.items():
+                    for _ in range(capacity):
+                        self._queues[resource].put(None)
+        deadline = time.monotonic() + self._stop_grace + 15
+        for thread in self._supervisors:
+            thread.join(timeout=max(0, deadline - time.monotonic()))
+        if any(thread.is_alive() for thread in self._supervisors):
+            raise RuntimeError("Worker cleanup is still pending; ownership has been retained")
+        atexit.unregister(self.shutdown)
 
     def _append_log(self, job_id: str, message: str) -> None:
         """Append log message to job log buffer."""
         with self.lock:
             if job_id not in self.job_logs:
                 self.job_logs[job_id] = []
-            self.job_logs[job_id].append(message)
+            self.job_logs[job_id].append(sanitize_log_text(message))
             self._save()
+
+    def _job_artifact_root(self, job: JobRequest) -> Path | None:
+        """Return the resolved per-job output directory when it is trusted."""
+        try:
+            output_dir = _resolve_contained(job.output.output_dir, [self._output_root], "output_dir")
+            root = (output_dir / job.job_id).resolve()
+            root.relative_to(self._output_root)
+            return root
+        except (OSError, ValueError):
+            return None
+
+    def _normalize_job_artifacts(self, job: JobRequest) -> None:
+        """Replace handler paths with collision-free relative artifact IDs."""
+        root = self._job_artifact_root(job)
+        if root is None:
+            job.output.artifacts = []
+            return
+        artifact_ids: list[str] = []
+        seen: set[str] = set()
+        for entry in job.output.artifacts:
+            candidate = Path(entry)
+            if not candidate.is_absolute():
+                candidate = root / candidate
+            try:
+                resolved = candidate.resolve()
+                artifact_id = resolved.relative_to(root).as_posix()
+            except (OSError, ValueError):
+                continue
+            if not resolved.is_file() or artifact_id in seen:
+                continue
+            seen.add(artifact_id)
+            artifact_ids.append(artifact_id)
+        job.output.artifacts = sorted(artifact_ids)
 
     def get_job(self, job_id: str) -> JobRequest | None:
         """Return the registered job for ``job_id``, or ``None`` when unknown.
@@ -523,7 +775,7 @@ class JobsManager:
             return list(self.job_logs.get(job_id, []))
 
     def get_job_artifacts(self, job_id: str) -> list[tuple[str, str]]:
-        """Get job artifacts as (filename, absolute_path) tuples.
+        """Get validated artifacts as (safe relative ID, internal absolute path) tuples.
 
         Args:
             job_id: Job identifier
@@ -536,28 +788,38 @@ class JobsManager:
             if not job or not hasattr(job.output, "artifacts"):
                 return []
 
+            root = self._job_artifact_root(job)
+            if root is None:
+                return []
             artifacts = []
+            seen: set[str] = set()
             for artifact_path in job.output.artifacts:
-                path = Path(artifact_path)
-                if path.exists():
-                    artifacts.append((path.name, str(path.absolute())))
+                path = root / artifact_path
+                try:
+                    resolved = path.resolve()
+                    artifact_id = resolved.relative_to(root).as_posix()
+                except (OSError, ValueError):
+                    continue
+                if resolved.is_file() and artifact_id not in seen:
+                    seen.add(artifact_id)
+                    artifacts.append((artifact_id, str(resolved)))
             return artifacts
 
     def get_job_image_artifacts(self, job_id: str) -> list[str]:
-        """Get image artifact paths for a completed job.
+        """Get safe relative image artifact identifiers for a completed job.
 
         Args:
             job_id: Job identifier
 
         Returns:
-            List of absolute image file paths under the job's output_dir.
+            List of relative artifact IDs under the job's output directory.
             Returns an empty list when the job is not found or not completed.
         """
-        with self.lock:
-            job = self.jobs.get(job_id)
-            if not job:
-                return []
-            return get_job_image_artifacts(job)
+        return [
+            artifact_id
+            for artifact_id, path in self.get_job_artifacts(job_id)
+            if Path(path).suffix.lower() in IMAGE_EXTENSIONS
+        ]
 
     def cancel_job(self, job_id: str) -> str:
         """Request job cancellation.
@@ -576,7 +838,12 @@ class JobsManager:
             if job.status in [JobStatus.COMPLETED, JobStatus.FAILED]:
                 return f"⚠️ Job already in terminal state: {job.status.value}"
 
+            if not job.runtime_tracking.cancellable:
+                return "⚠️ Job is not cancellable"
+
             job.runtime_tracking.cancel_requested = True
+            if job_id not in self._workers:
+                self._fail_job(job, "USER_CANCELLED", "Job cancelled before worker launch")
             self._save()
 
         # Append log AFTER releasing the lock: _append_log acquires self.lock

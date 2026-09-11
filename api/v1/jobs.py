@@ -32,9 +32,9 @@ from urllib.parse import quote
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel
 
-from core.schema import JobRequest, JobStatus, TaskType
+from core.schema import ErrorInfo, JobRequest, JobStatus, TaskType
 from core.security import sanitize_log_text
-from f1.jobs_manager import IMAGE_EXTENSIONS, JobsManager
+from f1.jobs_manager import IMAGE_EXTENSIONS, JobsManager, QueueFullError
 
 __all__ = ["get_jobs_manager", "router"]
 
@@ -47,6 +47,15 @@ DEFAULT_JOBS_STATE_PATH = "runs/jobs_state.json"
 
 _manager: JobsManager | None = None
 _manager_lock = threading.Lock()
+
+
+def shutdown_jobs_manager() -> None:
+    """Close the singleton on service shutdown without creating a new manager."""
+    global _manager
+    with _manager_lock:
+        if _manager is not None:
+            _manager.shutdown()
+            _manager = None
 
 
 def get_jobs_manager() -> JobsManager:
@@ -137,7 +146,7 @@ class ArtifactEntry(BaseModel):
     """One generated artifact file with its download reference."""
 
     filename: str
-    path: str
+    artifact_id: str
     is_image: bool
     download_url: str
 
@@ -176,12 +185,20 @@ def create_job(payload: JobRequest, manager: JobsManager = MANAGER_DEPENDENCY) -
 
     Raises:
         HTTPException: 409 when ``payload.job_id`` is already registered.
+            429 when the pending-job capacity is exhausted.
     """
     try:
         return manager.submit_job_request(payload)
-    except ValueError as exc:  # duplicate job_id
+    except QueueFullError as exc:
+        error = ErrorInfo(code=exc.code, message=sanitize_log_text(str(exc)))
         raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail=error.model_dump(mode="json"),
+        ) from exc
+    except ValueError as exc:
+        is_duplicate = str(exc).startswith("Duplicate job_id")
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT if is_duplicate else status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail=sanitize_log_text(str(exc)),
         ) from exc
 
@@ -264,13 +281,14 @@ def read_job(job_id: str, manager: JobsManager = MANAGER_DEPENDENCY) -> JobStatu
     "/{job_id}/cancel",
     response_model=CancelResponse,
     status_code=status.HTTP_202_ACCEPTED,
-    summary="Request cooperative cancellation",
+    summary="Request worker cancellation",
 )
 def cancel_job(job_id: str, manager: JobsManager = MANAGER_DEPENDENCY) -> CancelResponse:
     """Request cooperative cancellation of a PENDING/RUNNING job (202).
 
-    The dispatcher observes ``cancel_requested`` at its checkpoints and drives
-    the job to FAILED with error code ``USER_CANCELLED``.
+    The manager stops the owned process tree and only then persists FAILED with
+    error code ``USER_CANCELLED``. A 202 response acknowledges the request; poll
+    the job endpoint to observe confirmed termination.
 
     Raises:
         HTTPException: 404 when the job is unknown, 409 when it is already in
@@ -353,8 +371,8 @@ def get_artifacts(job_id: str, manager: JobsManager = MANAGER_DEPENDENCY) -> Art
 
     ``artifacts`` lists the dispatcher-captured files (existing on disk only)
     with their ``/static/artifacts/...`` download references;
-    ``image_artifacts`` carries the validated image paths scoped to the job's
-    output directory.
+    ``image_artifacts`` carries safe relative IDs scoped to the job's output
+    directory; server filesystem paths are never returned.
 
     Raises:
         HTTPException: 404 when no job with ``job_id`` is registered.
@@ -366,10 +384,10 @@ def get_artifacts(job_id: str, manager: JobsManager = MANAGER_DEPENDENCY) -> Art
         )
     artifacts = [
         ArtifactEntry(
-            filename=name,
-            path=path,
+            filename=Path(name).name,
+            artifact_id=name,
             is_image=Path(path).suffix.lower() in IMAGE_EXTENSIONS,
-            download_url=f"/static/artifacts/{job_id}/{quote(name)}",
+            download_url=f"/static/artifacts/{job_id}/{quote(name, safe='/')}",
         )
         for name, path in manager.get_job_artifacts(job_id)
     ]

@@ -55,10 +55,12 @@ from f1.jobs_manager import (
     is_terminal_status,
 )
 from f1.ui.i18n import DEFAULT_LANGUAGE, get_columns, get_text
+from f1.ui.studio_jobs_client import ArtifactMetadata, StudioJobsApiError
 
 __all__ = [
     "ACTIVE_STATUSES",
     "IMAGE_EXTENSIONS",
+    "POLL_CONCURRENCY_ID",
     "JobsManager",
     "alert_banner",
     "compute_poll_state",
@@ -67,6 +69,7 @@ __all__ = [
     "get_job_image_artifacts",
     "is_terminal_status",
     "jobs_tab_language_updates",
+    "platform_error_diagnostics",
     "recent_jobs_rows",
     "security_alert_toast",
 ]
@@ -77,6 +80,17 @@ SECURITY_ALERT_CODES = frozenset({"SEC_ERR_001", "PARAM_VALIDATION_FAILED"})
 POLL_FAST_SECONDS = 1.0
 #: Slow background sync interval (seconds) for recent jobs and final artifacts.
 POLL_SLOW_SECONDS = 30.0
+#: Shared queue for every callback that writes the Jobs monitoring panels.
+POLL_CONCURRENCY_ID = "gradio-jobs-status-sync"
+
+
+def platform_error_diagnostics(lang: str, error: StudioJobsApiError, api_url: str = "") -> str:
+    """Render a platform-scoped API error through the existing i18n resources."""
+    key = f"{error.i18n_key}.http" if error.status_code else error.i18n_key
+    message = get_text(lang, key).format(api_url=api_url, status_code=error.status_code)
+    return f"[{error.code}] {message}"
+
+
 #: Default form values per task type. Selecting a task_type repopulates model_path,
 #: data_source and output_dir together (mirroring Inference Studio's dynamic weight
 #: switching) so downstream handlers always receive engine-compatible inputs:
@@ -194,6 +208,15 @@ def _cycle_artifact(paths: list[str], selected: str | None, step: int) -> tuple[
     idx = names.index(selected) if selected and selected in names else 0
     new_idx = (idx + step) % len(names)
     return names[new_idx], paths[new_idx]
+
+
+def _artifact_download_update(metadata: list[ArtifactMetadata], filename: str | None = None) -> Any:
+    """Point the download control at the selected artifact's original source path."""
+    selected = next((item for item in metadata if filename and item["filename"] == filename), None)
+    if selected is None:
+        selected = next((item for item in metadata if item["is_image"]), metadata[0] if metadata else None)
+    source_path = selected["source_path"] if selected else None
+    return gr.update(value=source_path, interactive=bool(source_path))
 
 
 def format_created_at(created_at: str | None) -> str:
@@ -316,7 +339,8 @@ class PollState:
         banner: Markdown alert banner (empty when the job has no failure).
         logs: Formatted execution logs.
         artifacts: Rows for the artifacts dataframe (filename, path).
-        image_artifacts: Absolute paths of image files under output_dir for the preview image.
+        image_artifacts: Local paths of image files used only by the Gradio preview.
+        artifact_metadata: Dual-path metadata retained for artifact UI callbacks.
         recent: Rows for the recent-jobs dataframe (timestamps formatted as local time).
         keep_polling: True while the job is active; False once terminal (deactivates the fast timer).
     """
@@ -327,11 +351,17 @@ class PollState:
     logs: str = ""
     artifacts: list[list[str]] = field(default_factory=list)
     image_artifacts: list[str] = field(default_factory=list)
+    artifact_metadata: list[ArtifactMetadata] = field(default_factory=list)
     recent: list[list[str]] = field(default_factory=list)
     keep_polling: bool = False
 
 
-def compute_poll_state(jobs_manager: JobsManager, job_id: str, lang: str = DEFAULT_LANGUAGE) -> PollState:
+def compute_poll_state(
+    jobs_manager: JobsManager,
+    job_id: str,
+    lang: str = DEFAULT_LANGUAGE,
+    raw_status: dict[str, Any] | None = None,
+) -> PollState:
     """Compute the complete polling snapshot for one job in the given language.
 
     Pure presentation logic over the JobsManager backend API: the backend responses
@@ -347,6 +377,8 @@ def compute_poll_state(jobs_manager: JobsManager, job_id: str, lang: str = DEFAU
         jobs_manager: JobsManager instance (or duck-typed equivalent for tests).
         job_id: Selected job identifier (may be empty).
         lang: ISO language code passed to i18n lookups.
+        raw_status: Optional status already fetched by the polling callback. This
+            avoids a second API read inside the same UI snapshot.
 
     Returns:
         PollState: Snapshot with localized status, banner, logs, artifacts, recent
@@ -371,7 +403,7 @@ def compute_poll_state(jobs_manager: JobsManager, job_id: str, lang: str = DEFAU
             recent=recent_jobs_rows(jobs_manager, limit=20),
         )
 
-    raw = jobs_manager.get_job_status(job_id)
+    raw = raw_status if raw_status is not None else jobs_manager.get_job_status(job_id)
     status_str = raw.get("status", "NOT_FOUND")
 
     status = {
@@ -407,10 +439,29 @@ def compute_poll_state(jobs_manager: JobsManager, job_id: str, lang: str = DEFAU
         banner = alert_banner(lang, code, raw.get("error_message"))
 
     logs = jobs_manager.get_job_logs(job_id)
-    artifacts = [[name, path] for name, path in jobs_manager.get_job_artifacts(job_id)]
-    # Safe reflection: test Mocks may not implement get_job_image_artifacts.
-    getter = getattr(jobs_manager, "get_job_image_artifacts", None)
-    image_artifacts = getter(job_id) if callable(getter) else []
+    metadata_getter = getattr(jobs_manager, "get_job_artifact_metadata", None)
+    if callable(metadata_getter):
+        artifact_metadata = metadata_getter(job_id)
+        artifacts = [[item["artifact_id"], item["source_path"]] for item in artifact_metadata]
+        image_artifacts = [item["preview_path"] for item in artifact_metadata if item["preview_path"]]
+    else:
+        raw_artifacts = jobs_manager.get_job_artifacts(job_id)
+        artifacts = [[name, path] for name, path in raw_artifacts]
+        # Safe reflection: test Mocks may not implement get_job_image_artifacts.
+        getter = getattr(jobs_manager, "get_job_image_artifacts", None)
+        image_artifacts = getter(job_id) if callable(getter) else []
+        preview_by_name = {Path(path).name: path for path in image_artifacts}
+        artifact_metadata = [
+            {
+                "filename": Path(name).name,
+                "artifact_id": name,
+                "preview_path": preview_by_name.get(Path(name).name, ""),
+                "source_path": path,
+                "is_image": Path(path).suffix.lower() in IMAGE_EXTENSIONS,
+                "download_url": path,
+            }
+            for name, path in raw_artifacts
+        ]
     recent = recent_jobs_rows(jobs_manager, limit=20)
 
     return PollState(
@@ -420,6 +471,7 @@ def compute_poll_state(jobs_manager: JobsManager, job_id: str, lang: str = DEFAU
         logs=logs,
         artifacts=artifacts,
         image_artifacts=image_artifacts,
+        artifact_metadata=artifact_metadata,
         recent=recent,
         keep_polling=not is_terminal_status(status_str),
     )
@@ -551,9 +603,16 @@ def create_jobs_tab(jobs_manager: JobsManager, lang: str = DEFAULT_LANGUAGE) -> 
     """
     # Job IDs whose security alert has already been toasted (one-shot warning guard).
     _security_warned: set[str] = set()
+    try:
+        initial_recent_jobs = recent_jobs_rows(jobs_manager, limit=20)
+        initial_platform_error = ""
+    except StudioJobsApiError as exc:
+        initial_recent_jobs = []
+        initial_platform_error = platform_error_diagnostics(lang, exc, getattr(jobs_manager, "base_url", ""))
 
     with gr.Blocks() as jobs_tab:
         lang_state = gr.State(lang)
+        artifact_metadata_state = gr.State([])
         title_md = gr.Markdown(f"# {get_text(lang, 'tab.title')}")
         # Hide the Dataframe column-header options (three-dot) menu button across
         # the read-only monitoring tables in this zone (see module constant).
@@ -620,7 +679,12 @@ def create_jobs_tab(jobs_manager: JobsManager, lang: str = DEFAULT_LANGUAGE) -> 
                     status_display = gr.JSON(label=get_text(lang, "field.status"))
                     cancel_job_btn = gr.Button(get_text(lang, "button.cancel"), size="sm", variant="stop")
                     banner_md = gr.Markdown()
-                    error_box = gr.Textbox(label=get_text(lang, "field.error"), interactive=False, lines=3)
+                    error_box = gr.Textbox(
+                        value=initial_platform_error,
+                        label=get_text(lang, "field.error"),
+                        interactive=False,
+                        lines=3,
+                    )
 
                 # Tab 2: Live Logs & Output Console
                 with gr.TabItem(get_text(lang, "subtab.logs")) as logs_tab:
@@ -634,6 +698,7 @@ def create_jobs_tab(jobs_manager: JobsManager, lang: str = DEFAULT_LANGUAGE) -> 
                 # Tab 3: Artifacts Section
                 with gr.TabItem(get_text(lang, "subtab.artifacts")) as artifacts_tab:
                     open_folder_btn = gr.Button(_OPEN_FOLDER_LABEL["en"], size="sm")
+                    download_artifact_btn = gr.DownloadButton("⬇ Download", value=None, size="sm", interactive=False)
                     artifacts_list = gr.Dataframe(
                         headers=get_columns(lang, "artifacts"),
                         label=get_text(lang, "df.artifacts"),
@@ -677,7 +742,7 @@ def create_jobs_tab(jobs_manager: JobsManager, lang: str = DEFAULT_LANGUAGE) -> 
                     recent_jobs_table = gr.Dataframe(
                         headers=get_columns(lang, "recent"),
                         label=get_text(lang, "df.recent"),
-                        value=recent_jobs_rows(jobs_manager, limit=20),
+                        value=initial_recent_jobs,
                         interactive=False,
                     )
                     poll_note_md = gr.Markdown(get_text(lang, "poll.note"))
@@ -736,13 +801,21 @@ def create_jobs_tab(jobs_manager: JobsManager, lang: str = DEFAULT_LANGUAGE) -> 
             The warning is queued as a toast rather than raised: raising terminates the
             event, whereas the snapshot below must still reach the monitoring panels.
             """
-            if job_id:
-                raw = jobs_manager.get_job_status(job_id)
-                code = raw.get("error_code")
-                if code in SECURITY_ALERT_CODES and job_id not in _security_warned:
-                    _security_warned.add(job_id)
-                    gr.Warning(security_alert_toast(lang_value, code))
-            return compute_poll_state(jobs_manager, job_id, lang_value)
+            try:
+                raw = None
+                if job_id:
+                    raw = jobs_manager.get_job_status(job_id)
+                    code = raw.get("error_code")
+                    if code in SECURITY_ALERT_CODES and job_id not in _security_warned:
+                        _security_warned.add(job_id)
+                        gr.Warning(security_alert_toast(lang_value, code))
+                return compute_poll_state(jobs_manager, job_id, lang_value, raw_status=raw)
+            except StudioJobsApiError as exc:
+                return PollState(
+                    status={"scope": "platform", "error_code": exc.code},
+                    error_text=platform_error_diagnostics(lang_value, exc, getattr(jobs_manager, "base_url", "")),
+                    keep_polling=False,
+                )
 
         def poll_handler(job_id: str, lang_value: str) -> tuple:
             """Fast lifecycle poll: refresh every panel and deactivate on terminal state."""
@@ -759,7 +832,9 @@ def create_jobs_tab(jobs_manager: JobsManager, lang: str = DEFAULT_LANGUAGE) -> 
                 gr.update(visible=nav_visible),
                 _image_preview_update(state.image_artifacts, lang_value),
                 state.recent,
-                gr.update(active=state.keep_polling),
+                state.artifact_metadata,
+                _artifact_download_update(state.artifact_metadata),
+                gr.Timer(value=POLL_FAST_SECONDS, active=state.keep_polling),
             )
 
         def sync_handler(job_id: str, lang_value: str) -> tuple:
@@ -777,6 +852,8 @@ def create_jobs_tab(jobs_manager: JobsManager, lang: str = DEFAULT_LANGUAGE) -> 
                 gr.update(visible=nav_visible),
                 _image_preview_update(state.image_artifacts, lang_value),
                 state.recent,
+                state.artifact_metadata,
+                _artifact_download_update(state.artifact_metadata),
             )
 
         def submit_job_handler(
@@ -788,20 +865,25 @@ def create_jobs_tab(jobs_manager: JobsManager, lang: str = DEFAULT_LANGUAGE) -> 
             device: str,
             allowed_paths_str: str,
             lang_value: str,
-        ) -> tuple[str, str, Any]:
+        ) -> tuple[str, str, Any, str]:
             """Submit a job and (re)activate the fast lifecycle timer."""
             # Parse allowed_paths from comma-separated string
             allowed_paths = [p.strip() for p in allowed_paths_str.split(",") if p.strip()]
 
-            job_id, _message = jobs_manager.submit_job(
-                task_type=task_type,
-                model_path=model_path,
-                data_source=data_source,
-                output_dir=output_dir,
-                conf=conf,
-                device=device,
-                allowed_paths=allowed_paths,
-            )
+            try:
+                job_id, _message = jobs_manager.submit_job(
+                    task_type=task_type,
+                    model_path=model_path,
+                    data_source=data_source,
+                    output_dir=output_dir,
+                    conf=conf,
+                    device=device,
+                    allowed_paths=allowed_paths,
+                )
+            except StudioJobsApiError as exc:
+                diagnostics = platform_error_diagnostics(lang_value, exc, getattr(jobs_manager, "base_url", ""))
+                gr.Warning(diagnostics)
+                return "", diagnostics, gr.Timer(value=POLL_FAST_SECONDS, active=False), diagnostics
 
             # A fresh submission may reuse the security-warning guard.
             _security_warned.discard(job_id)
@@ -809,10 +891,11 @@ def create_jobs_tab(jobs_manager: JobsManager, lang: str = DEFAULT_LANGUAGE) -> 
             return (
                 job_id,
                 get_text(lang_value, "msg.job_submitted").format(job_id=job_id),
-                gr.update(active=True),
+                gr.Timer(value=POLL_FAST_SECONDS, active=True),
+                "",
             )
 
-        def cancel_job_handler(job_id: str, lang_value: str) -> tuple[str, Any]:
+        def cancel_job_handler(job_id: str, lang_value: str) -> tuple[str, Any, str]:
             """Request cancellation, surfacing localized warnings for invalid states.
 
             Invalid requests (no selection, unknown job, terminal state) queue a
@@ -822,19 +905,33 @@ def create_jobs_tab(jobs_manager: JobsManager, lang: str = DEFAULT_LANGUAGE) -> 
             if not job_id:
                 message = get_text(lang_value, "msg.no_job_selected")
                 gr.Warning(message)
-                return message, gr.update(active=False)
-            raw = jobs_manager.get_job_status(job_id)
+                return message, gr.Timer(value=POLL_FAST_SECONDS, active=False), ""
+            try:
+                raw = jobs_manager.get_job_status(job_id)
+            except StudioJobsApiError as exc:
+                diagnostics = platform_error_diagnostics(lang_value, exc, getattr(jobs_manager, "base_url", ""))
+                gr.Warning(diagnostics)
+                return diagnostics, gr.Timer(value=POLL_FAST_SECONDS, active=False), diagnostics
             if raw.get("status") == "NOT_FOUND":
                 message = get_text(lang_value, "msg.job_not_found")
                 gr.Warning(message)
-                return message, gr.update(active=False)
+                return message, gr.Timer(value=POLL_FAST_SECONDS, active=False), ""
             if is_terminal_status(raw.get("status", "")):
                 message = get_text(lang_value, "msg.terminal_state").format(status=raw.get("status", ""))
                 gr.Warning(message)
-                return message, gr.update(active=False)
+                return message, gr.Timer(value=POLL_FAST_SECONDS, active=False), ""
 
-            jobs_manager.cancel_job(job_id)
-            return get_text(lang_value, "msg.cancel_requested").format(job_id=job_id), gr.update(active=True)
+            try:
+                jobs_manager.cancel_job(job_id)
+            except StudioJobsApiError as exc:
+                diagnostics = platform_error_diagnostics(lang_value, exc, getattr(jobs_manager, "base_url", ""))
+                gr.Warning(diagnostics)
+                return diagnostics, gr.Timer(value=POLL_FAST_SECONDS, active=False), diagnostics
+            return (
+                get_text(lang_value, "msg.cancel_requested").format(job_id=job_id),
+                gr.Timer(value=POLL_FAST_SECONDS, active=True),
+                "",
+            )
 
         # ==================== Event Bindings ====================
 
@@ -896,27 +993,29 @@ def create_jobs_tab(jobs_manager: JobsManager, lang: str = DEFAULT_LANGUAGE) -> 
             outputs=data_source_txt,
         )
 
-        def on_artifact_select(selected: str, job_id: str, lang_value: str) -> Any:
+        def on_artifact_select(selected: str, metadata: list[ArtifactMetadata], lang_value: str) -> tuple[Any, Any]:
             """Switch the preview image when the user picks a different artifact.
 
             Args:
                 selected: Selected image filename (or ``None`` when cleared).
-                job_id: Selected job identifier.
+                metadata: Dual-path artifact metadata from the latest poll.
                 lang_value: ISO language code used to localize the label.
 
             Returns:
                 Any: A ``gr.update`` with the matched path and localized label.
             """
-            getter = getattr(jobs_manager, "get_job_image_artifacts", None)
-            paths = getter(job_id) if callable(getter) else []
+            paths = [item["preview_path"] for item in metadata if item.get("preview_path")]
             match = next((p for p in paths if selected and Path(p).name == selected), None)
             filename = Path(match).name if match else None
-            return gr.update(value=match, label=_artifact_preview_label(lang_value, filename))
+            return (
+                gr.update(value=match, label=_artifact_preview_label(lang_value, filename)),
+                _artifact_download_update(metadata, filename),
+            )
 
         artifact_selector.change(
             fn=on_artifact_select,
-            inputs=[artifact_selector, job_id_display, lang_state],
-            outputs=[artifacts_image],
+            inputs=[artifact_selector, artifact_metadata_state, lang_state],
+            outputs=[artifacts_image, download_artifact_btn],
         )
 
         def _make_artifact_step(step: int):
@@ -926,29 +1025,31 @@ def create_jobs_tab(jobs_manager: JobsManager, lang: str = DEFAULT_LANGUAGE) -> 
                 step: Offset to advance (+1 next, -1 prev).
             """
 
-            def _step(selected: str | None, job_id: str, lang_value: str) -> tuple[Any, Any]:
-                getter = getattr(jobs_manager, "get_job_image_artifacts", None)
-                paths = getter(job_id) if callable(getter) else []
+            def _step(selected: str | None, metadata: list[ArtifactMetadata], lang_value: str) -> tuple[Any, Any, Any]:
+                paths = [item["preview_path"] for item in metadata if item.get("preview_path")]
                 filename, path = _cycle_artifact(paths, selected, step)
                 return (
                     gr.update(value=filename),
                     gr.update(value=path, label=_artifact_preview_label(lang_value, filename)),
+                    _artifact_download_update(metadata, filename),
                 )
 
             return _step
 
         prev_btn.click(
             fn=_make_artifact_step(-1),
-            inputs=[artifact_selector, job_id_display, lang_state],
-            outputs=[artifact_selector, artifacts_image],
+            inputs=[artifact_selector, artifact_metadata_state, lang_state],
+            outputs=[artifact_selector, artifacts_image, download_artifact_btn],
         )
         next_btn.click(
             fn=_make_artifact_step(1),
-            inputs=[artifact_selector, job_id_display, lang_state],
-            outputs=[artifact_selector, artifacts_image],
+            inputs=[artifact_selector, artifact_metadata_state, lang_state],
+            outputs=[artifact_selector, artifacts_image, download_artifact_btn],
         )
 
-        def on_artifact_table_select(evt: gr.SelectData, job_id: str, lang_value: str) -> tuple[Any, Any]:
+        def on_artifact_table_select(
+            evt: gr.SelectData, metadata: list[ArtifactMetadata], lang_value: str
+        ) -> tuple[Any, Any, Any]:
             """Preview an image row selected in the artifacts table.
 
             Non-image rows (e.g. ``.pt``/``.csv``) are ignored so the current
@@ -956,7 +1057,7 @@ def create_jobs_tab(jobs_manager: JobsManager, lang: str = DEFAULT_LANGUAGE) -> 
 
             Args:
                 evt: Gradio selection event carrying the clicked row index.
-                job_id: Selected job identifier.
+                metadata: Dual-path artifact metadata from the latest poll.
                 lang_value: ISO language code used to localize the label.
 
             Returns:
@@ -964,35 +1065,37 @@ def create_jobs_tab(jobs_manager: JobsManager, lang: str = DEFAULT_LANGUAGE) -> 
                 image (path + localized label); empty updates when ignored.
             """
             row = evt.index[0] if evt.index else -1
-            getter = getattr(jobs_manager, "get_job_artifacts", None)
-            artifacts = getter(job_id) if callable(getter) else []
-            if row < 0 or row >= len(artifacts):
-                return gr.update(), gr.update()
-            filename, path = artifacts[row]
-            if Path(path).suffix.lower() not in IMAGE_EXTENSIONS:
+            if row < 0 or row >= len(metadata):
+                return gr.update(), gr.update(), gr.update()
+            artifact = metadata[row]
+            filename = artifact["filename"]
+            if not artifact["is_image"]:
                 if lang_value == "zh":
                     gr.Info(f"'{filename}' 不是图片文件，无法预览。")
                 else:
                     gr.Info(f"'{filename}' is not an image file and cannot be previewed.")
-                return gr.update(), gr.update()
+                return gr.update(), gr.update(), _artifact_download_update(metadata, filename)
+            local_path = artifact["preview_path"]
+            if not local_path:
+                return gr.update(), gr.update(), _artifact_download_update(metadata, filename)
             return (
-                gr.update(value=filename),
-                gr.update(value=path, label=_artifact_preview_label(lang_value, filename)),
+                gr.update(value=Path(filename).name),
+                gr.update(value=local_path, label=_artifact_preview_label(lang_value, Path(filename).name)),
+                _artifact_download_update(metadata, filename),
             )
 
         artifacts_list.select(
             fn=on_artifact_table_select,
-            inputs=[job_id_display, lang_state],
-            outputs=[artifact_selector, artifacts_image],
+            inputs=[artifact_metadata_state, lang_state],
+            outputs=[artifact_selector, artifacts_image, download_artifact_btn],
         )
 
-        def open_output_folder(job_id: str, lang_value: str) -> None:
+        def open_output_folder(job_id: str, metadata: list[ArtifactMetadata], lang_value: str) -> None:
             """Open the current job's specific output folder in the OS file manager.
 
-            Prefers the parent directory of the first recorded artifact, otherwise
-            falls back to the ``output_dir`` subdirectory whose name contains the
-            ``job_id``. Windows uses ``os.startfile``, macOS uses ``open`` and
-            Linux uses ``xdg-open``; a missing folder surfaces a localized warning.
+            Uses the source path retained in the artifact callback state. Windows
+            uses ``os.startfile``, macOS uses ``open`` and Linux uses ``xdg-open``;
+            a missing folder surfaces a localized warning.
             """
 
             def _warn() -> None:
@@ -1001,42 +1104,20 @@ def create_jobs_tab(jobs_manager: JobsManager, lang: str = DEFAULT_LANGUAGE) -> 
                 else:
                     gr.Warning("Output directory does not exist.")
 
-            jobs = getattr(jobs_manager, "jobs", None)
-            job = jobs.get(job_id) if isinstance(jobs, dict) and job_id else None
-            if job is None:
-                _warn()
-                return
-
-            output_dir_str = getattr(job.output, "output_dir", None)
-            output_dir = Path(output_dir_str).resolve() if output_dir_str else None
-
             # Walk every artifact's parent chain to find the directory whose
             # name contains this job's id (the job-specific root folder).
             target: Path | None = None
-            artifacts = getattr(job.output, "artifacts", None) or []
-            for artifact in artifacts:
-                if not artifact:
+            for artifact in metadata:
+                source_path = artifact.get("source_path", "")
+                if not source_path or source_path.startswith(("http://", "https://")):
                     continue
-                first = Path(artifact)
-                if not first.is_absolute() and output_dir is not None:
-                    first = output_dir / first
+                first = Path(source_path)
                 for parent in first.parents:
-                    if job.job_id in parent.name:
+                    if job_id in parent.name:
                         target = parent
                         break
                 if target is not None:
                     break
-
-            # No artifact manifest (or no job-id ancestor found): fall back to a
-            # first-level ``output_dir`` subdirectory named after the job.
-            if target is None and output_dir is not None:
-                try:
-                    for entry in output_dir.iterdir():
-                        if entry.is_dir() and job.job_id in entry.name:
-                            target = entry
-                            break
-                except OSError:
-                    target = None
 
             if target is None or not target.is_dir():
                 _warn()
@@ -1054,7 +1135,7 @@ def create_jobs_tab(jobs_manager: JobsManager, lang: str = DEFAULT_LANGUAGE) -> 
 
         open_folder_btn.click(
             fn=open_output_folder,
-            inputs=[job_id_display, lang_state],
+            inputs=[job_id_display, artifact_metadata_state, lang_state],
             outputs=[],
         )
 
@@ -1070,7 +1151,7 @@ def create_jobs_tab(jobs_manager: JobsManager, lang: str = DEFAULT_LANGUAGE) -> 
                 allowed_paths_txt,
                 lang_state,
             ],
-            outputs=[job_id_display, submit_msg, poll_timer],
+            outputs=[job_id_display, submit_msg, poll_timer, error_box],
         ).then(
             fn=poll_handler,
             inputs=[job_id_display, lang_state],
@@ -1085,8 +1166,13 @@ def create_jobs_tab(jobs_manager: JobsManager, lang: str = DEFAULT_LANGUAGE) -> 
                 next_btn,
                 artifacts_image,
                 recent_jobs_table,
+                artifact_metadata_state,
+                download_artifact_btn,
                 poll_timer,
             ],
+            trigger_mode="always_last",
+            concurrency_limit=1,
+            concurrency_id=POLL_CONCURRENCY_ID,
         )
 
         poll_timer.tick(
@@ -1103,8 +1189,13 @@ def create_jobs_tab(jobs_manager: JobsManager, lang: str = DEFAULT_LANGUAGE) -> 
                 next_btn,
                 artifacts_image,
                 recent_jobs_table,
+                artifact_metadata_state,
+                download_artifact_btn,
                 poll_timer,
             ],
+            trigger_mode="always_last",
+            concurrency_limit=1,
+            concurrency_id=POLL_CONCURRENCY_ID,
         )
 
         sync_timer.tick(
@@ -1121,13 +1212,18 @@ def create_jobs_tab(jobs_manager: JobsManager, lang: str = DEFAULT_LANGUAGE) -> 
                 next_btn,
                 artifacts_image,
                 recent_jobs_table,
+                artifact_metadata_state,
+                download_artifact_btn,
             ],
+            trigger_mode="always_last",
+            concurrency_limit=1,
+            concurrency_id=POLL_CONCURRENCY_ID,
         )
 
         cancel_job_btn.click(
             fn=cancel_job_handler,
             inputs=[job_id_display, lang_state],
-            outputs=[submit_msg, poll_timer],
+            outputs=[submit_msg, poll_timer, error_box],
         ).then(
             fn=poll_handler,
             inputs=[job_id_display, lang_state],
@@ -1142,8 +1238,13 @@ def create_jobs_tab(jobs_manager: JobsManager, lang: str = DEFAULT_LANGUAGE) -> 
                 next_btn,
                 artifacts_image,
                 recent_jobs_table,
+                artifact_metadata_state,
+                download_artifact_btn,
                 poll_timer,
             ],
+            trigger_mode="always_last",
+            concurrency_limit=1,
+            concurrency_id=POLL_CONCURRENCY_ID,
         )
 
     # Language-state lifting handles for the host app (app.py): the top level owns

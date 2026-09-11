@@ -14,10 +14,16 @@ Refactoring Goals (Step 3-1):
     3. Phase 1 contract support (cancel_requested checking)
     4. Exception safety with atomic FAILED transitions
 
-Phase 1 Runtime Supervision:
+Studio Runtime Supervision:
+    JobsManager runs ``execute(..., managed=True)`` inside an owned process.
+    Handlers execute synchronously there; the parent enforces deadlines and
+    cancellation, and confirms process-tree exit before persisting a terminal state.
+
+Legacy Direct-Call Supervision (managed=False):
     - Deadline supervision: jobs exceeding runtime_tracking.timeout_seconds transition
       to FAILED with error code TIMEOUT. Handler execution runs in a daemon worker
-      thread joined with the remaining deadline.
+      thread joined with the remaining deadline. This cooperative compatibility
+      path cannot forcibly stop a running YOLO call; Studio does not use it.
     - Cooperative cancellation: cancel_requested is checked at dispatcher checkpoints
       (pre-execution, post-validation, in-flight polling, post-execution) AND by
       handlers at their own checkpoints via BaseTaskHandler._check_cancelled(), which
@@ -157,7 +163,7 @@ class JobDispatcherStateMachine:
             f"{len(redacted_keys)} sensitive variable(s) redacted{detail}"
         )
 
-    def execute(self, job: JobRequest) -> JobRequest:
+    def execute(self, job: JobRequest, *, managed: bool = False) -> JobRequest:
         """Execute job with dynamic handler resolution and state machine enforcement.
 
         Execution Flow:
@@ -175,6 +181,7 @@ class JobDispatcherStateMachine:
 
         Args:
             job: JobRequest with task_type, params, security_constraints, runtime_tracking
+            managed: Run the handler synchronously under JobsManager process supervision.
 
         Returns:
             JobRequest: Updated job with final status (COMPLETED or FAILED) and artifacts
@@ -353,8 +360,14 @@ class JobDispatcherStateMachine:
                 # raised by downstream engines (DB clients, SDKs, etc.).
                 execution_queue.put({"error": exc, "traceback": traceback.format_exc()})
 
+        # Studio workers are already process-isolated and supervised by their parent.
+        # Run YOLO on this process's main thread; only legacy direct callers use
+        # cooperative thread supervision (which cannot forcibly stop computation).
         worker = Thread(target=_run_handler, daemon=True, name=f"f1-job-{job.job_id}")
-        worker.start()
+        if managed:
+            _run_handler()
+        else:
+            worker.start()
 
         # Deadline supervision + in-flight cooperative cancellation polling.
         # While the worker is alive and the deadline has not passed, poll

@@ -20,6 +20,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from f1.handlers.base import BaseTaskHandler, PathWhitelistViolationError
 from f1.handlers.registry import TaskHandlerRegistry
@@ -42,6 +43,13 @@ SUPPORTED_MEDIA_EXTENSIONS: frozenset[str] = frozenset(
         ".ts",
     }
 )
+NETWORK_INPUT_SCHEMES: frozenset[str] = frozenset({"http", "https", "rtmp", "rtsp", "tcp"})
+
+
+def _is_network_input(source: str) -> bool:
+    """Return whether the source is an explicitly supported non-file URL."""
+    parsed = urlsplit(source)
+    return parsed.scheme.lower() in NETWORK_INPUT_SCHEMES and bool(parsed.netloc)
 
 
 @TaskHandlerRegistry.register("predict")
@@ -159,7 +167,7 @@ class PredictHandler(BaseTaskHandler):
 
         # Every source entry must be contained in the whitelist (batch-safe)
         for source in data_sources:
-            if not self._is_path_safe(source, allowed_paths, allowed_patterns):
+            if not _is_network_input(source) and not self._is_path_safe(source, allowed_paths, allowed_patterns):
                 raise PathWhitelistViolationError(f"data_source '{source}' is not within allowed_paths whitelist")
 
         # Validate optional parameter: conf (confidence threshold)
@@ -342,6 +350,9 @@ class PredictHandler(BaseTaskHandler):
 
         sources: list[str] = []
         for entry in entries:
+            if _is_network_input(entry):
+                sources.append(entry)
+                continue
             entry_path = Path(entry)
             if entry_path.is_dir():
                 media = sorted(

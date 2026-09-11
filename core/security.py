@@ -32,7 +32,9 @@ Example:
 
 from __future__ import annotations
 
+import os
 import re
+from pathlib import Path
 from typing import Any, Mapping
 
 __all__ = [
@@ -41,6 +43,7 @@ __all__ = [
     "SENSITIVE_KEY_PATTERN",
     "SENSITIVE_VALUE_PATTERNS",
     "sanitize_env_dict",
+    "sanitize_for_persistence",
     "sanitize_log_text",
 ]
 
@@ -51,7 +54,7 @@ REDACTED: str = "***REDACTED***"
 # case-insensitive substring, so compound names such as "WANDB_API_KEY",
 # "AWS_SECRET_ACCESS_KEY" or "DB_PASSWORD" are all covered.
 SENSITIVE_KEY_PATTERN: re.Pattern = re.compile(
-    r"(?i)(key|token|secret|pass(?:word|wd)?|auth|cred(?:ential)?|private|access_?key)"
+    r"(?i)(key|token|secret|pass(?:word|wd)?|auth(?:orization)?|bearer|cred(?:ential)?|private|cookie|access_?key)"
 )
 
 # Sensitive value-shape patterns. Group semantics differ per pattern:
@@ -61,7 +64,7 @@ SENSITIVE_KEY_PATTERN: re.Pattern = re.compile(
 #     ENTIRE secret as group 1; the whole match is redacted. ``_redact_match``
 #     handles both conventions generically.
 SENSITIVE_VALUE_PATTERNS: list[re.Pattern] = [
-    re.compile(r"(?i)(bearer\s+)[A-Za-z0-9_\-\.]{16,}"),
+    re.compile(r"(?i)(bearer\s+)[^\s,;\"']+"),
     re.compile(r"(?i)(sk-[A-Za-z0-9_\-]{20,})"),
     re.compile(r"(?i)(AKIA[0-9A-Z]{16})"),
     re.compile(r"(?i)(api[_\-]?key[\s:=]+)[A-Za-z0-9_\-]{16,}"),
@@ -80,9 +83,31 @@ SENSITIVE_VALUE_PATTERNS: list[re.Pattern] = [
 # the "KEY=" prefix, group 2 is the secret value up to the next whitespace,
 # comma, semicolon or quote.
 SENSITIVE_ASSIGNMENT_PATTERN: re.Pattern = re.compile(
-    r"(?i)\b([A-Za-z_][A-Za-z0-9_]*(?:key|token|secret|pass(?:word|wd)?|auth|cred(?:ential)?|private)"
-    r"[A-Za-z0-9_]*\s*[=:]\s*)([^\s,;\"']+)"
+    r"(?i)\b([A-Za-z0-9_]*(?:api_?key|token|secret|pass(?:word|wd)?|auth(?:orization)?|bearer|"
+    r"cred(?:ential)?|private|cookie)[A-Za-z0-9_]*\s*[=:]\s*)([^\s,;\"']+)"
 )
+SENSITIVE_QUOTED_ASSIGNMENT_PATTERN: re.Pattern = re.compile(
+    r"(?i)([\"']?[A-Za-z0-9_]*(?:api_?key|token|secret|pass(?:word|wd)?|auth(?:orization)?|bearer|"
+    r"cred(?:ential)?|private|cookie)[A-Za-z0-9_]*[\"']?\s*[:=]\s*)([\"'])(.*?)\2"
+)
+
+
+def _known_secret_values() -> set[str]:
+    """Return sensitive process/.env values that must be scrubbed from persisted text."""
+    values = {str(value) for key, value in os.environ.items() if value and SENSITIVE_KEY_PATTERN.search(key)}
+    env_path = Path.cwd() / ".env"
+    try:
+        for raw_line in env_path.read_text(encoding="utf-8").splitlines():
+            line = raw_line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            key, value = line.split("=", 1)
+            value = value.strip().strip("\"'")
+            if value and SENSITIVE_KEY_PATTERN.search(key.strip()):
+                values.add(value)
+    except OSError:
+        pass
+    return values
 
 
 def _redact_match(match: re.Match[str]) -> str:
@@ -101,6 +126,11 @@ def _redact_match(match: re.Match[str]) -> str:
         if prefix and match.start(1) == match.start(0) and match.end(1) < match.end(0):
             return f"{prefix}{REDACTED}"
     return REDACTED
+
+
+def _redact_quoted_assignment(match: re.Match[str]) -> str:
+    """Preserve a quoted assignment's key and quote style while masking its value."""
+    return f"{match.group(1)}{match.group(2)}{REDACTED}{match.group(2)}"
 
 
 def _contains_sensitive_value(text: str) -> bool:
@@ -167,7 +197,30 @@ def sanitize_log_text(text: str) -> str:
     """
     if not text:
         return text
-    sanitized = SENSITIVE_ASSIGNMENT_PATTERN.sub(_redact_match, text)
+    sanitized = text
     for pattern in SENSITIVE_VALUE_PATTERNS:
         sanitized = pattern.sub(_redact_match, sanitized)
+    sanitized = SENSITIVE_QUOTED_ASSIGNMENT_PATTERN.sub(_redact_quoted_assignment, sanitized)
+    sanitized = SENSITIVE_ASSIGNMENT_PATTERN.sub(_redact_match, sanitized)
+    for secret in sorted(_known_secret_values(), key=len, reverse=True):
+        if len(secret) >= 4:
+            sanitized = sanitized.replace(secret, REDACTED)
+        else:
+            short_secret = re.compile(rf"(?<![A-Za-z0-9]){re.escape(secret)}(?![A-Za-z0-9])")
+            sanitized = short_secret.sub(REDACTED, sanitized)
     return sanitized
+
+
+def sanitize_for_persistence(value: Any, key: str | None = None) -> Any:
+    """Recursively redact sensitive request/state content before JSON persistence."""
+    if key is not None and SENSITIVE_KEY_PATTERN.search(key):
+        return REDACTED
+    if isinstance(value, Mapping):
+        return {str(k): sanitize_for_persistence(v, str(k)) for k, v in value.items()}
+    if isinstance(value, list):
+        return [sanitize_for_persistence(item) for item in value]
+    if isinstance(value, tuple):
+        return [sanitize_for_persistence(item) for item in value]
+    if isinstance(value, str):
+        return sanitize_log_text(value)
+    return value

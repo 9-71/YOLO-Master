@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import mimetypes
 import os
+from contextlib import asynccontextmanager
 from pathlib import Path
 
 from fastapi import Depends, FastAPI, HTTPException, status
@@ -47,7 +48,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from api.v1.jobs import get_jobs_manager
+from api.v1.jobs import get_jobs_manager, shutdown_jobs_manager
 from api.v1.jobs import router as jobs_router
 from core.security import sanitize_log_text
 from f1.jobs_manager import JobsManager
@@ -121,7 +122,23 @@ def create_app() -> FastAPI:
         >>> app.title
         'YOLO-Master F1 Task Engine'
     """
+
+    @asynccontextmanager
+    async def lifespan(app):
+        # Load/reconcile persisted jobs at service startup, before serving requests.
+        # Respect the existing dependency seam used by embedded apps and API tests.
+        provider = app.dependency_overrides.get(get_jobs_manager, get_jobs_manager)
+        manager = provider()
+        try:
+            yield
+        finally:
+            if provider is get_jobs_manager:
+                shutdown_jobs_manager()
+            else:
+                manager.shutdown()
+
     app = FastAPI(
+        lifespan=lifespan,
         title=APP_TITLE,
         version=APP_VERSION,
         description=(
@@ -146,24 +163,23 @@ def create_app() -> FastAPI:
         return {"status": "ok", "service": APP_TITLE}
 
     @app.get(
-        "/static/artifacts/{job_id}/{filename}",
+        "/static/artifacts/{job_id}/{artifact_id:path}",
         response_class=FileResponse,
         tags=["artifacts"],
         summary="Download one artifact file",
     )
-    def serve_artifact(job_id: str, filename: str, manager: JobsManager = MANAGER_DEPENDENCY) -> FileResponse:
+    def serve_artifact(job_id: str, artifact_id: str, manager: JobsManager = MANAGER_DEPENDENCY) -> FileResponse:
         """Serve one artifact file, restricted to the job's manifest (fail-closed).
 
-        The requested ``filename`` (a single path segment, so slashes can never
-        reach this handler) must match — by exact basename — a file listed in
-        the job's artifact manifest or validated image-artifact scan. The
+        The requested relative ``artifact_id`` must exactly match an entry in
+        the job's validated artifact manifest. The
         manifest is populated exclusively by the dispatcher after a successful
         execution, so arbitrary filesystem paths can never be downloaded
         through this route.
 
         Args:
             job_id: Job identifier owning the artifact.
-            filename: Basename of the artifact to download.
+            artifact_id: Safe relative identifier from the job's artifact manifest.
 
         Raises:
             HTTPException: 404 when the job is unknown or the file is not
@@ -179,15 +195,15 @@ def create_app() -> FastAPI:
                 detail=sanitize_log_text(f"Job '{job_id}' not found"),
             )
 
-        allowed = {Path(name).name: path for name, path in manager.get_job_artifacts(job_id)}
-        allowed.update({Path(path).name: path for path in manager.get_job_image_artifacts(job_id)})
-        target = allowed.get(filename)
+        allowed = dict(manager.get_job_artifacts(job_id))
+        target = allowed.get(artifact_id)
         if target is None:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail=sanitize_log_text(f"Artifact '{filename}' not found for job '{job_id}'"),
+                detail=sanitize_log_text(f"Artifact '{artifact_id}' not found for job '{job_id}'"),
             )
 
+        filename = Path(artifact_id).name
         media_type = mimetypes.guess_type(filename)[0] or "application/octet-stream"
         return FileResponse(target, media_type=media_type, filename=filename)
 
@@ -199,6 +215,10 @@ def create_app() -> FastAPI:
     # Serve the zero-build verification console (frontend/) at the web root.
     # Registered last, so every API, health, docs and artifact route declared
     # above keeps precedence over the static mount.
+    # Optional React console (web/dist) served alongside the zero-build console.
+    REACT_DIST = Path(__file__).resolve().parent / "web" / "dist"
+    if REACT_DIST.is_dir():
+        app.mount("/console", StaticFiles(directory=REACT_DIST, html=True), name="react-console")
     app.mount("/", StaticFiles(directory=FRONTEND_DIR, html=True), name="frontend")
 
     return app

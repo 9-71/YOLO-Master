@@ -191,3 +191,13 @@ docs/reports/
 reports/foundation/
 *.scratchpad.md
 *.agent.log
+
+# React frontend build artifacts
+node_modules/
+.vite/
+web/dist/
+
+# Keep the React/Vite TypeScript project reproducible. The global *.ts rule
+# above is for TorchScript model artifacts, not frontend source/config files.
+!web/**/*.ts
+!web/**/*.tsx

@@ -4,7 +4,7 @@ Covers:
     - i18n lookups (English, Simplified Chinese, fallbacks)
     - compute_poll_state adaptive deactivation and security-alert banners
     - Jobs Tab construction (two timers, no manual refresh buttons)
-    - app.py build_app() headless wiring (top-level tabs, timers, singleton manager)
+    - app.py build_app() headless wiring (top-level tabs, timers, Studio API client)
     - unidirectional language broadcast: the top-level radio is the single source
       of truth and the only language selector, the Jobs zone has no language
       listener, and every relabel payload is position-aligned with its output
@@ -24,6 +24,9 @@ import pytest
 
 from f1.ui.i18n import DEFAULT_LANGUAGE, get_columns, get_text
 from f1.ui.jobs_tab import (
+    POLL_CONCURRENCY_ID,
+    POLL_FAST_SECONDS,
+    POLL_SLOW_SECONDS,
     SECURITY_ALERT_CODES,
     JobsManager,
     alert_banner,
@@ -622,17 +625,72 @@ class TestModelDropdownDisplay:
         assert ui.resolve_checkpoint_path("custom/model.pt", "detect") == "custom/model.pt"
 
 
+class TestSynchronousInferenceBoundary:
+    """The classic Gradio inference path remains a direct synchronous YOLO call."""
+
+    def test_inference_still_calls_loaded_model_directly(self, tmp_path, monkeypatch):
+        import numpy as np
+
+        from app import YOLO_Master_WebUI
+
+        class FakeResult:
+            def __init__(self):
+                self.boxes = []
+                self.speed = {"inference": 3.5}
+
+            def plot(self):
+                return np.zeros((4, 4, 3), dtype=np.uint8)
+
+        class FakeModel:
+            def __init__(self):
+                self.names = {}
+                self.calls = []
+
+            def __call__(self, image, **kwargs):
+                self.calls.append((image, kwargs))
+                return [FakeResult()]
+
+        ui = YOLO_Master_WebUI(str(tmp_path))
+        model = FakeModel()
+        monkeypatch.setattr(ui.model_manager, "load_model", lambda model_path, task: model)
+        monkeypatch.setattr(ui.model_manager, "get_current_model_info", lambda: "cpu")
+        ui.model_manager.current_model_path = "yolov8n.pt"
+
+        result_image, detections, summary = ui.inference(
+            "detect",
+            np.zeros((4, 4, 3), dtype=np.uint8),
+            "yolov8n.pt",
+            "",
+            0.25,
+            0.7,
+            "cpu",
+            100,
+            2,
+            True,
+            [],
+        )
+
+        assert result_image.shape == (4, 4, 3)
+        assert detections.empty
+        assert "Inference Done" in summary
+        assert len(model.calls) == 1
+
+
 class TestAppIntegration:
     """app.py integration: Jobs tab mounted into the top-level tab container."""
 
     def test_build_app_wiring(self, tmp_path):
         from app import YOLO_Master_WebUI
+        from f1.jobs_manager import JobsManager
+        from f1.ui.studio_jobs_client import StudioJobsApiClient
 
         ui = YOLO_Master_WebUI(str(tmp_path))
         app = ui.build_app()
 
         assert isinstance(app, gr.Blocks)
-        assert ui.jobs_manager is not None
+        assert isinstance(ui.jobs_client, StudioJobsApiClient)
+        assert not isinstance(ui.jobs_client, JobsManager)
+        assert not hasattr(ui, "jobs_manager")
 
         # Top-level tabs include the inference studio and the Jobs tab
         tabs = [getattr(b, "label", "") for b in app.blocks.values() if type(b).__name__ == "Tab"]
@@ -685,6 +743,141 @@ class TestAppIntegration:
             assert app.server_name is not None
         finally:
             app.close()
+
+
+class TestStudioApiPlatformErrors:
+    """Studio API outages are localized platform diagnostics, never Job failures."""
+
+    @staticmethod
+    def _build_unavailable_tab(lang: str):
+        import requests
+
+        from f1.ui.studio_jobs_client import StudioJobsApiClient
+
+        class UnavailableSession:
+            def request(self, method, url, **kwargs):
+                raise requests.ConnectionError("connection refused")
+
+        return create_jobs_tab(StudioJobsApiClient("http://studio.test", session=UnavailableSession()), lang)
+
+    @pytest.mark.parametrize(
+        ("lang", "expected"),
+        [("en", "Studio Job API is unavailable"), ("zh", "无法连接位于")],
+    )
+    def test_initial_diagnostics_are_bilingual(self, lang, expected):
+        tab = self._build_unavailable_tab(lang)
+        error_box = next(block for block in tab.blocks.values() if isinstance(block, gr.Textbox) and block.lines == 3)
+
+        assert expected in error_box.value
+        assert "FAILED" not in error_box.value
+
+    def test_failed_submission_creates_no_job_identity(self, monkeypatch):
+        tab = self._build_unavailable_tab("zh")
+        submit = next(
+            block for block in tab.blocks.values() if isinstance(block, gr.Button) and block.value == "🔥 提交任务"
+        )
+        submit_fn = next(bf.fn for bf in tab.fns.values() if bf.fn and (submit._id, "click") in bf.targets)
+        warnings = []
+        monkeypatch.setattr("gradio.Warning", lambda message: warnings.append(message))
+
+        job_id, message, timer_update, diagnostics = submit_fn(
+            "predict",
+            "yolov8n.pt",
+            "bus.jpg",
+            "runs/predict",
+            0.25,
+            "cpu",
+            "., runs",
+            "zh",
+        )
+
+        assert job_id == ""
+        assert "无法连接位于" in message == diagnostics
+        assert isinstance(timer_update, gr.Timer)
+        assert timer_update.active is False
+        assert warnings == [diagnostics]
+
+
+class TestStudioApiPollingSynchronization:
+    """API-backed polling applies terminal snapshots after active snapshots."""
+
+    class TransitioningBackend:
+        base_url = "http://studio.test"
+
+        def __init__(self):
+            self.statuses = ["RUNNING", "COMPLETED"]
+            self.current_status = "RUNNING"
+            self.status_calls = 0
+
+        def get_job_status(self, job_id):
+            self.status_calls += 1
+            self.current_status = self.statuses.pop(0)
+            return {
+                "status": self.current_status,
+                "duration": "1.0s",
+                "error_code": None,
+                "error_message": None,
+                "artifact_count": 2 if self.current_status == "COMPLETED" else 0,
+            }
+
+        def get_job_logs(self, job_id):
+            return self.current_status
+
+        def get_job_artifacts(self, job_id):
+            return [("metrics.csv", "http://studio.test/metrics.csv")] if self.current_status == "COMPLETED" else []
+
+        def get_job_image_artifacts(self, job_id):
+            return []
+
+        def list_recent_jobs(self, limit=20):
+            return [
+                {
+                    "job_id": "job-1",
+                    "task_type": "predict",
+                    "status": self.current_status,
+                    "created_at": "2026-09-11T00:00:00+00:00",
+                }
+            ]
+
+    def test_running_to_completed_refreshes_all_panels_and_stops_fast_timer(self):
+        backend = self.TransitioningBackend()
+        tab = create_jobs_tab(backend, "en")
+        poll_timer = next(
+            block for block in tab.blocks.values() if isinstance(block, gr.Timer) and block.value == POLL_FAST_SECONDS
+        )
+        poll_fn = next(bf.fn for bf in tab.fns.values() if bf.fn and (poll_timer._id, "tick") in bf.targets)
+
+        running = poll_fn("job-1", "en")
+        completed = poll_fn("job-1", "en")
+
+        assert running[0]["status"] == "RUNNING"
+        assert running[-1].active is True
+        assert completed[0]["status"] == "COMPLETED"
+        assert completed[0]["artifact_count"] == 2
+        assert completed[4] == [["metrics.csv", "http://studio.test/metrics.csv"]]
+        assert completed[9][0][2] == "COMPLETED"
+        assert completed[-1].active is False
+        assert backend.status_calls == 2
+
+    def test_fast_and_slow_timers_share_one_latest_only_queue(self):
+        tab = create_jobs_tab(self.TransitioningBackend(), "en")
+        timer_ids = {block._id for block in tab.blocks.values() if isinstance(block, gr.Timer)}
+        poll_functions = [
+            block_function
+            for block_function in tab.fns.values()
+            if any(component_id in timer_ids and event == "tick" for component_id, event in block_function.targets)
+        ]
+
+        assert len(poll_functions) == 2
+        assert {block_function.trigger_mode for block_function in poll_functions} == {"always_last"}
+        assert {block_function.concurrency_id for block_function in poll_functions} == {POLL_CONCURRENCY_ID}
+        assert {block_function.concurrency_limit for block_function in poll_functions} == {1}
+        assert {
+            tab.blocks[target[0]].value for block_function in poll_functions for target in block_function.targets
+        } == {
+            POLL_FAST_SECONDS,
+            POLL_SLOW_SECONDS,
+        }
 
 
 class TestJobsZoneBroadcastAlignment:

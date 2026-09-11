@@ -679,6 +679,20 @@ class TestArtifactTableSelectGuard:
 
     ARTIFACTS_LABEL = "Generated Artifacts"  # get_text("en", "df.artifacts")
 
+    @staticmethod
+    def _metadata(paths: list[Path]) -> list[dict[str, Any]]:
+        return [
+            {
+                "filename": path.name,
+                "artifact_id": path.name,
+                "preview_path": str(path) if path.suffix.lower() in {".jpg", ".png"} else "",
+                "source_path": str(path),
+                "is_image": path.suffix.lower() in {".jpg", ".png"},
+                "download_url": str(path),
+            }
+            for path in paths
+        ]
+
     def _build(self) -> tuple[JobsManager, gr.Blocks, gr.Dataframe, Callable[..., Any]]:
         manager = JobsManager()
         tab = create_jobs_tab(manager, "en")
@@ -705,11 +719,12 @@ class TestArtifactTableSelectGuard:
         manifest.write_text("conf: 0.25\n", encoding="utf-8")
         self._insert_completed_job(manager, "sel-img-001", [str(manifest), str(image)])
 
-        result = select_fn(SimpleNamespace(index=(1,)), "sel-img-001", "en")
+        result = select_fn(SimpleNamespace(index=(1,)), self._metadata([manifest, image]), "en")
 
         assert result[0].get("value") == "a.jpg"  # selector synced to the filename
         assert result[1].get("value") == str(image)
         assert "a.jpg" in result[1]["label"]
+        assert result[2].get("value") == str(image)
 
     def test_non_image_row_keeps_preview_and_warns_bilingually(self, tmp_path: Path, monkeypatch: Any) -> None:
         """A .pt/.yaml row triggers a localized gr.Info and never touches the preview."""
@@ -722,7 +737,8 @@ class TestArtifactTableSelectGuard:
 
         infos: list[str] = []
         monkeypatch.setattr("gradio.Info", lambda message: infos.append(message))
-        result = select_fn(SimpleNamespace(index=(1,)), "sel-pt-001", "zh")
+        metadata = self._metadata([image, weights])
+        result = select_fn(SimpleNamespace(index=(1,)), metadata, "zh")
 
         assert len(infos) == 1
         assert "best.pt" in infos[0]
@@ -730,9 +746,10 @@ class TestArtifactTableSelectGuard:
         # Preview state must be preserved: no value overwrite, no reset to None
         assert result[0].get("value") is None
         assert result[1].get("value") is None
+        assert result[2].get("value") == str(weights)
 
         infos.clear()
-        result = select_fn(SimpleNamespace(index=(1,)), "sel-pt-001", "en")
+        result = select_fn(SimpleNamespace(index=(1,)), metadata, "en")
         assert len(infos) == 1
         assert "is not an image file" in infos[0]
         assert result[0].get("value") is None
@@ -745,7 +762,7 @@ class TestArtifactTableSelectGuard:
         self._insert_completed_job(manager, "sel-oob-001", [str(image)])
 
         for evt in (SimpleNamespace(index=(99,)), SimpleNamespace(index=())):
-            result = select_fn(evt, "sel-oob-001", "en")
+            result = select_fn(evt, self._metadata([image]), "en")
             assert result[0].get("value") is None
             assert result[1].get("value") is None
 
@@ -784,7 +801,8 @@ class TestOpenOutputFolderNavigation:
             opened.append(path)
 
         monkeypatch.setattr(os, "startfile", _fake_startfile, raising=False)
-        open_fn("predict_open001", "en")
+        metadata = TestArtifactTableSelectGuard._metadata([best])
+        open_fn("predict_open001", metadata, "en")
 
         # Exactly the directory whose name contains the job_id — never deeper,
         # never the parent runs/train.
@@ -792,6 +810,8 @@ class TestOpenOutputFolderNavigation:
 
     def test_posix_branch_uses_xdg_open_on_job_root(self, tmp_path: Path, monkeypatch: Any) -> None:
         """Non-Windows platforms shell out with the job root as the sole argument."""
+        import f1.ui.jobs_tab as jobs_tab_module
+
         manager, open_fn = self._build()
         job_root = tmp_path / "runs" / "val" / "val_open002"
         job_root.mkdir(parents=True)
@@ -805,10 +825,11 @@ class TestOpenOutputFolderNavigation:
             def __init__(self, cmd: list[str], *args: Any, **kwargs: Any) -> None:
                 commands.append(cmd)
 
-        monkeypatch.setattr(os, "name", "posix")
+        monkeypatch.setattr(jobs_tab_module, "os", SimpleNamespace(name="posix"))
         monkeypatch.setattr(sys, "platform", "linux")
         monkeypatch.setattr(subprocess, "Popen", _FakePopen)
-        open_fn("val_open002", "en")
+        metadata = TestArtifactTableSelectGuard._metadata([report])
+        open_fn("val_open002", metadata, "en")
 
         assert commands == [["xdg-open", str(job_root)]]
 
@@ -827,8 +848,9 @@ class TestOpenOutputFolderNavigation:
         monkeypatch.setattr("gradio.Warning", lambda message: warnings.append(message))
         monkeypatch.setattr(os, "startfile", lambda path: opened.append(path), raising=False)
 
-        open_fn("predict_gone001", "en")
-        open_fn("no-such-job", "zh")
+        ghost = tmp_path / "runs" / "predict" / "predict_gone001" / "ghost.jpg"
+        open_fn("predict_gone001", TestArtifactTableSelectGuard._metadata([ghost]), "en")
+        open_fn("no-such-job", [], "zh")
 
         assert len(warnings) == 2
         assert "Output directory does not exist." in warnings
@@ -1048,8 +1070,8 @@ class TestPollIdlePreservesRecentJobs:
         # Simulate an idle tick: no active job selected.
         result = sync_fn("", "en")
 
-        # The Recent Jobs output is the final element of the handler's tuple.
-        recent = result[-1]
+        # The tail also carries artifact metadata and the download-button update.
+        recent = result[-3]
         assert recent == expected
         assert len(recent) == 2
 
@@ -1064,8 +1086,8 @@ class TestPollIdlePreservesRecentJobs:
 
         result = poll_fn("", "en")
 
-        # poll_handler tuple: recent is the second-to-last element, timer update last.
-        recent = result[-2]
+        # poll_handler tail: recent, artifact metadata, download update, timer update.
+        recent = result[-4]
         assert recent == expected
         assert len(recent) == 2
 

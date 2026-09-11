@@ -21,7 +21,6 @@ Run:
 from __future__ import annotations
 
 import re
-import threading
 import time
 
 import pytest
@@ -67,11 +66,25 @@ def _noop_execute(job: JobRequest) -> JobRequest:
     return job
 
 
+def _complete_execute(job: JobRequest) -> JobRequest:
+    """Spawn-safe fake computation for the API lifecycle test."""
+    time.sleep(0.2)
+    job.status = JobStatus.COMPLETED
+    return job
+
+
+def _raise_execute(job: JobRequest) -> JobRequest:
+    """Spawn-safe exception fixture; no YOLO imports."""
+    raise KeyError("missing model param 'weights'")
+
+
 @pytest.fixture
 def api_manager() -> JobsManager:
     """Return a fresh in-memory JobsManager with a no-engine dispatcher stub."""
     manager = JobsManager()
-    manager.dispatcher.execute = _noop_execute  # type: ignore[method-assign]
+    # Routing/security tests park submissions without running engine code.
+    # Lifecycle tests below explicitly restore the real process scheduler.
+    manager._start_supervisors = lambda: None
     return manager
 
 
@@ -113,6 +126,18 @@ def test_submit_job_validation_and_conflict(client: TestClient) -> None:
     assert "dup-001" in duplicate.json()["detail"]
 
 
+def test_submit_job_queue_full_returns_structured_429(api_manager: JobsManager, client: TestClient) -> None:
+    """A full pending queue returns QUEUE_FULL and does not register the rejected job."""
+    api_manager.max_pending_jobs = 1
+    assert client.post("/api/v1/jobs/", json=_job_payload("queued-001")).status_code == 201
+
+    rejected = client.post("/api/v1/jobs/", json=_job_payload("queued-002"))
+
+    assert rejected.status_code == 429
+    assert rejected.json()["detail"]["code"] == "QUEUE_FULL"
+    assert api_manager.get_job("queued-002") is None
+
+
 def test_collection_endpoints_accept_both_slash_spellings(client: TestClient) -> None:
     """``/api/v1/jobs`` and ``/api/v1/jobs/`` both list and submit (no redirects)."""
     bare = client.get("/api/v1/jobs")
@@ -151,28 +176,19 @@ def _poll_status(client: TestClient, job_id: str, timeout: float = 10.0) -> dict
     deadline = time.monotonic() + timeout
     while True:
         body = client.get(f"/api/v1/jobs/{job_id}").json()
-        if body["status"] != "pending" or time.monotonic() >= deadline:
+        if body["status"] in ("completed", "failed") or time.monotonic() >= deadline:
             return body
         time.sleep(0.05)
 
 
 def test_job_status_and_lifecycle(client: TestClient, api_manager: JobsManager) -> None:
     """Status transitions (pending -> completed) and metadata are observable via GET."""
-    gate = threading.Event()
-
-    def _gated_execute(job: JobRequest) -> JobRequest:
-        """Block until the test releases the gate, then complete the job."""
-        gate.wait(timeout=10)
-        job.status = JobStatus.COMPLETED
-        return job
-
-    api_manager.dispatcher.execute = _gated_execute  # type: ignore[method-assign]
+    api_manager._start_supervisors = JobsManager._start_supervisors.__get__(api_manager)
+    api_manager._worker_executor = _complete_execute
     submitted = client.post("/api/v1/jobs/", json=_job_payload("life-001"))
     assert submitted.status_code == 201
     pending = client.get("/api/v1/jobs/life-001")
-    assert pending.status_code == 200 and pending.json()["status"] == "pending"
-    assert pending.json()["duration"] == "N/A"
-    gate.set()
+    assert pending.status_code == 200 and pending.json()["status"] in ("pending", "running")
     body = _poll_status(client, "life-001")
     assert body["status"] == "completed"
     assert body["duration"].endswith("s")
@@ -182,11 +198,8 @@ def test_job_status_and_lifecycle(client: TestClient, api_manager: JobsManager) 
 def test_unhandled_execution_exception_populates_error(client: TestClient, api_manager: JobsManager) -> None:
     """An unhandled dispatcher exception fails the job with a non-null structured error."""
 
-    def _raise(job: JobRequest) -> JobRequest:
-        """Dispatcher stub raising an unexpected exception mid-execution."""
-        raise KeyError("missing model param 'weights'")
-
-    api_manager.dispatcher.execute = _raise  # type: ignore[method-assign]
+    api_manager._start_supervisors = JobsManager._start_supervisors.__get__(api_manager)
+    api_manager._worker_executor = _raise_execute
     submitted = client.post("/api/v1/jobs/", json=_job_payload("boom-001"))
     assert submitted.status_code == 201
     body = _poll_status(client, "boom-001")
@@ -247,16 +260,19 @@ def test_log_streaming_and_sanitization(client: TestClient, api_manager: JobsMan
 def test_artifacts_manifest_and_static_delivery(client: TestClient, api_manager: JobsManager, tmp_path) -> None:
     """Manifest lists real files with download refs; unlisted files 404, listed files stream."""
     out_dir = tmp_path / "output"
-    out_dir.mkdir()
-    results = out_dir / "results.txt"
-    results.write_text("hello artifacts", encoding="utf-8")
-    preview = out_dir / "result.png"
-    preview.write_bytes(b"\x89PNG\r\n\x1a\nfake")
-    (out_dir / "secret.bin").write_bytes(b"unlisted")
     job_id = "art-001"
+    job_dir = out_dir / job_id
+    job_dir.mkdir(parents=True)
+    results = job_dir / "results.txt"
+    results.write_text("hello artifacts", encoding="utf-8")
+    preview = job_dir / "result.png"
+    preview.write_bytes(b"\x89PNG\r\n\x1a\nfake")
+    (job_dir / "secret.bin").write_bytes(b"unlisted")
     job = JobRequest(job_id=job_id, task_type=TaskType.PREDICT, status=JobStatus.COMPLETED)
     job.output.output_dir = str(out_dir)
     job.output.artifacts = [str(results), str(preview)]
+    api_manager._output_root = tmp_path.resolve()
+    api_manager._normalize_job_artifacts(job)
     api_manager.jobs[job_id] = job
     api_manager.job_logs[job_id] = []
     manifest = client.get(f"/api/v1/jobs/{job_id}/artifacts")
@@ -264,7 +280,8 @@ def test_artifacts_manifest_and_static_delivery(client: TestClient, api_manager:
     body = manifest.json()
     assert len(body["artifacts"]) == 2
     assert {entry["filename"] for entry in body["artifacts"] if entry["is_image"]} == {"result.png"}
-    assert body["artifacts"][0]["download_url"] == f"/static/artifacts/{job_id}/results.txt"
+    downloads = {entry["filename"]: entry["download_url"] for entry in body["artifacts"]}
+    assert downloads["results.txt"] == f"/static/artifacts/{job_id}/results.txt"
     assert client.get(f"/static/artifacts/{job_id}/secret.bin").status_code == 404
     delivered = client.get(f"/static/artifacts/{job_id}/results.txt")
     assert delivered.status_code == 200 and delivered.content == b"hello artifacts"

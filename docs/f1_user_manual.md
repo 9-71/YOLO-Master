@@ -80,14 +80,18 @@ pip install -e .
 From the **project root directory**, start the server:
 
 ```bash
-python app.py
+python start_studio.py
 ```
 
 On startup the app:
 
-1. Creates a `ckpts/` checkpoint directory if it does not exist.
-2. Scans `ckpts/` (recursively) for `.pt` weights and categorizes them by task.
-3. Serves the Gradio interface and opens it in your default browser.
+1. Starts and health-checks the FastAPI Studio Job API.
+2. Creates a `ckpts/` checkpoint directory if it does not exist.
+3. Scans `ckpts/` (recursively) for `.pt` weights and categorizes them by task.
+4. Serves the Gradio interface and opens it in your default browser.
+
+For manual startup, run `python main_engine.py` first, then run `python app.py` in another terminal. The latter starts
+Gradio only and connects to `F1_STUDIO_API_URL` (default: `http://127.0.0.1:8000`).
 
 > **Tip** — The interface is served on the default Gradio address
 > `http://127.0.0.1:7860` and opens automatically (`inbrowser=True`). If the
@@ -361,6 +365,5 @@ Directory* values you submit.
 
 ### State persistence
 
-Job history persists across restarts to `runs/jobs_state.json`. Jobs left in `PENDING`/`RUNNING`
-when the app shuts down are marked `FAILED` on the next startup so they never appear eternally
-active.
+The FastAPI service persists job history across restarts to `runs/jobs_state.json`. Jobs left in `PENDING`/`RUNNING`
+when the service shuts down are marked `FAILED` on the next startup so they never appear eternally active.
