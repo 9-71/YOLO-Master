@@ -12,7 +12,12 @@ from pathlib import Path
 from typing import Any
 
 SKILL_ROOT = Path(__file__).resolve().parents[2]
-for candidate in (SKILL_ROOT,):
+REPO_ROOT = Path(__file__).resolve().parents[3]
+# Both roots must be on sys.path BEFORE the runtime.cli.* imports below: agent/
+# resolves the ``runtime`` package, and the repo root gives later shared-core
+# imports a stable base. SKILL_ROOT is inserted first so REPO_ROOT ends up ahead
+# of it after the second insert(0, ...), preserving the established path order.
+for candidate in (SKILL_ROOT, REPO_ROOT):
     if str(candidate) not in sys.path:
         sys.path.insert(0, str(candidate))
 
@@ -75,12 +80,10 @@ from runtime.multimodal.runtime import (
     call_openai_compatible,
 )
 
-REPO_ROOT = Path(__file__).resolve().parents[3]
 MODULE_CACHE: dict[str, Any] = {}
 
-if str(REPO_ROOT) not in sys.path:
-    sys.path.insert(0, str(REPO_ROOT))
-
+# chdir stays after all runtime imports: only sys.path bootstrap moved earlier
+# (Handler Convergence Phase 1A); working-directory timing is unchanged.
 os.chdir(REPO_ROOT)
 
 _executor_run_cli = cli_executor.run_cli
