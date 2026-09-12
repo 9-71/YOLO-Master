@@ -521,7 +521,37 @@ class JobsManager:
             self._save()
         result = None
         code, message = None, None
+        pending_log_events: dict[int, tuple[str, bool]] = {}
+        published_log_sequences: set[int] = set()
+        next_log_sequence = 0
+        terminal_log_seen = False
         deadline = time.monotonic() + max(float(job.runtime_tracking.timeout_seconds), 0)
+
+        def receive_log_event(payload: Any) -> None:
+            """Publish ordered non-terminal child logs and ignore duplicate sequence numbers."""
+            nonlocal next_log_sequence, terminal_log_seen
+            if not isinstance(payload, dict):
+                return
+            sequence = payload.get("seq")
+            text = payload.get("text")
+            if type(sequence) is not int or sequence < next_log_sequence or not isinstance(text, str):
+                return
+            if sequence in pending_log_events:
+                return
+            pending_log_events[sequence] = (sanitize_log_text(text), bool(payload.get("terminal")))
+            new_lines = []
+            while next_log_sequence in pending_log_events:
+                line, is_terminal = pending_log_events.pop(next_log_sequence)
+                terminal_log_seen |= is_terminal
+                if not terminal_log_seen:
+                    new_lines.append(line)
+                    published_log_sequences.add(next_log_sequence)
+                next_log_sequence += 1
+            if new_lines:
+                with self.lock:
+                    self.job_logs.setdefault(job_id, []).extend(new_lines)
+                    self._save()
+
         try:
             worker.start()
             # Run our cleanup before multiprocessing's interpreter-exit join.
@@ -538,6 +568,9 @@ class JobsManager:
                 if code:
                     break
                 kind, payload = worker.receive()
+                if kind == "log":
+                    receive_log_event(payload)
+                    continue
                 if kind == "lost":
                     code, message = "WORKER_LOST", "Computation process exited without reporting a result"
                     break
@@ -587,7 +620,11 @@ class JobsManager:
                         result.metadata.started_at = current.metadata.started_at
                         result.metadata.completed_at = datetime.now(timezone.utc).isoformat()
                         self.jobs[job_id] = result
-                        self.job_logs[job_id].extend(sanitize_log_text(line) for line in result.logs)
+                        self.job_logs[job_id].extend(
+                            sanitize_log_text(line)
+                            for sequence, line in enumerate(result.logs)
+                            if sequence not in published_log_sequences
+                        )
                         self._save()
 
     def shutdown(self) -> None:

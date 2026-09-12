@@ -51,6 +51,8 @@ def dummy_executor(job):
             start_new_session=os.name != "nt",  # Match torchrun's detached rank sessions.
         )
     (root / f"{job.job_id}.started").write_text(str(os.getpid()))
+    for message in job.params.get("live_logs", []):
+        job.append_log(message)
     if job.params.get("crash"):
         deadline = time.monotonic() + 5
         while not (root / f"{job.job_id}.children").exists() and time.monotonic() < deadline:
@@ -60,6 +62,8 @@ def dummy_executor(job):
     while not gate.exists():
         time.sleep(0.02)
     job.status = JobStatus.COMPLETED
+    if terminal_log := job.params.get("terminal_log"):
+        job.append_log(terminal_log)
     return job
 
 
@@ -154,10 +158,115 @@ def test_normal_completion_cleans_leftover_children(manager, tmp_path):
     assert not any(live(pid) for pid in owned)
 
 
+def test_running_logs_stream_through_api_in_order_without_terminal_duplicates(manager, tmp_path):
+    """Structured child logs are visible while RUNNING; terminal tail waits for cleanup."""
+    submit(
+        manager,
+        tmp_path,
+        "live-api",
+        children=False,
+        live_logs=["first live API_KEY=secret_key_12345678", "second live line"],
+        terminal_log="natural terminal line",
+    )
+    wait_for(lambda: manager.get_job("live-api").status == JobStatus.RUNNING)
+    wait_for(
+        lambda: manager.get_job_log_lines("live-api")[-2:] == ["first live API_KEY=***REDACTED***", "second live line"]
+    )
+
+    app = create_app()
+    app.dependency_overrides[get_jobs_manager] = lambda: manager
+    with TestClient(app) as client:
+        assert client.get("/api/v1/jobs/live-api").json()["status"] == "running"
+        running = client.get("/api/v1/jobs/live-api/logs", params={"offset": 1, "limit": 500})
+        assert running.status_code == 200
+        assert running.json()["logs"] == ["first live API_KEY=***REDACTED***", "second live line"]
+        assert "natural terminal line" not in running.json()["logs"]
+
+        (tmp_path / "live-api.release").touch()
+        result = terminal(manager, "live-api")
+        assert result.status == JobStatus.COMPLETED
+        final_logs = client.get("/api/v1/jobs/live-api/logs").json()["logs"]
+
+    assert final_logs[1:] == ["first live API_KEY=***REDACTED***", "second live line", "natural terminal line"]
+    assert final_logs.count("first live API_KEY=***REDACTED***") == 1
+    assert final_logs.count("second live line") == 1
+    assert final_logs.count("natural terminal line") == 1
+
+
+def test_log_sequence_reordering_dedup_and_terminal_tail(monkeypatch, tmp_path):
+    """Parent orders out-of-order events, drops duplicate seq values, and merges only the final tail."""
+    import f1.jobs_manager as jobs_manager_module
+
+    manager = JobsManager(output_root=tmp_path, model_roots=[tmp_path], data_roots=[tmp_path])
+    job_id = "log-sequence"
+    job = JobRequest(job_id=job_id, task_type=TaskType.PREDICT, output={"output_dir": str(tmp_path)})
+    manager.jobs[job_id] = job
+    manager.job_logs[job_id] = ["submitted"]
+
+    result = job.model_copy(deep=True)
+    result.logs = ["zero", "one", "terminal"]
+    result.status = JobStatus.COMPLETED
+    cleanup_started = threading.Event()
+    allow_cleanup = threading.Event()
+    events = iter(
+        [
+            ("log", {"seq": 1, "text": "one", "terminal": False}),
+            ("log", {"seq": 0, "text": "zero", "terminal": False}),
+            ("log", {"seq": 1, "text": "duplicate one", "terminal": False}),
+            ("log", {"seq": 2, "text": "terminal", "terminal": True}),
+            ("result", result.model_dump(mode="json")),
+        ]
+    )
+
+    class FakeProcess:
+        @staticmethod
+        def is_alive():
+            return True
+
+    class FakeWorker:
+        def __init__(self, *_args, **_kwargs):
+            self.process = FakeProcess()
+
+        def start(self):
+            return None
+
+        def receive(self):
+            return next(events)
+
+        def stop(self, _grace):
+            cleanup_started.set()
+            assert allow_cleanup.wait(timeout=5)
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr(jobs_manager_module, "ManagedWorker", FakeWorker)
+    execution = threading.Thread(target=manager._execute_job, args=(job_id,), daemon=True)
+    execution.start()
+    assert cleanup_started.wait(timeout=5)
+    assert manager.jobs[job_id].status == JobStatus.RUNNING
+    assert manager.job_logs[job_id] == ["submitted", "zero", "one"]
+    allow_cleanup.set()
+    execution.join(timeout=5)
+
+    assert not execution.is_alive()
+    assert manager.jobs[job_id].status == JobStatus.COMPLETED
+    assert manager.job_logs[job_id] == ["submitted", "zero", "one", "terminal"]
+
+
 @pytest.mark.parametrize("reason", ["cancel", "timeout", "shutdown", "crash"])
 def test_stop_confirms_entire_tree_before_persisting(manager, tmp_path, reason):
-    submit(manager, tmp_path, reason, timeout=TASK_TIMEOUT if reason == "timeout" else 30, crash=reason == "crash")
+    live_line = f"{reason} live log"
+    submit(
+        manager,
+        tmp_path,
+        reason,
+        timeout=TASK_TIMEOUT if reason == "timeout" else 30,
+        crash=reason == "crash",
+        live_logs=[live_line],
+    )
     owned = pids(tmp_path, reason)
+    wait_for(lambda: live_line in manager.get_job_log_lines(reason))
     if reason == "cancel":
         manager.cancel_job(reason)
     elif reason == "shutdown":
@@ -174,6 +283,7 @@ def test_stop_confirms_entire_tree_before_persisting(manager, tmp_path, reason):
     assert result.metadata.started_at is not None
     assert result.metadata.completed_at is not None
     assert manager.get_job_status(reason)["duration"] >= 0
+    assert manager.get_job_log_lines(reason).count(live_line) == 1
     assert not any(live(pid) for pid in owned)
     saved = json.loads((tmp_path / "state.json").read_text())["jobs"][reason]
     assert saved["status"] == ("cancelled" if reason == "cancel" else "failed")
@@ -381,6 +491,7 @@ def test_natural_terminal_publication_wins_cancel_api_race(monkeypatch, tmp_path
 
     result = job.model_copy(deep=True)
     result.status = natural_status
+    result.logs = ["natural live log", "natural terminal log"]
     if natural_status == JobStatus.FAILED:
         result.error = ErrorInfo(code="NATURAL_FAILURE", message="worker failed naturally")
 
@@ -392,11 +503,15 @@ def test_natural_terminal_publication_wins_cancel_api_race(monkeypatch, tmp_path
     class FakeWorker:
         def __init__(self, *_args, **_kwargs):
             self.process = FakeProcess()
+            self.receive_calls = 0
 
         def start(self):
             worker_started.set()
 
         def receive(self):
+            self.receive_calls += 1
+            if self.receive_calls == 1:
+                return "log", {"seq": 0, "text": "natural live log", "terminal": False}
             assert release_result.wait(timeout=5)
             return "result", result.model_dump(mode="json")
 
@@ -435,6 +550,7 @@ def test_natural_terminal_publication_wins_cancel_api_race(monkeypatch, tmp_path
     execution = threading.Thread(target=manager._execute_job, args=(job_id,), daemon=True)
     execution.start()
     assert worker_started.wait(timeout=5)
+    wait_for(lambda: manager.get_job_log_lines(job_id) == ["natural live log"])
 
     app = create_app()
     app.dependency_overrides[get_jobs_manager] = lambda: manager
@@ -457,6 +573,7 @@ def test_natural_terminal_publication_wins_cancel_api_race(monkeypatch, tmp_path
     assert manager.jobs[job_id].metadata.started_at is not None
     assert manager.jobs[job_id].metadata.completed_at is not None
     assert manager.get_job_status(job_id)["duration"] >= 0
+    assert manager.job_logs[job_id] == ["natural live log", "natural terminal log"]
 
 
 def test_restart_reconciles_and_persists_structured_failure(tmp_path):

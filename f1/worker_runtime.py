@@ -37,6 +37,17 @@ def _compute_job(connection, stop, raw_job, executor):
     job = JobRequest.model_validate(raw_job)
     stopped = threading.Event()
 
+    if job.runtime_tracking.stream_logs:
+
+        def emit_log(sequence, text, terminal):
+            """Send one sanitized log entry over the existing result pipe."""
+            try:
+                connection.send(("log", {"seq": sequence, "text": text, "terminal": terminal}))
+            except (BrokenPipeError, EOFError, OSError):
+                pass
+
+        job._set_log_event_sink(emit_log)
+
     def watch_stop():
         try:
             stop.recv_bytes()
@@ -53,6 +64,7 @@ def _compute_job(connection, stop, raw_job, executor):
         job.error = ErrorInfo(code="EXECUTION_FAILED", message=sanitize_log_text(str(exc)))
         job.append_log(traceback.format_exc())
         result = job
+    job._set_log_event_sink(None)
     connection.send(("result", result.model_dump(mode="json")))
     stopped.wait()
     while True:

@@ -446,7 +446,10 @@ class JobDispatcherStateMachine:
         execution_result = execution_payload["result"]
         if execution_result["success"]:
             job.output.artifacts = execution_result.get("artifacts", [])
-            job.append_log(f"[Dispatcher] Execution successful. Artifacts: {len(job.output.artifacts)} files captured")
+            job.append_log(
+                f"[Dispatcher] Execution successful. Artifacts: {len(job.output.artifacts)} files captured",
+                terminal=True,
+            )
             print(f"  [Dispatcher] Execution successful. Artifacts: {len(job.output.artifacts)} files captured")
             self.transition(job, JobStatus.COMPLETED)
         else:
