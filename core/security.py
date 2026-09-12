@@ -92,9 +92,28 @@ SENSITIVE_QUOTED_ASSIGNMENT_PATTERN: re.Pattern = re.compile(
 )
 
 
+# Obvious non-secret configuration literals. Ambient environment variables can
+# carry a sensitive-looking NAME (e.g. "*_API_KEY_*_DISABLED=1") while their
+# VALUE is just a boolean/config flag; treating such a value as a known secret
+# over-redacts ordinary log fragments (e.g. "epoch=1"). Matching is
+# case-insensitive and ignores surrounding whitespace.
+_NON_SECRET_CONFIG_LITERALS: frozenset[str] = frozenset(
+    {"0", "1", "true", "false", "yes", "no", "on", "off", "none", "null"}
+)
+
+
+def _is_non_secret_config_literal(value: str) -> bool:
+    """Return True for obvious boolean/config flag literals that cannot carry a secret."""
+    return value.strip().lower() in _NON_SECRET_CONFIG_LITERALS
+
+
 def _known_secret_values() -> set[str]:
     """Return sensitive process/.env values that must be scrubbed from persisted text."""
-    values = {str(value) for key, value in os.environ.items() if value and SENSITIVE_KEY_PATTERN.search(key)}
+    values = {
+        str(value)
+        for key, value in os.environ.items()
+        if value and SENSITIVE_KEY_PATTERN.search(key) and not _is_non_secret_config_literal(str(value))
+    }
     env_path = Path.cwd() / ".env"
     try:
         for raw_line in env_path.read_text(encoding="utf-8").splitlines():
@@ -103,7 +122,7 @@ def _known_secret_values() -> set[str]:
                 continue
             key, value = line.split("=", 1)
             value = value.strip().strip("\"'")
-            if value and SENSITIVE_KEY_PATTERN.search(key.strip()):
+            if value and SENSITIVE_KEY_PATTERN.search(key.strip()) and not _is_non_secret_config_literal(value):
                 values.add(value)
     except OSError:
         pass

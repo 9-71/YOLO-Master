@@ -155,6 +155,12 @@ class TestPathSafetyRegexWhitelist:
             link.symlink_to(tmp_path.parent, target_is_directory=True)
         except OSError:
             pytest.skip("symlink creation not permitted on this platform")
+        if not link.is_symlink():
+            pytest.skip(
+                "symlink creation reported success but the link did not materialize "
+                "(link.is_symlink() is False); the current platform/execution "
+                "environment does not create real symlinks"
+            )
         # Literal path matches "^{root}/.*"; the resolved path (outside tmp_path)
         # does not -> rejected.
         target = link / "secret.pt"

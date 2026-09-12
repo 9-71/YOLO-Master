@@ -29,6 +29,23 @@ def _request(job_id: str, model: Path, data: Path, output: Path, **extra: object
     )
 
 
+def _require_real_symlink(link: Path) -> None:
+    """Skip when symlink creation reported success but the link never landed.
+
+    On some Windows/sandbox execution environments ``os.symlink`` /
+    ``CreateSymbolicLinkW`` returns success without the reparse point ever
+    being created (``exists``/``is_symlink`` stay False and ``resolve`` does
+    not move). Such environments cannot exercise the symlink-escape rejection
+    path, so asserting against a plain missing path would be a false failure.
+    """
+    if not link.is_symlink():
+        pytest.skip(
+            f"symlink at {link} did not materialize (is_symlink() is False) even though "
+            "creation reported success; the current platform/execution environment does "
+            "not create real symlinks"
+        )
+
+
 @pytest.mark.parametrize("job_id", ["abc", "job_001", "job-001", "A12_test"])
 def test_job_id_accepts_safe_values(job_id: str) -> None:
     assert JobRequest(job_id=job_id, task_type=TaskType.DIAGNOSE).job_id == job_id
@@ -106,11 +123,16 @@ def test_symlink_escape_is_rejected_when_supported(tmp_path: Path) -> None:
         link.symlink_to(outside, target_is_directory=True)
     except OSError as exc:
         pytest.skip(f"symlink creation unavailable on this Windows environment: {exc}")
+    _require_real_symlink(link)
     manager = JobsManager(model_roots=[model_root], data_roots=[data_root], output_root=output_root)
     with pytest.raises(ValueError, match="model_path"):
         manager.submit_job_request(_request("link-escape", link / "model.pt", data, output_root))
     output_link = output_root / "escape"
-    output_link.symlink_to(outside, target_is_directory=True)
+    try:
+        output_link.symlink_to(outside, target_is_directory=True)
+    except OSError as exc:
+        pytest.skip(f"symlink creation unavailable on this Windows environment: {exc}")
+    _require_real_symlink(output_link)
     with pytest.raises(ValueError, match="output_dir"):
         manager.submit_job_request(_request("output-link-escape", model_root / "model.pt", data, output_link))
 
@@ -127,6 +149,7 @@ def test_artifact_symlink_escape_is_rejected_when_supported(tmp_path: Path) -> N
         link.symlink_to(outside)
     except OSError as exc:
         pytest.skip(f"symlink creation unavailable on this Windows environment: {exc}")
+    _require_real_symlink(link)
     job = JobRequest(job_id=job_id, task_type=TaskType.PREDICT, status=JobStatus.COMPLETED)
     job.output.output_dir = str(output_root / "predict")
     job.output.artifacts = [str(link)]
