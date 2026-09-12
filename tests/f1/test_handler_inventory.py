@@ -11,7 +11,9 @@ which performs a real import of the runtime CLI inside a fully isolated
 recreation of the ``run_yolo_master_skill.py`` startup environment.
 
 The Studio->Agent table below is an ASPIRATIONAL convergence mapping only:
-it is not wired into any production dispatch path today.
+it is derived (never restated as literals) from the descriptive catalog
+``core.task_catalog.ASPIRATIONAL_TASK_LINKS`` and is not wired into any
+production dispatch path today.
 
 Import discipline:
     Importing ``agent.runtime.cli.dispatcher`` has two process-wide side
@@ -45,6 +47,7 @@ from types import SimpleNamespace
 import pytest
 
 from core.schema import TaskType
+from core.task_catalog import ASPIRATIONAL_TASK_LINKS
 from f1.handlers import TaskHandlerRegistry
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -81,20 +84,27 @@ EXPECTED_AGENT_SKILLS = frozenset(
     }
 )
 
-# Aspirational Studio (f1) task -> Agent skill SEMANTIC convergence mapping.
-# THIS IS NOT A PRODUCTION CONTRACT: nothing in core/f1/agent dispatches via
-# this table today. The two runtimes do not even share a tool-name vocabulary
-# (f1 currently ships "system_doctor"/"yolo_predict", see
-# F1_ACTIVE_TOOL_NAMES). It only records the intended alignment target so a
-# future convergence phase (Phase 1+) knows the planned semantics; it must not
-# be read as evidence that the mapping already exists at runtime.
-ASPIRATIONAL_STUDIO_TO_AGENT_SKILL = {
-    "predict": "yolo.predict",
-    "train": "yolo.train",
-    "val": "yolo.val",
-    "export": "yolo.export",
-    "diagnose": "yolo.system",
-}
+# Phase 0 characterization snapshot of the CURRENT Studio task surface
+# (``core.schema.TaskType`` enum + ``f1.handlers.TaskHandlerRegistry``).
+# SEMANTICS: this freezes what Studio ships today so unintended surface drift
+# is visible. It is NOT a convergence mapping and NOT a runtime authority --
+# the enum and the registry remain the production authorities. Studio may
+# legitimately grow new tasks later; this snapshot is then updated on its own,
+# independently of the aspirational convergence catalog.
+EXPECTED_STUDIO_TASK_IDS = frozenset({"predict", "train", "val", "export", "diagnose"})
+
+# Aspirational Studio (f1) task -> Agent skill SEMANTIC convergence mapping,
+# DERIVED from the single descriptive source of truth
+# (``core.task_catalog.ASPIRATIONAL_TASK_LINKS``); the five pairs are never
+# restated as literals here. THIS IS NOT A PRODUCTION CONTRACT: nothing in
+# core/f1/agent dispatches via this table today. The two runtimes do not even
+# share a tool-name vocabulary (f1 currently ships "system_doctor"/
+# "yolo_predict", see F1_ACTIVE_TOOL_NAMES). It only records the intended
+# alignment target so a future convergence phase (Phase 1+) knows the planned
+# semantics; it must not be read as evidence that the mapping already exists
+# at runtime. Its keys are convergence CANDIDATES (a subset of the Studio
+# surface), never the expected complete Studio task set.
+ASPIRATIONAL_STUDIO_TO_AGENT_SKILL = {link.studio_task_id: link.agent_skill_id for link in ASPIRATIONAL_TASK_LINKS}
 
 # f1's CURRENTLY ACTIVE agent-facing tool names (production surface:
 # ``f1/skills.py``). ``system_doctor`` wraps the diagnose task and
@@ -392,16 +402,18 @@ def test_bare_impl_handlers_are_directly_wired_and_request_callable(agent_cli_mo
 
 
 # ---------------------------------------------------------------------------
-# 3. Studio 5 tasks and the ASPIRATIONAL semantic mapping; the remaining 19
-#    Agent skills have no Studio counterpart in the convergence plan. The
-#    mapping is a planning artifact, not a production dispatch contract.
+# 3a. Studio characterization snapshot (Phase 0): the CURRENT Studio surface
+#     is pinned against EXPECTED_STUDIO_TASK_IDS -- an independent snapshot,
+#     not the aspirational mapping. A future legitimate Studio task addition
+#     updates that snapshot and must not fail merely because the convergence
+#     catalog does not list the new task.
 # ---------------------------------------------------------------------------
 def test_studio_task_type_enum_matches_five_tasks():
-    assert {task.value for task in TaskType} == set(ASPIRATIONAL_STUDIO_TO_AGENT_SKILL)
+    assert {task.value for task in TaskType} == set(EXPECTED_STUDIO_TASK_IDS)
 
 
 def test_studio_registry_registers_exactly_the_five_tasks():
-    assert TaskHandlerRegistry.list_registered() == sorted(ASPIRATIONAL_STUDIO_TO_AGENT_SKILL)
+    assert TaskHandlerRegistry.list_registered() == sorted(EXPECTED_STUDIO_TASK_IDS)
 
 
 def test_f1_active_tool_names_are_frozen():
@@ -410,6 +422,22 @@ def test_f1_active_tool_names_are_frozen():
 
     active = {SystemDoctorSkill().name, PredictSkill().name}
     assert active == set(F1_ACTIVE_TOOL_NAMES)
+
+
+# ---------------------------------------------------------------------------
+# 3b. Aspirational catalog coverage (subset-only): the catalog constrains
+#     only its own candidates -- every left side must currently exist on the
+#     Studio surface and every right side in Agent HANDLERS. It does NOT
+#     define the complete Studio surface (see EXPECTED_STUDIO_TASK_IDS) or
+#     the complete Agent inventory (see EXPECTED_AGENT_SKILLS).
+# ---------------------------------------------------------------------------
+def test_aspirational_catalog_left_sides_exist_on_studio_surface():
+    studio_surface = {task.value for task in TaskType}
+    # The two production Studio authorities must agree with each other...
+    assert set(TaskHandlerRegistry.list_registered()) == studio_surface
+    # ...and every catalog candidate must live on that surface (subset only).
+    missing = sorted(set(ASPIRATIONAL_STUDIO_TO_AGENT_SKILL) - studio_surface)
+    assert not missing, f"aspirational catalog candidates absent from the Studio surface: {missing}"
 
 
 def test_aspirational_target_skills_exist_in_agent_inventory(agent_cli_modules):
