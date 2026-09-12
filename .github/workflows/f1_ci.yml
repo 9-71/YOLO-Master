@@ -37,10 +37,10 @@ jobs:
           pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
           # Lightweight tooling, UI/schema deps and ONNX export deps required by f1, core and the API engine
           pip install ruff pytest pytest-cov pydantic gradio fastapi httpx pyyaml onnx onnxslim onnxruntime
-          # Install the local package structure only; runtime deps are provided by the steps above
-          pip install -e . --no-deps || true
-          # Best-effort install of the remaining runtime deps (opencv, numpy, pandas, etc.)
-          pip install -r requirements.txt || true
+          # Install the local package structure without deps; full runtime deps come from requirements.txt below
+          pip install -e . --no-deps
+          # Install the remaining runtime deps (opencv, numpy, pandas, etc.); failures must fail CI
+          pip install -r requirements.txt
 
       - name: Fetch F1 checkpoint
         run: |

@@ -26,8 +26,6 @@ share/python-wheels/
 .installed.cfg
 *.egg
 MANIFEST
-requirements.txt
-!examples/**/requirements.txt
 setup.py
 ultralytics.egg-info
 
@@ -85,7 +83,6 @@ ipython_config.py
 
 # Environments & Tools
 .python-version
-uv.lock
 __pypackages__/
 celerybeat-schedule
 celerybeat.pid
