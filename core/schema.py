@@ -30,17 +30,19 @@ Example:
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, PrivateAttr, field_validator
 
 from core.security import sanitize_log_text
 
 __version__ = "1.0.0"
 
 __all__ = [
+    "TERMINAL_STATUSES",
     "ArtifactManifest",
     "ErrorInfo",
     "JobRequest",
@@ -71,12 +73,18 @@ class JobStatus(str, Enum):
     RUNNING = "running"
     COMPLETED = "completed"
     FAILED = "failed"
+    CANCELLED = "cancelled"
+
+
+TERMINAL_STATUSES = frozenset({JobStatus.COMPLETED, JobStatus.FAILED, JobStatus.CANCELLED})
 
 
 class Metadata(BaseModel):
     """Job bookkeeping metadata attached to every ``JobRequest``."""
 
     created_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+    started_at: str | None = None
+    completed_at: str | None = None
     created_by: str = "anonymous"
     description: str | None = None
     priority: str = "normal"
@@ -145,7 +153,7 @@ class JobRequest(BaseModel):
             UI-facing and persisted logs never carry plaintext secrets.
     """
 
-    job_id: str
+    job_id: str = Field(min_length=1, max_length=128, pattern=r"^[A-Za-z0-9_-]+$")
     task_type: TaskType
     status: JobStatus = JobStatus.PENDING
     metadata: Metadata = Metadata()
@@ -155,6 +163,15 @@ class JobRequest(BaseModel):
     runtime_tracking: RuntimeTracking = RuntimeTracking()
     error: ErrorInfo | None = None
     logs: list[str] = Field(default_factory=list)
+    _log_event_sink: Callable[[int, str, bool], None] | None = PrivateAttr(default=None)
+
+    @field_validator("job_id")
+    @classmethod
+    def validate_job_id(cls, value: str) -> str:
+        """Reject path-like reserved identifiers even though they contain allowed characters."""
+        if value in {".", ".."}:
+            raise ValueError("job_id must not be '.' or '..'")
+        return value
 
     @property
     def error_message(self) -> str:
@@ -168,7 +185,11 @@ class JobRequest(BaseModel):
         """
         return self.error.message if self.error else ""
 
-    def append_log(self, text: str) -> None:
+    def _set_log_event_sink(self, sink: Callable[[int, str, bool], None] | None) -> None:
+        """Attach a process-local sink for sanitized incremental log events."""
+        self._log_event_sink = sink
+
+    def append_log(self, text: str, *, terminal: bool = False) -> None:
         """Append a log entry after routing it through the security sanitizer.
 
         This is the canonical interface for writing UI-facing or persisted job
@@ -180,7 +201,11 @@ class JobRequest(BaseModel):
         Args:
             text: Raw log text (single- or multi-line) to sanitize and store.
         """
-        self.logs.append(sanitize_log_text(text))
+        sanitized = sanitize_log_text(text)
+        sequence = len(self.logs)
+        self.logs.append(sanitized)
+        if self._log_event_sink is not None:
+            self._log_event_sink(sequence, sanitized, terminal or self.status in TERMINAL_STATUSES)
 
 
 class ArtifactManifest(BaseModel):

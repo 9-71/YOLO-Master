@@ -77,6 +77,7 @@ def create_demo_app() -> gr.Blocks:
                     ### 2. Monitor Execution
 
                     - **📊 Status Monitor**: View real-time job status, duration, and error diagnostics
+                    - Public job statuses: `pending | running | completed | failed | cancelled`
                     - **📜 Live Logs**: Stream execution logs (auto-refreshed every second while the job runs)
                     - **📁 Artifacts**: Download generated outputs (annotated images, labels, metadata)
 
@@ -84,7 +85,7 @@ def create_demo_app() -> gr.Blocks:
 
                     1. The Job ID textbox fills automatically on submission
                     2. Click **🚫 Cancel Job** button
-                    3. Job will transition to FAILED with USER_CANCELLED error code
+                    3. Job will transition to CANCELLED with USER_CANCELLED error code
 
                     ### 4. Security Constraints
 

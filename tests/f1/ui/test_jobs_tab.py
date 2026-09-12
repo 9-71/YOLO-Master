@@ -14,7 +14,6 @@ import os
 import shutil
 import subprocess
 import sys
-import threading
 import time
 from collections.abc import Callable
 from datetime import datetime
@@ -26,7 +25,7 @@ from unittest.mock import patch
 import gradio as gr
 import pytest
 
-from core.schema import ErrorInfo, JobRequest, JobStatus, OutputConfig, TaskType
+from core.schema import JobRequest, JobStatus, OutputConfig, TaskType
 from f1.ui.i18n import get_text
 from f1.ui.jobs_tab import (
     _DATAFRAME_HEADER_MENU_CSS,
@@ -192,47 +191,28 @@ class TestJobsManager:
         assert "not found" in result.lower()
 
     def test_cancel_job_terminal_state(self, jobs_manager, sample_job_params):
-        """Test cancellation of job in terminal state."""
-        job_id, _ = jobs_manager.submit_job(**sample_job_params)
+        """Cancellation cannot replace a terminal state that already won."""
+        # Publish the terminal state explicitly so this test does not infer
+        # completion from the scheduling speed of a real worker.
+        with patch.object(jobs_manager, "_start_supervisors", lambda: None):
+            job_id, _ = jobs_manager.submit_job(**sample_job_params)
 
-        # Wait for job to complete or fail
-        max_wait = 10  # seconds
-        elapsed = 0
-        while elapsed < max_wait:
-            status = jobs_manager.get_job_status(job_id)
-            if status["status"] in ["COMPLETED", "FAILED"]:
-                break
-            time.sleep(0.5)
-            elapsed += 0.5
+        job = jobs_manager.jobs[job_id]
+        with jobs_manager.lock:
+            job.status = JobStatus.COMPLETED
+            job.metadata.completed_at = job.metadata.created_at
 
+        assert jobs_manager.get_job_status(job_id)["status"] == "COMPLETED"
         result = jobs_manager.cancel_job(job_id)
 
-        assert "terminal state" in result.lower() or "not found" in result.lower()
+        assert "terminal state" in result.lower()
+        assert jobs_manager.get_job_status(job_id)["status"] == "COMPLETED"
 
     def test_cancel_job_active(self, jobs_manager):
-        """Test cancellation request for active job.
-
-        The dispatcher's execute() is mocked with a controllable thread gate so the
-        job simulates a RUNNING state without real network downloads or YOLO inference.
-        """
-        started = threading.Event()
-        release = threading.Event()
-
-        def fake_execute(job):
-            """Simulate a long-running executor that honors cancellation requests."""
-            job.status = JobStatus.RUNNING
-            started.set()
-            release.wait(timeout=10)
-            if job.runtime_tracking.cancel_requested:
-                job.status = JobStatus.FAILED
-                job.error = ErrorInfo(code="USER_CANCELLED", message="Job execution cancelled by user request")
-            else:
-                job.status = JobStatus.COMPLETED
-            return job
-
-        # Patch only this manager's dispatcher instance to avoid interfering with
-        # background jobs submitted by other tests
-        with patch.object(jobs_manager.dispatcher, "execute", fake_execute):
+        """Test cancellation of a job whose RUNNING state is deterministic."""
+        # Register without starting supervisors, then model the exact
+        # parent-owned RUNNING state that cancel_job observes.
+        with patch.object(jobs_manager, "_start_supervisors", lambda: None):
             job_id, _ = jobs_manager.submit_job(
                 task_type="predict",
                 model_path="nonexistent_model.pt",
@@ -243,27 +223,28 @@ class TestJobsManager:
                 allowed_paths=[".", "runs"],
             )
 
-            # Wait until the background executor reports the job RUNNING
-            assert started.wait(timeout=5), "Background executor never reached RUNNING state"
-            assert jobs_manager.get_job_status(job_id)["status"] == "RUNNING"
+        job = jobs_manager.jobs[job_id]
+        with jobs_manager.lock:
+            job.status = JobStatus.RUNNING
+            job.metadata.started_at = job.metadata.created_at
+            # Presence in _workers is what makes this an actively owned job.
+            jobs_manager._workers[job_id] = object()
 
-            # Request cancellation while the job is actively running
-            result = jobs_manager.cancel_job(job_id)
+        assert jobs_manager.get_job_status(job_id)["status"] == "RUNNING"
+        result = jobs_manager.cancel_job(job_id)
 
-            assert "cancellation requested" in result.lower()
-            assert job_id in result
+        assert "cancellation requested" in result.lower()
+        assert job_id in result
+        assert job.runtime_tracking.cancel_requested is True
 
-        # Release the mock executor so the worker thread finishes cleanly
-        release.set()
+        # Complete the controlled worker hand-off using the production terminal
+        # transition after the cancellation request has been recorded.
+        with jobs_manager.lock:
+            jobs_manager._workers.pop(job_id)
+            jobs_manager._cancel_job(job, "Job execution cancelled by user request")
 
-        # Cancellation should drive the job to a terminal FAILED state without deadlock
-        deadline = time.time() + 5
-        while time.time() < deadline:
-            status = jobs_manager.get_job_status(job_id)
-            if status["status"] == "FAILED":
-                break
-            time.sleep(0.05)
-        assert status["status"] == "FAILED", "Cancelled job never reached terminal state"
+        status = jobs_manager.get_job_status(job_id)
+        assert status["status"] == "CANCELLED"
         assert status["error_code"] == "USER_CANCELLED"
 
     def test_list_recent_jobs(self, jobs_manager, sample_job_params):
@@ -320,27 +301,37 @@ class TestJobsManager:
 
         assert artifacts == []
 
-    def test_security_constraints_enforced(self, jobs_manager):
-        """Test that security constraints are enforced."""
-        # Submit job with path traversal attempt
-        job_id, _ = jobs_manager.submit_job(
-            task_type="predict",
-            model_path="yolov8n.pt",
-            data_source="../../etc/passwd",  # Path traversal attempt
-            output_dir="runs/predict",
-            conf=0.25,
-            device="cpu",
-            allowed_paths=["runs"],  # Restricted whitelist
-        )
+    def test_security_constraints_enforced(self, tmp_path: Path):
+        """Trusted-root paths are accepted and paths outside them are rejected."""
+        manager = JobsManager(model_roots=[tmp_path], data_roots=[tmp_path], output_root=tmp_path / "runs")
+        model_path = tmp_path / "model.pt"
+        data_source = tmp_path / "input.jpg"
+        output_dir = tmp_path / "runs" / "predict"
 
-        # Wait for job to process
-        time.sleep(1.0)
+        with patch.object(manager, "_start_supervisors", lambda: None):
+            job_id, _ = manager.submit_job(
+                task_type="predict",
+                model_path=str(model_path),
+                data_source=str(data_source),
+                output_dir=str(output_dir),
+                conf=0.25,
+                device="cpu",
+                allowed_paths=[str(tmp_path)],
+            )
 
-        status = jobs_manager.get_job_status(job_id)
+        assert manager.jobs[job_id].status == JobStatus.PENDING
 
-        # Job should fail with security error
-        assert status["status"] == "FAILED"
-        assert status["error_code"] in ["SEC_ERR_001", "PARAM_VALIDATION_FAILED"]
+        outside_source = tmp_path.parent / f"{tmp_path.name}-outside" / "input.jpg"
+        with pytest.raises(ValueError, match="data_source is outside the server-configured trusted roots"):
+            manager.submit_job(
+                task_type="predict",
+                model_path=str(model_path),
+                data_source=str(outside_source),
+                output_dir=str(output_dir),
+                conf=0.25,
+                device="cpu",
+                allowed_paths=[str(tmp_path)],
+            )
 
     def test_thread_safety_concurrent_submissions(self, jobs_manager, sample_job_params):
         """Test thread safety with concurrent job submissions."""
@@ -525,7 +516,7 @@ class TestArtifactVisualizer:
         assert Path(result[0]).name == "inside.png"
         assert all("outside" not in p for p in result)
 
-    def test_jobs_manager_wrapper(self, jobs_manager: JobsManager, tmp_path: Path) -> None:
+    def test_jobs_manager_wrapper(self, tmp_path: Path) -> None:
         """JobsManager.get_job_image_artifacts wraps the scanner safely.
 
         Verifies three behaviours:
@@ -534,63 +525,50 @@ class TestArtifactVisualizer:
         3. Edge cases (e.g. missing output directory on a COMPLETED job) are
            handled gracefully by returning ``[]`` instead of raising.
         """
+        manager = JobsManager(model_roots=[tmp_path], data_roots=[tmp_path], output_root=tmp_path / "runs")
+
         # 1. Non-existent job → empty list
-        assert jobs_manager.get_job_image_artifacts("nonexistent-job-id") == []
+        assert manager.get_job_image_artifacts("nonexistent-job-id") == []
 
         # 2. Completed job with images → returns artifact paths
-        output_dir = tmp_path / "artifacts"
-        output_dir.mkdir()
-        self._write_minimal_png(output_dir / "preview.png")
+        output_dir = tmp_path / "runs" / "artifacts"
+        artifact_dir = output_dir / "wrapper-job"
+        artifact_dir.mkdir(parents=True)
+        self._write_minimal_png(artifact_dir / "preview.png")
+        job = JobRequest(
+            job_id="wrapper-job",
+            task_type=TaskType.PREDICT,
+            status=JobStatus.COMPLETED,
+            output=OutputConfig(output_dir=str(output_dir), artifacts=["preview.png"]),
+        )
+        with manager.lock:
+            manager.jobs[job.job_id] = job
+            manager.job_logs[job.job_id] = []
 
-        def fake_execute(job: JobRequest) -> JobRequest:
-            job.status = JobStatus.COMPLETED
-            job.output.output_dir = str(output_dir)
-            return job
-
-        with patch.object(jobs_manager.dispatcher, "execute", fake_execute):
-            job_id, _ = jobs_manager.submit_job(
-                task_type="predict",
-                model_path="nonexistent.pt",
-                data_source="ultralytics/assets/bus.jpg",
-                output_dir=str(output_dir),
-                conf=0.25,
-                device="cpu",
-                allowed_paths=[".", "ultralytics/assets", str(tmp_path)],
-            )
-            # Give the background thread a moment to mark the job COMPLETED
-            time.sleep(0.5)
-
-        images = jobs_manager.get_job_image_artifacts(job_id)
+        images = manager.get_job_image_artifacts(job.job_id)
         assert isinstance(images, list)
         assert len(images) == 1
         assert Path(images[0]).name == "preview.png"
 
         # 3. Edge case: COMPLETED job whose output_dir vanished → safe fallback
-        vanished_dir = tmp_path / "vanished"
-        vanished_dir.mkdir()
-        self._write_minimal_png(vanished_dir / "orphan.png")
+        vanished_dir = tmp_path / "runs" / "vanished"
+        vanished_artifact_dir = vanished_dir / "vanished-job"
+        vanished_artifact_dir.mkdir(parents=True)
+        self._write_minimal_png(vanished_artifact_dir / "orphan.png")
+        vanished_job = JobRequest(
+            job_id="vanished-job",
+            task_type=TaskType.PREDICT,
+            status=JobStatus.COMPLETED,
+            output=OutputConfig(output_dir=str(vanished_dir), artifacts=["orphan.png"]),
+        )
+        with manager.lock:
+            manager.jobs[vanished_job.job_id] = vanished_job
+            manager.job_logs[vanished_job.job_id] = []
 
-        def fake_vanished(job: JobRequest) -> JobRequest:
-            job.status = JobStatus.COMPLETED
-            job.output.output_dir = str(vanished_dir)
-            return job
-
-        with patch.object(jobs_manager.dispatcher, "execute", fake_vanished):
-            job_id2, _ = jobs_manager.submit_job(
-                task_type="predict",
-                model_path="nonexistent.pt",
-                data_source="ultralytics/assets/bus.jpg",
-                output_dir=str(vanished_dir),
-                conf=0.25,
-                device="cpu",
-                allowed_paths=[".", "ultralytics/assets", str(tmp_path)],
-            )
-            time.sleep(0.5)
-
-        # Remove the directory after the job is marked COMPLETED
+        # Remove the directory after the job is marked COMPLETED.
         shutil.rmtree(vanished_dir)
 
-        fallback = jobs_manager.get_job_image_artifacts(job_id2)
+        fallback = manager.get_job_image_artifacts(vanished_job.job_id)
         assert fallback == []
 
 
@@ -679,6 +657,20 @@ class TestArtifactTableSelectGuard:
 
     ARTIFACTS_LABEL = "Generated Artifacts"  # get_text("en", "df.artifacts")
 
+    @staticmethod
+    def _metadata(paths: list[Path]) -> list[dict[str, Any]]:
+        return [
+            {
+                "filename": path.name,
+                "artifact_id": path.name,
+                "preview_path": str(path) if path.suffix.lower() in {".jpg", ".png"} else "",
+                "source_path": str(path),
+                "is_image": path.suffix.lower() in {".jpg", ".png"},
+                "download_url": str(path),
+            }
+            for path in paths
+        ]
+
     def _build(self) -> tuple[JobsManager, gr.Blocks, gr.Dataframe, Callable[..., Any]]:
         manager = JobsManager()
         tab = create_jobs_tab(manager, "en")
@@ -705,11 +697,12 @@ class TestArtifactTableSelectGuard:
         manifest.write_text("conf: 0.25\n", encoding="utf-8")
         self._insert_completed_job(manager, "sel-img-001", [str(manifest), str(image)])
 
-        result = select_fn(SimpleNamespace(index=(1,)), "sel-img-001", "en")
+        result = select_fn(SimpleNamespace(index=(1,)), self._metadata([manifest, image]), "en")
 
         assert result[0].get("value") == "a.jpg"  # selector synced to the filename
         assert result[1].get("value") == str(image)
         assert "a.jpg" in result[1]["label"]
+        assert result[2].get("value") == str(image)
 
     def test_non_image_row_keeps_preview_and_warns_bilingually(self, tmp_path: Path, monkeypatch: Any) -> None:
         """A .pt/.yaml row triggers a localized gr.Info and never touches the preview."""
@@ -722,7 +715,8 @@ class TestArtifactTableSelectGuard:
 
         infos: list[str] = []
         monkeypatch.setattr("gradio.Info", lambda message: infos.append(message))
-        result = select_fn(SimpleNamespace(index=(1,)), "sel-pt-001", "zh")
+        metadata = self._metadata([image, weights])
+        result = select_fn(SimpleNamespace(index=(1,)), metadata, "zh")
 
         assert len(infos) == 1
         assert "best.pt" in infos[0]
@@ -730,9 +724,10 @@ class TestArtifactTableSelectGuard:
         # Preview state must be preserved: no value overwrite, no reset to None
         assert result[0].get("value") is None
         assert result[1].get("value") is None
+        assert result[2].get("value") == str(weights)
 
         infos.clear()
-        result = select_fn(SimpleNamespace(index=(1,)), "sel-pt-001", "en")
+        result = select_fn(SimpleNamespace(index=(1,)), metadata, "en")
         assert len(infos) == 1
         assert "is not an image file" in infos[0]
         assert result[0].get("value") is None
@@ -745,7 +740,7 @@ class TestArtifactTableSelectGuard:
         self._insert_completed_job(manager, "sel-oob-001", [str(image)])
 
         for evt in (SimpleNamespace(index=(99,)), SimpleNamespace(index=())):
-            result = select_fn(evt, "sel-oob-001", "en")
+            result = select_fn(evt, self._metadata([image]), "en")
             assert result[0].get("value") is None
             assert result[1].get("value") is None
 
@@ -784,7 +779,8 @@ class TestOpenOutputFolderNavigation:
             opened.append(path)
 
         monkeypatch.setattr(os, "startfile", _fake_startfile, raising=False)
-        open_fn("predict_open001", "en")
+        metadata = TestArtifactTableSelectGuard._metadata([best])
+        open_fn("predict_open001", metadata, "en")
 
         # Exactly the directory whose name contains the job_id — never deeper,
         # never the parent runs/train.
@@ -792,6 +788,8 @@ class TestOpenOutputFolderNavigation:
 
     def test_posix_branch_uses_xdg_open_on_job_root(self, tmp_path: Path, monkeypatch: Any) -> None:
         """Non-Windows platforms shell out with the job root as the sole argument."""
+        import f1.ui.jobs_tab as jobs_tab_module
+
         manager, open_fn = self._build()
         job_root = tmp_path / "runs" / "val" / "val_open002"
         job_root.mkdir(parents=True)
@@ -805,10 +803,11 @@ class TestOpenOutputFolderNavigation:
             def __init__(self, cmd: list[str], *args: Any, **kwargs: Any) -> None:
                 commands.append(cmd)
 
-        monkeypatch.setattr(os, "name", "posix")
+        monkeypatch.setattr(jobs_tab_module, "os", SimpleNamespace(name="posix"))
         monkeypatch.setattr(sys, "platform", "linux")
         monkeypatch.setattr(subprocess, "Popen", _FakePopen)
-        open_fn("val_open002", "en")
+        metadata = TestArtifactTableSelectGuard._metadata([report])
+        open_fn("val_open002", metadata, "en")
 
         assert commands == [["xdg-open", str(job_root)]]
 
@@ -827,8 +826,9 @@ class TestOpenOutputFolderNavigation:
         monkeypatch.setattr("gradio.Warning", lambda message: warnings.append(message))
         monkeypatch.setattr(os, "startfile", lambda path: opened.append(path), raising=False)
 
-        open_fn("predict_gone001", "en")
-        open_fn("no-such-job", "zh")
+        ghost = tmp_path / "runs" / "predict" / "predict_gone001" / "ghost.jpg"
+        open_fn("predict_gone001", TestArtifactTableSelectGuard._metadata([ghost]), "en")
+        open_fn("no-such-job", [], "zh")
 
         assert len(warnings) == 2
         assert "Output directory does not exist." in warnings
@@ -840,23 +840,21 @@ class TestJobsPersistence:
     """Persistence layer tests for JobsManager (storage_path opt-in)."""
 
     @staticmethod
-    def _wait_terminal(manager: JobsManager, job_id: str, timeout: float = 10.0) -> None:
-        """Block until the background thread reaches a terminal state."""
-        deadline = time.time() + timeout
-        while time.time() < deadline:
-            if manager.jobs[job_id].status in (JobStatus.COMPLETED, JobStatus.FAILED):
-                return
-            time.sleep(0.05)
-        raise AssertionError(f"Job {job_id} never reached a terminal state")
+    def _persist_terminal_record(manager: JobsManager, job_id: str) -> None:
+        """Persist a terminal record without starting a real execution worker."""
+        job = JobRequest(job_id=job_id, task_type=TaskType.PREDICT, status=JobStatus.COMPLETED)
+        job.metadata.completed_at = job.metadata.created_at
+        with manager.lock:
+            manager.jobs[job_id] = job
+            manager.job_logs[job_id] = [f"Job {job_id} completed in deterministic test setup"]
+            manager._save()
 
-    def test_persist_writes_json_roundtrip(self, tmp_path: Path, sample_job_params) -> None:
-        """Submitting a job with storage_path writes a well-formed JSON state file."""
+    def test_persist_writes_json_roundtrip(self, tmp_path: Path) -> None:
+        """A terminal record is persisted and validates after JSON round-trip."""
         storage = tmp_path / "state" / "jobs_state.json"
         manager = JobsManager(storage_path=str(storage))
-
-        with patch.object(manager.dispatcher, "execute", _stub_execute):
-            job_id, _ = manager.submit_job(**sample_job_params)
-        self._wait_terminal(manager, job_id)
+        job_id = "predict_persisted_terminal"
+        self._persist_terminal_record(manager, job_id)
 
         assert storage.is_file(), "state file was not created"
         payload = json.loads(storage.read_text(encoding="utf-8"))
@@ -866,26 +864,24 @@ class TestJobsPersistence:
         assert payload["jobs"][job_id]["task_type"] == "predict"
         assert payload["jobs"][job_id]["status"] == "completed"
         assert job_id in payload["job_logs"]
-        assert any("submitted" in line for line in payload["job_logs"][job_id])
+        assert any("completed" in line for line in payload["job_logs"][job_id])
         # Round-trip: the persisted payload re-validates into a JobRequest.
         restored = JobRequest.model_validate(payload["jobs"][job_id])
         assert restored.status == JobStatus.COMPLETED
 
-    def test_new_instance_restores_history(self, tmp_path: Path, sample_job_params) -> None:
+    def test_new_instance_restores_history(self, tmp_path: Path) -> None:
         """A second JobsManager on the same storage_path sees prior jobs and logs."""
         storage = tmp_path / "jobs_state.json"
         manager = JobsManager(storage_path=str(storage))
-
-        with patch.object(manager.dispatcher, "execute", _stub_execute):
-            job_id, _ = manager.submit_job(**sample_job_params)
-        self._wait_terminal(manager, job_id)
+        job_id = "predict_restored_terminal"
+        self._persist_terminal_record(manager, job_id)
 
         reloaded = JobsManager(storage_path=str(storage))
         assert job_id in reloaded.jobs
         assert reloaded.jobs[job_id].status == JobStatus.COMPLETED
         assert reloaded.jobs[job_id].task_type == TaskType.PREDICT
         assert job_id in reloaded.job_logs
-        assert any("submitted" in line for line in reloaded.job_logs[job_id])
+        assert any("completed" in line for line in reloaded.job_logs[job_id])
 
     def test_orphaned_active_jobs_heal_to_failed(self, tmp_path: Path) -> None:
         """PENDING/RUNNING jobs in the state file are reset to FAILED on load."""
@@ -898,16 +894,25 @@ class TestJobsPersistence:
         payload = {
             "version": 1,
             "jobs": {j.job_id: j.model_dump(mode="json") for j in (pending, running, completed)},
-            "job_logs": {pending.job_id: ["stale log line"], running.job_id: []},
+            "job_logs": {
+                pending.job_id: ["stale pending log line"],
+                running.job_id: ["stale running log line"],
+            },
         }
         storage.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
 
         manager = JobsManager(storage_path=str(storage))
         assert manager.jobs[pending.job_id].status == JobStatus.FAILED
         assert manager.jobs[running.job_id].status == JobStatus.FAILED
+        assert manager.jobs[pending.job_id].error.code == "SERVICE_RESTARTED"
+        assert manager.jobs[running.job_id].error.code == "SERVICE_RESTARTED"
         # Terminal jobs are restored untouched.
         assert manager.jobs[completed.job_id].status == JobStatus.COMPLETED
-        assert manager.job_logs[pending.job_id] == ["stale log line"]
+        assert manager.job_logs[pending.job_id][0] == "stale pending log line"
+        assert manager.job_logs[running.job_id][0] == "stale running log line"
+        for job_id in (pending.job_id, running.job_id):
+            assert any("Service restarted" in line for line in manager.job_logs[job_id])
+            assert any("[SERVICE_RESTARTED]" in line for line in manager.jobs[job_id].logs)
 
 
 class TestRecentJobsInitialValue:
@@ -1048,8 +1053,8 @@ class TestPollIdlePreservesRecentJobs:
         # Simulate an idle tick: no active job selected.
         result = sync_fn("", "en")
 
-        # The Recent Jobs output is the final element of the handler's tuple.
-        recent = result[-1]
+        # The tail also carries artifact metadata and the download-button update.
+        recent = result[-3]
         assert recent == expected
         assert len(recent) == 2
 
@@ -1064,8 +1069,8 @@ class TestPollIdlePreservesRecentJobs:
 
         result = poll_fn("", "en")
 
-        # poll_handler tuple: recent is the second-to-last element, timer update last.
-        recent = result[-2]
+        # poll_handler tail: recent, artifact metadata, download update, timer update.
+        recent = result[-4]
         assert recent == expected
         assert len(recent) == 2
 

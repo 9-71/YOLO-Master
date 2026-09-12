@@ -2,7 +2,7 @@
 
 **Topic**: F1 - YOLO-Master Studio Platform Core
 **Milestone**: Entry Check - 2026-08-24
-**Status**: ✅ **P0 Complete · P1 Complete** · v1.3.0
+**Status**: ✅ **P0 Complete · P1 Complete · P2 Complete** · v1.4.0
 
 ---
 
@@ -56,7 +56,7 @@ The shared `JobRequest` contract serves as the inter-component interface:
 {
   "job_id": "string",                    // Unique job identifier
   "task_type": "predict|train|val|export|diagnose",
-  "status": "pending|running|completed|failed",
+  "status": "pending|running|completed|failed|cancelled",
   "metadata": {
     "created_at": "ISO8601 timestamp",
     "created_by": "string",
@@ -102,19 +102,22 @@ The dispatcher enforces strict state transitions to prevent race conditions and 
 
 ```
 PENDING ──┬──> RUNNING ──┬──> COMPLETED (terminal)
-          │              │
-          │              └──> FAILED (terminal)
+          │              ├──> FAILED (terminal)
+          │              └──> CANCELLED (terminal)
           │
-          └──> FAILED (terminal)
+          ├──> FAILED (terminal)
+          └──> CANCELLED (terminal)
 ```
 
 **Transition Rules**:
 
 - `PENDING → RUNNING`: Job execution started
 - `PENDING → FAILED`: Pre-execution validation failure (e.g., security violation)
+- `PENDING → CANCELLED`: User cancellation before worker launch
 - `RUNNING → COMPLETED`: Successful task completion with artifacts
 - `RUNNING → FAILED`: Runtime execution error
-- `COMPLETED` and `FAILED` are **terminal states** with no outgoing transitions
+- `RUNNING → CANCELLED`: Cooperative user cancellation
+- `COMPLETED`, `FAILED` and `CANCELLED` are **terminal states** with no outgoing transitions
 
 **Illegal Transitions** (enforced by `JobDispatcherStateMachine`):
 
@@ -298,7 +301,7 @@ The F1 Studio Platform implements the following mandatory security constraints:
 
 ### 5.2 Phase 1 (P1): Multi-Task Unification
 
-**Target**: 2026-09-07 
+**Target**: 2026-09-07
 **Deliverables**:
 
 - [X] Unify `train`, `val`, `predict`, `export` task contracts
@@ -308,14 +311,13 @@ The F1 Studio Platform implements the following mandatory security constraints:
 
 ### 5.3 Phase 2 (P2): Standalone FastAPI Engine & Decoupled Architecture
 
-**Target**: 2026-09-12  
-**Deliverables**:
+**Target**: 2026-09-12**Deliverables**:
 
-- [ ] Standalone FastAPI Service: Expose core task dispatcher endpoints (`/api/v1/jobs/*` for train, val, predict, export, and diagnose) alongside Gradio WebUI
-- [ ] Schema & Contract Alignment: Native OpenAPI/Swagger documentation backed by `core/schema.py` (`JobRequest`, `JobStatus`, and error dictionaries)
-- [ ] Non-blocking Lifecycle & Log Streaming: Asynchronous job lifecycle polling, real-time incremental log retrieval, and cooperative cancellation via REST API
-- [ ] Artifact Delivery Endpoints: Direct file inspection, static mount, and artifact manifest download routes
-- [ ] Decoupled Frontend Demo: Lightweight React/SPA or OpenAPI verification console validating decoupled engine architecture
+- [X] Standalone FastAPI Service: Expose core task dispatcher endpoints (`/api/v1/jobs/*` for train, val, predict, export, and diagnose) alongside Gradio WebUI
+- [X] Schema & Contract Alignment: Native OpenAPI/Swagger documentation backed by `core/schema.py` (`JobRequest`, `JobStatus`, and error dictionaries)
+- [X] Non-blocking Lifecycle & Log Streaming: Asynchronous job lifecycle polling, real-time incremental log retrieval, and cooperative cancellation via REST API
+- [X] Artifact Delivery Endpoints: Direct file inspection, static mount, and artifact manifest download routes
+- [X] Decoupled Frontend Demo: Zero-build verification console (`frontend/index.html` + `app.js`, Tailwind CDN + vanilla ES6) served by the engine at `/` — job dispatch, lifecycle supervision, cursor-based log tailing and artifact inspection against the REST API, with `file://` standalone usage supported via the `null`-origin CORS entry
 
 ---
 
@@ -350,7 +352,23 @@ python smoke/test_f1_smoke.py
 # python smoke/test_f1_smoke.py | Out-File -Encoding utf8 smoke/smoke_run.log
 ```
 
-### 6.3 Inspect Results
+### 6.3 Run the Decoupled Verification Console (P2)
+
+```bash
+# Start the standalone FastAPI engine (no Gradio required)
+python main_engine.py
+
+# The zero-build verification console loads at the web root:
+#   http://127.0.0.1:8000/
+# API docs: http://127.0.0.1:8000/docs   ·   Health probe: http://127.0.0.1:8000/health
+
+# The console can also be opened directly from disk (frontend/index.html via
+# file://) — the engine's CORS allowlist includes the "null" origin such pages
+# send, and the API base defaults to http://localhost:8000. No npm install,
+# no Node.js server, no build step.
+```
+
+### 6.4 Inspect Results
 
 ```bash
 # View execution log

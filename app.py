@@ -1,8 +1,7 @@
 """YOLO-Master Gradio WebUI entrypoint.
 
-Launches the interactive Studio in which the classic inference playground and the F1
-Jobs tab (asynchronous job submission, adaptive polling, artifact browsing) share a
-single top-level tab container and one application-level JobsManager singleton.
+Launches the interactive Studio in which the classic inference playground runs
+synchronously and the F1 Jobs tab routes background work through the Studio Job API.
 
 Localization:
     A top-level language selector lifts the language state above the tab container;
@@ -11,7 +10,8 @@ Localization:
     design: the top selector is the single source of truth).
 
 Usage:
-    python app.py
+    python start_studio.py  # Recommended: Studio Job API + Gradio
+    python app.py           # Gradio only; requires an external Studio Job API
 """
 
 from __future__ import annotations
@@ -29,7 +29,8 @@ import pandas as pd
 import torch
 
 from f1.ui.i18n import DEFAULT_LANGUAGE, LANGUAGE_CHOICES, get_columns, get_text
-from f1.ui.jobs_tab import JobsManager, create_jobs_tab, jobs_tab_language_updates
+from f1.ui.jobs_tab import create_jobs_tab, jobs_tab_language_updates
+from f1.ui.studio_jobs_client import StudioJobsApiClient
 from ultralytics import YOLO
 
 # Ignore unnecessary warnings
@@ -209,9 +210,9 @@ class YOLO_Master_WebUI:
         # only ever shows clean filenames via the derived display map.
         self.model_map = self.model_manager.scan_checkpoints()
         self.model_display_map = self._display_names(self.model_map)
-        # Application-level singleton: one JobsManager shared by the whole WebUI.
-        # storage_path enables JSON persistence of job state across restarts.
-        self.jobs_manager = JobsManager(storage_path="runs/jobs_state.json")
+        # Stateless adapter only: the FastAPI service is the sole owner of
+        # JobsManager, lifecycle state, workers and persistence.
+        self.jobs_client = StudioJobsApiClient()
 
     @staticmethod
     def _display_names(model_map: dict[str, list[str]]) -> dict[str, list[str]]:
@@ -406,7 +407,7 @@ class YOLO_Master_WebUI:
         """Assemble the complete Gradio application (not launched yet).
 
         The Jobs tab shares the top-level tab container with the inference studio and
-        reuses the application-level JobsManager singleton (self.jobs_manager).
+        uses a stateless client for the Studio Job API (self.jobs_client).
 
         Language-state lifting (unidirectional broadcast):
             The top-level selector and :class:`gr.State` live above the tab
@@ -534,7 +535,7 @@ class YOLO_Master_WebUI:
                 # auto-embeds it on context exit; an explicit .render() would mount
                 # every Jobs component a second time (duplicate tabs in the DOM).
                 with gr.TabItem(get_text(DEFAULT_LANGUAGE, "app.tab.jobs")) as jobs_tabitem:
-                    jobs_zone = create_jobs_tab(self.jobs_manager)
+                    jobs_zone = create_jobs_tab(self.jobs_client)
 
             # ================= Event Binding =================
 

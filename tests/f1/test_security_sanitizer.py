@@ -120,6 +120,51 @@ class TestSanitizeLogText:
         assert sanitize_log_text("") == ""
 
 
+class TestKnownSecretConfigLiteralFilter:
+    """Ambient boolean/config flag values must not be treated as known secrets."""
+
+    def test_ambient_boolean_flag_does_not_redact_ordinary_log_literal(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path
+    ) -> None:
+        """A sensitive-NAMED ambient flag carrying a config literal leaves epoch=1 intact."""
+        monkeypatch.chdir(tmp_path)  # isolate from any repo-local .env
+        monkeypatch.setenv("CODEBUDDY_API_KEY_HELPER_DISABLED", "1")
+        monkeypatch.setenv("CODEBUDDY_HIGH_CREDIT_APPROVAL_ENABLED", "True")
+
+        sanitized = sanitize_log_text("DEBUG: epoch=1 loss=0.4231 ratio=0 mode=True")
+
+        assert "epoch=1" in sanitized
+        assert "loss=0.4231" in sanitized
+        assert "ratio=0" in sanitized
+        assert "mode=True" in sanitized
+        assert REDACTED not in sanitized
+
+    def test_short_real_secret_is_still_redacted(self, monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+        """A genuine 3-char secret value under a sensitive key name stays protected."""
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("SHORT_TOKEN", "abc")
+
+        sanitized = sanitize_log_text("short known value abc; alphabet must remain intact")
+
+        assert "known value abc" not in sanitized
+        assert REDACTED in sanitized
+        assert "alphabet must remain intact" in sanitized
+
+    def test_ordinary_credential_redaction_unaffected(self, monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+        """Token/password/Bearer assignment and value-shape redaction still fires."""
+        monkeypatch.chdir(tmp_path)
+        log_text = "auth token=request-secret-123456 password=hunter2-secret Bearer eyJhbGci1234567890abcdef"
+
+        sanitized = sanitize_log_text(log_text)
+
+        assert "request-secret-123456" not in sanitized
+        assert "hunter2-secret" not in sanitized
+        assert "eyJhbGci1234567890abcdef" not in sanitized
+        assert "token=***REDACTED***" in sanitized
+        assert "password=***REDACTED***" in sanitized
+        assert "Bearer ***REDACTED***" in sanitized
+
+
 class _SecretLeakingHandler(BaseTaskHandler):
     """Mock handler that leaks a secret token through a runtime exception."""
 

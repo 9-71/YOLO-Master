@@ -26,8 +26,6 @@ share/python-wheels/
 .installed.cfg
 *.egg
 MANIFEST
-requirements.txt
-!examples/**/requirements.txt
 setup.py
 ultralytics.egg-info
 
@@ -85,7 +83,6 @@ ipython_config.py
 
 # Environments & Tools
 .python-version
-uv.lock
 __pypackages__/
 celerybeat-schedule
 celerybeat.pid
@@ -191,3 +188,13 @@ docs/reports/
 reports/foundation/
 *.scratchpad.md
 *.agent.log
+
+# React frontend build artifacts
+node_modules/
+.vite/
+web/dist/
+
+# Keep the React/Vite TypeScript project reproducible. The global *.ts rule
+# above is for TorchScript model artifacts, not frontend source/config files.
+!web/**/*.ts
+!web/**/*.tsx

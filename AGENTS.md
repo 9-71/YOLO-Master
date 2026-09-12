@@ -116,6 +116,7 @@ pytest tests/test_molora_dtype.py tests/test_molora_backend_roundtrip.py \
 | 修改训练/验证引擎 | `ultralytics/engine/` | `tests/test_engine.py` + `pytest --doctest-modules ultralytics/` |
 | 修改配置 | `ultralytics/cfg/` | `tests/test_default_config_integrity.py` |
 | 修改 Agent Skill | `agent/` | `python agent/scripts/validate_yolo_master_skill.py --suite quick` |
+| 修改 core/ task catalog 或 Agent dispatcher surface | `core/task_catalog.py`、`agent/runtime/cli/dispatcher.py` | `pytest tests/f1/test_task_catalog.py tests/f1/test_handler_inventory.py -q` |
 | 修改数据加载 | `ultralytics/data/` | 相关 `tests/test_*.py` + doctest |
 | 修改跟踪器 | `ultralytics/trackers/` | 相关跟踪测试 |
 | 文档更新 | `docs/`、`wiki/` | `mkdocs build --strict`（如安装了 mkdocs） |

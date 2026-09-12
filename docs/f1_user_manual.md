@@ -1,9 +1,9 @@
 # F1 Task Platform — User Manual
 
 > **Audience**: end-users and evaluation reviewers.
-> **Scope**: submitting and monitoring detection jobs through the Gradio Web UI — not framework development.
+> **Scope**: submitting and monitoring detection jobs through the Gradio Web UI and the standalone REST engine (FastAPI) — not framework development.
 
-**Version**: 1.0 · **Last updated**: 2026-09-08
+**Version**: 1.1 · **Last updated**: 2026-09-12
 
 ---
 
@@ -42,7 +42,8 @@ terminal states cannot be restarted or reset.
 ```
 PENDING ──► RUNNING ──► COMPLETED   (success)
    │            │
-   └────────────┴──► FAILED         (failure, cancellation, or timeout)
+   ├────────────┴──► FAILED         (failure or timeout)
+   └───────────────► CANCELLED      (user cancellation)
 ```
 
 ---
@@ -59,7 +60,7 @@ The platform runs on the same environment as YOLO-Master. Verified baseline:
 | PyTorch | 2.5.1+ (CUDA 12.1 build recommended) |
 | Ultralytics | 8.4.x |
 | CUDA (optional) | 12.1 with a compatible driver — used for GPU acceleration |
-| Python packages | `gradio`, `opencv-python`, `numpy`, `pandas`, `pydantic` |
+| Python packages | `gradio`, `fastapi`, `uvicorn[standard]`, `opencv-python`, `numpy`, `pandas`, `pydantic` |
 
 > **Tip** — Verify your environment before launching:
 >
@@ -80,14 +81,22 @@ pip install -e .
 From the **project root directory**, start the server:
 
 ```bash
-python app.py
+python start_studio.py
 ```
 
 On startup the app:
 
-1. Creates a `ckpts/` checkpoint directory if it does not exist.
-2. Scans `ckpts/` (recursively) for `.pt` weights and categorizes them by task.
-3. Serves the Gradio interface and opens it in your default browser.
+1. Starts and health-checks the FastAPI Studio Job API.
+2. Creates a `ckpts/` checkpoint directory if it does not exist.
+3. Scans `ckpts/` (recursively) for `.pt` weights and categorizes them by task.
+4. Serves the Gradio interface and opens it in your default browser.
+
+For manual startup, run `python main_engine.py` first, then run `python app.py` in another terminal. The latter starts
+Gradio only and connects to `F1_STUDIO_API_URL` (default: `http://127.0.0.1:8000`).
+
+> **Note** — `main_engine.py` is the **standalone FastAPI engine**, a production entry point
+> that runs independently of Gradio. See §7 for its full HTTP API, interactive docs, and
+> environment configuration.
 
 > **Tip** — The interface is served on the default Gradio address
 > `http://127.0.0.1:7860` and opens automatically (`inbrowser=True`). If the
@@ -200,18 +209,16 @@ The right-hand panel has four monitoring sub-tabs:
 
 The *Status Monitor* shows a JSON snapshot containing the canonical job state:
 
+Public job statuses: `pending | running | completed | failed | cancelled`.
+
 | State | Meaning | Terminal? |
 |---|---|---|
 | `PENDING` | Job accepted but not yet started. | No |
 | `RUNNING` | Handler is executing on the engine. | No |
 | `COMPLETED` | Execution finished successfully; artifacts captured. | Yes |
 | `FAILED` | Execution failed — see the error code for the cause. | Yes |
+| `CANCELLED` | Execution stopped after a user cancellation request; see `USER_CANCELLED`. | Yes |
 | `NOT_FOUND` | The selected Job ID does not exist. | Yes |
-
-> **Note on `CANCELLED`** — there is no standalone `CANCELLED` lifecycle state. A cancellation
-> request transitions a running job to `FAILED` with the error code `USER_CANCELLED`. The UI
-> additionally treats a `CANCELLED` label as terminal as a forward-compatibility safeguard, but the
-> authoritative signal in the platform today is `FAILED` + `USER_CANCELLED`.
 
 While a job is `PENDING` or `RUNNING`, the console refreshes **every second** and stops
 automatically once the job reaches a terminal state. A slower **30-second** background sync keeps
@@ -228,8 +235,8 @@ execution, and after the engine returns, and handlers check again between long-r
 
 > **Warning** — constraints on cancellation:
 > - You can only cancel a job that is `PENDING` or `RUNNING`. A job already in `COMPLETED` or
->   `FAILED` is terminal and cannot be cancelled.
-> - Cancellation marks the job as `FAILED` with error code `USER_CANCELLED`; it is *not* resumable.
+>   `FAILED` or `CANCELLED` is terminal and cannot be cancelled.
+> - Cancellation marks the job as `CANCELLED` with error code `USER_CANCELLED`; it is *not* resumable.
 >   Re-submit the job to run it again.
 
 ### 4.4 Timeouts
@@ -254,7 +261,7 @@ Every job carries a **default execution limit of 300 seconds** (`timeout_seconds
 Open the **📜 Live Logs** sub-tab while a job is active. The console streams a timestamped,
 line-by-line record including:
 
-- Submission and state-machine transitions (`transitioned to: RUNNING/COMPLETED/FAILED`).
+- Submission and state-machine transitions (`transitioned to: RUNNING/COMPLETED/FAILED/CANCELLED`).
 - Handler progress (e.g. the number of artifacts captured).
 - A sanitized environment audit line.
 - Any tracebacks from a failed execution.
@@ -267,7 +274,7 @@ The *Status Monitor* shows the `error_code` and `error_message`. Common causes:
 
 | Error code | What it means | Recommended fix |
 |---|---|---|
-| `SEC_ERR_001` | Security policy violation: a path fell outside the whitelist, shell execution was requested, or whitelisting was disabled. | Ensure every path in *Model Path*, *Data Source*, and *Output Directory* lives under an authorized root (see §3.5). |
+| `SEC_ERR_001` | Security policy violation: a path fell outside the whitelist, shell execution was requested, or whitelisting was disabled. | Ensure every path in *Model Path*, *Data Source*, and *Output Directory* lives under a server-configured trusted root (see §7.10 and Appendix — Security guarantees). |
 | `PARAM_VALIDATION_FAILED` | A parameter was missing, out of range, or of the wrong type. | Check required fields (e.g. `model_path`, `data_source`) and value bounds (e.g. confidence in `(0.0, 1.0]`). |
 | `TASK_TYPE_UNKNOWN` | The submitted task type is not registered. | Use one of `predict`, `train`, `val`, `export`, `diagnose`. |
 | `USER_CANCELLED` | The job was cancelled by the user. | Re-submit the job if you need the result. |
@@ -334,6 +341,216 @@ the `.onnx` file in the artifacts table and verify it exists on disk at the list
 
 ---
 
+## 7. Standalone REST Engine (FastAPI)
+
+The **standalone REST engine** (`main_engine.py`) exposes the same F1 task dispatcher as a plain HTTP
+API with native OpenAPI documentation. It has no Gradio dependency: it serves jobs, logs, cancellation
+and artifact delivery directly, so a reviewer can verify the platform end-to-end with only a web
+browser and command-line tools such as `curl`.
+
+### 7.1 Starting the engine
+
+Any of the following starts the engine:
+
+| Command | What it does |
+|---|---|
+| `python start_studio.py` | One-command launcher: starts the FastAPI engine (auto-started if `/health` is not ready), then launches the Gradio WebUI. |
+| `python main_engine.py` | Runs only the standalone FastAPI engine (Gradio-free). |
+| `uvicorn main_engine:app --host 127.0.0.1 --port 8000` | Direct ASGI launch for embedded/development setups. |
+
+Verify liveness at any time:
+
+```bash
+curl http://127.0.0.1:8000/health
+# → {"status":"ok","service":"YOLO-Master F1 Task Engine"}
+```
+
+`/health` is a static liveness probe and does not depend on job state.
+
+### 7.2 Interactive API docs
+
+The engine exposes its own OpenAPI/Swagger surface, no extra tooling required:
+
+| URL | Purpose |
+|---|---|
+| `http://127.0.0.1:8000/docs` | Swagger UI — interactive, form-driven endpoint explorer. |
+| `http://127.0.0.1:8000/openapi.json` | Raw OpenAPI schema consumed by clients/generators. |
+| `http://127.0.0.1:8000/redoc` | Redoc reference view of the same schema. |
+| `docs/api/job_schema.json` | Repository file: the kernel schema registry for `JobRequest` and related types. |
+
+### 7.3 Endpoint reference
+
+| Method & path | Summary |
+|---|---|
+| `POST /api/v1/jobs` | Submit a new job (`201 Created`). Accepts a `JobRequest` body; rejects malformed bodies with `422`, duplicates with `409`, and a full pending queue with `429`. |
+| `GET /api/v1/jobs` | List recent jobs, newest first, with `limit`/`offset` pagination. |
+| `GET /api/v1/jobs/{job_id}` | Current status and metadata of one job (`404` when unknown). |
+| `POST /api/v1/jobs/{job_id}/cancel` | Request cooperative cancellation (`202` new, `200` idempotent replay, `404` unknown, `409` not cancellable). |
+| `GET /api/v1/jobs/{job_id}/logs` | Sanitized execution logs with `offset`/`limit` windowing. |
+| `GET /api/v1/jobs/{job_id}/artifacts` | Artifact manifest and image artifact IDs (`/static/artifacts/...` references). |
+| `GET /static/artifacts/{job_id}/{artifact_id}` | Download one artifact file, manifest-gated (fail-closed). |
+| `GET /health` | Liveness probe. |
+
+The job collection routes also accept a trailing slash (`/api/v1/jobs/`) for clients that disagree
+with the canonical form.
+
+### 7.4 Job submission example
+
+Submit a CPU `predict` job with repository-relative paths (no machine-specific absolute paths):
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/v1/jobs \
+  -H "Content-Type: application/json" \
+  -d '{
+    "job_id": "predict_demo_001",
+    "task_type": "predict",
+    "params": {
+      "model_path": "ckpts/yolov8n.pt",
+      "data_source": "ultralytics/assets/bus.jpg",
+      "conf": 0.25,
+      "device": "cpu"
+    },
+    "output": {
+      "output_dir": "runs/predict"
+    }
+  }'
+```
+
+A successful submission returns `201 Created` with the server-normalized `JobRequest`.
+
+> **Important** — client-supplied security fields do **not** determine the final server whitelist.
+> On every submission the engine forces `allow_shell=False` and `path_whitelisted=True`, discards the
+> caller's `security_constraints.allowed_paths` / `allowed_path_patterns`, and replaces them with the
+> server-configured trusted roots (`F1_MODEL_ROOTS` + `F1_DATA_ROOTS`). `model_path`, `data_source`
+> and `output_dir` are then resolved independently and must each land inside their trusted root
+> (`F1_OUTPUT_ROOT` for output). See §7.10.
+
+### 7.5 Status query
+
+```bash
+curl http://127.0.0.1:8000/api/v1/jobs/predict_demo_001
+```
+
+The response includes the canonical lifecycle status plus metadata:
+
+```json
+{
+  "job_id": "predict_demo_001",
+  "task_type": "predict",
+  "status": "completed",
+  "created_at": "2026-09-12T03:00:45.000000+00:00",
+  "started_at": "2026-09-12T03:00:46.000000+00:00",
+  "completed_at": "2026-09-12T03:00:52.000000+00:00",
+  "duration": 6.0,
+  "error_code": null,
+  "error_message": null,
+  "artifact_count": 2,
+  "metadata": { "created_by": "anonymous", "priority": "normal", "tags": [] }
+}
+```
+
+`status` is one of `pending | running | completed | failed | cancelled`.
+
+### 7.6 Live Logs
+
+```bash
+curl "http://127.0.0.1:8000/api/v1/jobs/predict_demo_001/logs?offset=0&limit=100"
+```
+
+- `offset` — number of lines to skip from the start (default `0`, `>= 0`).
+- `limit` — maximum lines in this window (default `null` = the full remainder, capped at `10000`).
+- `next_offset` — the cursor for the next page, or `null` once the tail is reached.
+
+Every line returned is **sanitized**: credentials (Bearer tokens, `sk-` keys, `KEY=value` secrets)
+are redacted as `***REDACTED***` before they ever reach the response or persisted state.
+
+### 7.7 Cancellation
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/v1/jobs/predict_demo_001/cancel
+```
+
+Cancellation is **cooperative**: the engine sets the cancellation flag and stops the owned process
+tree, then finally transitions the job to `CANCELLED` with error code `USER_CANCELLED`.
+
+- `202 Accepted` — a fresh cancellation request was acknowledged.
+- `200 OK` — an idempotent replay against a job already in a terminal state, returning its existing state.
+- `409 Conflict` — the job is not cancellable.
+- `404 Not Found` — the job is unknown.
+
+Terminal jobs (`completed` / `failed` / `cancelled`) cannot be re-cancelled; replaying the request is
+safe and does not produce a second lifecycle transition.
+
+### 7.8 Artifacts / download
+
+```bash
+curl http://127.0.0.1:8000/api/v1/jobs/predict_demo_001/artifacts
+```
+
+The response lists the dispatcher-produced artifact manifest (`artifacts`, with per-file
+`download_url`) and safe image artifact IDs (`image_artifacts`). Server filesystem paths are never
+returned. Download one file via its `download_url`:
+
+```bash
+curl -O "http://127.0.0.1:8000/static/artifacts/predict_demo_001/results.csv"
+```
+
+Artifact delivery is **manifest-gated and fail-closed**:
+
+- Only files recorded by the dispatcher after a successful execution are served; unlisted files and
+  directory-traversal attempts return `404`.
+- Each job's artifacts are isolated under its own `job_id` sub-directory, and the route performs an
+  exact manifest lookup rather than joining client input onto a filesystem path, so cross-job access
+  is blocked.
+
+### 7.9 Console entry points
+
+The engine serves three frontends, all optional:
+
+| Entry point | Path | Notes |
+|---|---|---|
+| Zero-build console | `/` | Single-page dispatch/monitoring UI (`frontend/index.html` + `app.js`, plain ES6). |
+| React console | `/console` | Served only when `web/dist` is present on disk. |
+| Gradio WebUI | `http://127.0.0.1:7860` | Launched by `python start_studio.py` (see §2.2). |
+
+### 7.10 Environment configuration
+
+The following `F1_*` variables are read by the engine/manager source. Variables whose separator is
+`os.pathsep` accept multiple entries (`;` on Windows, `:` on Unix); comma-separated variables accept
+a comma-delimited list.
+
+| Variable | Meaning | Default |
+|---|---|---|
+| `F1_JOBS_STATE_PATH` | JobsManager persistence file (shared with Gradio). | `runs/jobs_state.json` |
+| `F1_ENGINE_HOST` / `F1_ENGINE_PORT` | Bind address for `python main_engine.py`. | `127.0.0.1` / `8000` |
+| `F1_CORS_ORIGINS` | Comma-separated CORS allowlist; when non-empty it fully replaces the dev defaults. | dev defaults (§7.11) |
+| `F1_MODEL_ROOTS` | Server-owned trusted model roots (`os.pathsep`-separated). | project root (cwd) |
+| `F1_DATA_ROOTS` | Server-owned trusted data roots (`os.pathsep`-separated). | project root (cwd) |
+| `F1_OUTPUT_ROOT` | Server-owned trusted output root (single). | `<cwd>/runs` |
+| `F1_NETWORK_INPUT_HOSTS` | Comma-separated hostnames allowed as network `data_source`. | *(empty — network inputs rejected)* |
+| `F1_MAX_PENDING_JOBS` | Pending-job capacity before `429`. | `100` |
+| `F1_CPU_CONCURRENCY` | CPU execution slots. | `2` |
+| `F1_GPU_CONCURRENCY` | Accelerator execution slots. | `1` |
+| `F1_STOP_GRACE_SECONDS` | Worker stop grace (0–30). | `2` |
+| `F1_STUDIO_API_URL` | Studio API origin used by the Gradio client. | `http://127.0.0.1:8000` |
+
+### 7.11 CORS behavior
+
+By default the engine adds `CORSMiddleware` with `allow_methods=["*"]` and `allow_headers=["*"]`, and
+an origin allowlist covering local development: `http://localhost:8000`, `http://127.0.0.1:8000`,
+the `null` origin (for `file://` pages), and the local Vite/CRA/port `5173` / `3000` / `8080`
+spellings. Setting `F1_CORS_ORIGINS` to a non-empty comma-separated list **replaces** these defaults
+rather than appending to them.
+
+### 7.12 Relationship to the Gradio Jobs tab
+
+The REST engine and the Gradio **📋 Jobs** tab are two surfaces over the *same* engine and
+persistence: both consume `f1.jobs_manager.JobsManager` and share the `F1_JOBS_STATE_PATH` state file
+by default, so each can observe the other's job history. There is a single lifecycle owner — the
+JobsManager — and no second lifecycle system.
+
+---
+
 ## Appendix — Quick reference
 
 ### Default path whitelist
@@ -361,6 +578,5 @@ Directory* values you submit.
 
 ### State persistence
 
-Job history persists across restarts to `runs/jobs_state.json`. Jobs left in `PENDING`/`RUNNING`
-when the app shuts down are marked `FAILED` on the next startup so they never appear eternally
-active.
+The FastAPI service persists job history across restarts to `runs/jobs_state.json`. Jobs left in `PENDING`/`RUNNING`
+when the service shuts down are marked `FAILED` on the next startup so they never appear eternally active.

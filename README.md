@@ -706,9 +706,13 @@ model.export(format="engine", half=True)  # Export to TensorRT
 Launch a local web interface to test the model interactively. This application provides a user-friendly Gradio dashboard for model inference, supporting automatic model scanning, task switching (Detection, Segmentation, Classification), and real-time visualization.
 
 ```bash
-python app.py
+python start_studio.py
 # Open http://127.0.0.1:7860 in your browser
 ```
+
+This recommended launcher starts both the FastAPI Studio Job API and the Gradio WebUI. For manual two-process startup,
+run `python main_engine.py` first and then `python app.py` in a second terminal. `python app.py` remains a Gradio-only
+entrypoint and requires the API configured by `F1_STUDIO_API_URL` (default: `http://127.0.0.1:8000`).
 
 ## 🤝 Community & Contributing
 
