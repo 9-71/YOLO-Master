@@ -1,235 +1,632 @@
-import { createContext, useCallback, useContext, useEffect, useMemo, useReducer, useRef, type ReactNode } from "react";
-import { api } from "../api/client";
-import type { ArtifactsResponse, BannerState, ConnectionState, JobDetail, JobRequest, JobsResponse, JobSummary, LogsResponse } from "../types";
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useReducer,
+  useRef,
+  type ReactNode,
+} from "react";
+import { api, ApiError } from "../api/client";
+import type {
+  ArtifactsResponse,
+  BannerState,
+  CancelAck,
+  ConnectionState,
+  JobDetail,
+  JobRequest,
+  JobsResponse,
+  JobSummary,
+  LogsResponse,
+} from "../types";
 import { ACTIVE_STATUSES, EMPTY_ARTIFACTS } from "../types";
 
 const DEFAULT_BASE_URL = import.meta.env.VITE_API_BASE || "http://localhost:8000";
 const STORAGE_KEY = "f1.console.baseUrl";
 const JOBS_PATH = "/api/v1/jobs";
 
+/** Adaptive list cadence: fast while anything needs watching, slow otherwise. */
+const JOBS_FAST_INTERVAL_MS = 2000;
+const JOBS_SLOW_INTERVAL_MS = 30000;
+const HEALTH_INTERVAL_MS = 5000;
+const DETAIL_INTERVAL_MS = 1000;
+
 interface State {
-  epoch: number; baseUrl: string; jobs: JobSummary[]; selectedJobId: string | null; detail: JobDetail | null;
-  logs: string[]; logOffset: number; artifacts: ArtifactsResponse; connection: ConnectionState;
-  banner: BannerState | null; liveJobs: boolean; liveLogs: boolean; autoScroll: boolean; cancellationPending: string | null;
+  baseRev: number;
+  baseUrl: string;
+  connection: ConnectionState;
+  banner: BannerState | null;
+  jobs: JobSummary[];
+  selectedJobId: string | null;
+  watchSeq: number;
+  detail: JobDetail | null;
+  detailMissing: boolean;
+  logs: string[];
+  logOffset: number;
+  artifacts: ArtifactsResponse;
+  liveJobs: boolean;
+  liveLogs: boolean;
+  autoScroll: boolean;
+  cancellationPending: string | null;
+  cancelOpId: number | null;
 }
 
 type Action =
-  | { type: "base"; value: string } | { type: "jobs"; value: JobSummary[]; epoch: number }
-  | { type: "select"; value: string; epoch: number } | { type: "detail"; value: JobDetail; epoch: number; jobId: string }
-  | { type: "logs"; lines: string[]; offset: number; expectedOffset: number; epoch: number; jobId: string }
-  | { type: "clearLogs" } | { type: "artifacts"; value: ArtifactsResponse; epoch: number; jobId: string }
-  | { type: "connection"; value: ConnectionState; epoch: number } | { type: "banner"; value: BannerState | null; epoch?: number }
+  | { type: "base"; value: string }
+  | { type: "jobs"; value: JobSummary[]; rev: number }
+  | { type: "connection"; value: ConnectionState; rev: number }
+  | { type: "banner"; value: BannerState | null; rev?: number }
+  | { type: "select"; jobId: string | null }
+  | { type: "detail"; value: JobDetail; rev: number; watchSeq: number; jobId: string }
+  | { type: "detailMissing"; rev: number; watchSeq: number; jobId: string }
+  | { type: "logs"; lines: string[]; offset: number; expectedOffset: number; rev: number; watchSeq: number; jobId: string }
+  | { type: "artifacts"; value: ArtifactsResponse; rev: number; watchSeq: number; jobId: string }
   | { type: "toggle"; key: "liveJobs" | "liveLogs" | "autoScroll"; value: boolean }
-  | { type: "cancelStart"; jobId: string } | { type: "cancelClear"; jobId: string }
-  | { type: "cancelOutcome"; value: JobDetail; jobId: string; epoch: number };
+  | { type: "clearLogs" }
+  | { type: "cancelStart"; jobId: string; opId: number }
+  | { type: "cancelOutcome"; value: JobDetail; jobId: string; opId: number; rev: number };
 
 const initialState: State = {
-  epoch: 0, baseUrl: (localStorage.getItem(STORAGE_KEY) || DEFAULT_BASE_URL).replace(/\/+$/, ""), jobs: [], selectedJobId: null,
-  detail: null, logs: [], logOffset: 0, artifacts: EMPTY_ARTIFACTS, connection: "checking", banner: null,
-  liveJobs: true, liveLogs: true, autoScroll: true, cancellationPending: null,
+  baseRev: 0,
+  baseUrl: (localStorage.getItem(STORAGE_KEY) || DEFAULT_BASE_URL).replace(/\/+$/, ""),
+  connection: "checking",
+  banner: null,
+  jobs: [],
+  selectedJobId: null,
+  watchSeq: 0,
+  detail: null,
+  detailMissing: false,
+  logs: [],
+  logOffset: 0,
+  artifacts: EMPTY_ARTIFACTS,
+  liveJobs: true,
+  liveLogs: true,
+  autoScroll: true,
+  cancellationPending: null,
+  cancelOpId: null,
 };
 
-function isCurrent(state: State, action: { epoch: number; jobId?: string }) {
-  return action.epoch === state.epoch && (action.jobId === undefined || action.jobId === state.selectedJobId);
+function watchCurrent(state: State, guard: { rev: number; watchSeq: number; jobId?: string }) {
+  return (
+    guard.rev === state.baseRev &&
+    guard.watchSeq === state.watchSeq &&
+    (guard.jobId === undefined || guard.jobId === state.selectedJobId)
+  );
 }
 
 function reducer(state: State, action: Action): State {
   switch (action.type) {
-    case "base": return { ...initialState, epoch: state.epoch + 1, baseUrl: action.value, liveJobs: state.liveJobs, liveLogs: state.liveLogs, autoScroll: state.autoScroll };
-    case "jobs": return isCurrent(state, action) ? { ...state, jobs: [...action.value].sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at)) } : state;
-    case "select": return action.epoch === state.epoch && action.value !== state.selectedJobId ? { ...state, epoch: state.epoch + 1, selectedJobId: action.value, detail: null, logs: [], logOffset: 0, artifacts: EMPTY_ARTIFACTS } : state;
-    case "detail": {
-      if (!isCurrent(state, action)) return state;
-      return { ...state, detail: action.value };
-    }
-    case "logs": return isCurrent(state, action) && state.logOffset === action.expectedOffset ? { ...state, logs: [...state.logs, ...action.lines].slice(-1000), logOffset: action.offset } : state;
-    case "clearLogs": return { ...state, logs: [] };
-    case "artifacts": return isCurrent(state, action) ? { ...state, artifacts: action.value } : state;
-    case "connection": return isCurrent(state, action) ? { ...state, connection: action.value } : state;
-    case "banner": return action.epoch === undefined || action.epoch === state.epoch ? { ...state, banner: action.value } : state;
-    case "toggle": return { ...state, [action.key]: action.value };
-    case "cancelStart": return state.cancellationPending ? state : { ...state, cancellationPending: action.jobId };
-    case "cancelClear": return state.cancellationPending === action.jobId ? { ...state, cancellationPending: null } : state;
+    case "base":
+      return {
+        ...initialState,
+        baseRev: state.baseRev + 1,
+        baseUrl: action.value,
+        liveJobs: state.liveJobs,
+        liveLogs: state.liveLogs,
+        autoScroll: state.autoScroll,
+      };
+    case "jobs":
+      if (action.rev !== state.baseRev) return state;
+      return {
+        ...state,
+        jobs: [...action.value].sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at)),
+      };
+    case "connection":
+      return action.rev === state.baseRev ? { ...state, connection: action.value } : state;
+    case "banner":
+      return action.rev === undefined || action.rev === state.baseRev ? { ...state, banner: action.value } : state;
+    case "select":
+      if (action.jobId === state.selectedJobId) return state;
+      return {
+        ...state,
+        watchSeq: state.watchSeq + 1,
+        selectedJobId: action.jobId,
+        detail: null,
+        detailMissing: false,
+        logs: [],
+        logOffset: 0,
+        artifacts: EMPTY_ARTIFACTS,
+      };
+    case "detail":
+      return watchCurrent(state, action) ? { ...state, detail: action.value, detailMissing: false } : state;
+    case "detailMissing":
+      return watchCurrent(state, action) ? { ...state, detail: null, detailMissing: true } : state;
+    case "logs":
+      return watchCurrent(state, action) && state.logOffset === action.expectedOffset
+        ? { ...state, logs: [...state.logs, ...action.lines].slice(-1000), logOffset: action.offset }
+        : state;
+    case "artifacts":
+      return watchCurrent(state, action) ? { ...state, artifacts: action.value } : state;
+    case "toggle":
+      return { ...state, [action.key]: action.value };
+    case "clearLogs":
+      return { ...state, logs: [] };
+    case "cancelStart":
+      return state.cancellationPending
+        ? state
+        : { ...state, cancellationPending: action.jobId, cancelOpId: action.opId };
     case "cancelOutcome": {
-      if (action.epoch !== state.epoch || state.cancellationPending !== action.jobId || ACTIVE_STATUSES.has(action.value.status)) return state;
+      if (
+        action.rev !== state.baseRev ||
+        state.cancelOpId !== action.opId ||
+        state.cancellationPending !== action.jobId ||
+        ACTIVE_STATUSES.has(action.value.status)
+      ) {
+        return state;
+      }
       const cancelled = action.value.status === "cancelled" && action.value.error_code === "USER_CANCELLED";
       return {
         ...state,
         cancellationPending: null,
+        cancelOpId: null,
         banner: cancelled
-          ? { kind: "success", message: `Job ${action.jobId} reached cancelled / USER_CANCELLED. Cancellation completed.` }
-          : { kind: "error", message: `Cancellation race for ${action.jobId}: job reached ${action.value.status}${action.value.error_code ? ` / ${action.value.error_code}` : ""} before USER_CANCELLED was observed.` },
+          ? {
+              kind: "success",
+              message: `Job ${action.jobId} reached cancelled / USER_CANCELLED. Cancellation completed.`,
+            }
+          : {
+              kind: "error",
+              message: `Cancellation race for ${action.jobId}: job reached ${action.value.status}${
+                action.value.error_code ? ` / ${action.value.error_code}` : ""
+              } before USER_CANCELLED was observed.`,
+            },
       };
     }
   }
 }
 
 interface JobContextValue extends State {
-  applyBaseUrl(value: string): void; refreshJobs(showError?: boolean): Promise<JobSummary[]>; selectJob(jobId: string): void;
-  submitJob(payload: JobRequest): Promise<void>; cancelJob(jobId: string): Promise<void>; refreshArtifacts(showError?: boolean): Promise<void>;
-  clearLogs(): void; dismissBanner(): void; setToggle(key: "liveJobs" | "liveLogs" | "autoScroll", value: boolean): void;
+  applyBaseUrl(value: string): void;
+  refreshJobs(showError?: boolean): Promise<JobSummary[]>;
+  selectJob(jobId: string | null): void;
+  submitJob(payload: JobRequest): Promise<string>;
+  cancelJob(jobId: string): Promise<void>;
+  refreshArtifacts(showError?: boolean): Promise<void>;
+  clearLogs(): void;
+  dismissBanner(): void;
+  setToggle(key: "liveJobs" | "liveLogs" | "autoScroll", value: boolean): void;
 }
+
 const JobContext = createContext<JobContextValue | null>(null);
 
 export function JobProvider({ children }: { children: ReactNode }) {
   const [state, dispatch] = useReducer(reducer, initialState);
+  const stateRef = useRef(state);
+  stateRef.current = state;
+
   const logController = useRef<AbortController | null>(null);
-  const cancellationInFlight = useRef<string | null>(null);
-  const showError = useCallback((error: unknown, epoch?: number) => {
-    const message = error instanceof Error ? error.message : String(error);
-    dispatch({ type: "banner", epoch, value: { kind: message.includes("SEC_ERR_001") ? "security" : "error", message } });
+  const jobsInFlight = useRef<{ seq: number; rev: number; controller: AbortController } | null>(null);
+  const jobsSeq = useRef(0);
+  const cancelOpSeq = useRef(0);
+  const cancelLock = useRef<{ rev: number; jobId: string; opId: number } | null>(null);
+
+  const releaseCancelLock = useCallback((rev: number, jobId: string, opId: number) => {
+    const current = cancelLock.current;
+    if (current?.rev === rev && current.jobId === jobId && current.opId === opId) {
+      cancelLock.current = null;
+    }
   }, []);
 
-  const refreshJobs = useCallback(async (loud = false) => {
-    const epoch = state.epoch;
-    try {
-      const body = await api<JobsResponse>(state.baseUrl, `${JOBS_PATH}?limit=50`);
-      dispatch({ type: "jobs", value: body.jobs, epoch }); dispatch({ type: "connection", value: "online", epoch }); return body.jobs;
-    } catch (error) {
-      dispatch({ type: "connection", value: "offline", epoch }); if (loud) showError(error, epoch); return [];
-    }
-  }, [showError, state.baseUrl, state.epoch]);
+  const showError = useCallback((error: unknown, rev?: number) => {
+    const message = error instanceof Error ? error.message : String(error);
+    dispatch({
+      type: "banner",
+      rev,
+      value: { kind: message.includes("SEC_ERR_001") ? "security" : "error", message },
+    });
+  }, []);
 
-  const fetchDetail = useCallback(async (jobId: string, epoch: number) => {
-    const detail = await api<JobDetail>(state.baseUrl, `${JOBS_PATH}/${encodeURIComponent(jobId)}`);
-    dispatch({ type: "detail", value: detail, epoch, jobId });
-    if (detail.error_code === "SEC_ERR_001") dispatch({ type: "banner", epoch, value: { kind: "security", message: `Security violation: ${detail.error_message || detail.error_code}` } });
-    return detail;
-  }, [state.baseUrl]);
+  // ---- Jobs list: single adaptive sync loop with single-flight + stale guards ----
+  const syncJobs = useCallback(
+    async (loud = false): Promise<JobSummary[]> => {
+      const rev = stateRef.current.baseRev;
+      const baseUrl = stateRef.current.baseUrl;
 
-  const fetchArtifacts = useCallback(async (jobId: string, epoch: number, loud = false) => {
-    try {
-      const body = await api<ArtifactsResponse>(state.baseUrl, `${JOBS_PATH}/${encodeURIComponent(jobId)}/artifacts`);
-      dispatch({ type: "artifacts", value: body, epoch, jobId });
-    } catch (error) {
-      dispatch({ type: "artifacts", value: { ...EMPTY_ARTIFACTS, job_id: jobId }, epoch, jobId }); if (loud) showError(error, epoch);
-    }
-  }, [showError, state.baseUrl]);
+      // Single-flight within an epoch; a newer epoch supersedes (aborts) any
+      // in-flight request so a fresh refresh is never blocked across epochs.
+      const prev = jobsInFlight.current;
+      if (prev && prev.rev === rev) return [];
+      prev?.controller.abort();
 
-  const pullLogs = useCallback(async (jobId: string, epoch: number, startOffset: number, drain: boolean) => {
-    if (!drain && logController.current) return;
-    if (drain) logController.current?.abort();
-    const controller = new AbortController(); logController.current = controller;
-    const lines: string[] = []; let cursor = startOffset;
-    try {
-      do {
-        const body = await api<LogsResponse>(state.baseUrl, `${JOBS_PATH}/${encodeURIComponent(jobId)}/logs?offset=${cursor}&limit=500`, { signal: controller.signal });
-        lines.push(...body.logs); cursor = body.next_offset ?? body.offset + body.logs.length;
-        if (body.next_offset === null) break;
-      } while (drain);
-      dispatch({ type: "logs", lines, offset: cursor, expectedOffset: startOffset, epoch, jobId });
-    } catch (error) {
-      if (!controller.signal.aborted) throw error;
-    } finally { if (logController.current === controller) logController.current = null; }
-  }, [state.baseUrl]);
+      const seq = ++jobsSeq.current;
+      const controller = new AbortController();
+      jobsInFlight.current = { seq, rev, controller };
+      try {
+        const body = await api<JobsResponse>(baseUrl, `${JOBS_PATH}?limit=50`, {
+          signal: controller.signal,
+        });
+        // Stale response: a newer request or an engine switch superseded this one.
+        if (rev !== stateRef.current.baseRev || seq !== jobsSeq.current) return body.jobs;
+        dispatch({ type: "jobs", value: body.jobs, rev });
+        dispatch({ type: "connection", value: "online", rev });
+        return body.jobs;
+      } catch (error) {
+        // Superseded by a newer request/epoch: silence the abort.
+        if (controller.signal.aborted) return [];
+        if (rev === stateRef.current.baseRev && seq === jobsSeq.current) {
+          dispatch({ type: "connection", value: "offline", rev });
+          if (loud) showError(error, rev);
+        }
+        return [];
+      } finally {
+        if (jobsInFlight.current?.seq === seq) jobsInFlight.current = null;
+      }
+    },
+    [showError],
+  );
 
+  const refreshJobs = syncJobs;
+
+  // Stable identity: route-driven pages call this in effects/cleanups.
+  const selectJob = useCallback((jobId: string | null) => {
+    logController.current?.abort();
+    dispatch({ type: "select", jobId });
+  }, []);
+
+  const fetchDetail = useCallback(
+    async (jobId: string, rev: number, watchSeq: number): Promise<JobDetail> => {
+      const detail = await api<JobDetail>(stateRef.current.baseUrl, `${JOBS_PATH}/${encodeURIComponent(jobId)}`);
+      dispatch({ type: "detail", value: detail, rev, watchSeq, jobId });
+      if (detail.error_code === "SEC_ERR_001") {
+        dispatch({
+          type: "banner",
+          rev,
+          value: { kind: "security", message: `Security violation: ${detail.error_message || detail.error_code}` },
+        });
+      }
+      return detail;
+    },
+    [],
+  );
+
+  const fetchArtifacts = useCallback(
+    async (jobId: string, rev: number, watchSeq: number, loud = false) => {
+      try {
+        const body = await api<ArtifactsResponse>(
+          stateRef.current.baseUrl,
+          `${JOBS_PATH}/${encodeURIComponent(jobId)}/artifacts`,
+        );
+        dispatch({ type: "artifacts", value: body, rev, watchSeq, jobId });
+      } catch (error) {
+        dispatch({
+          type: "artifacts",
+          value: { ...EMPTY_ARTIFACTS, job_id: jobId },
+          rev,
+          watchSeq,
+          jobId,
+        });
+        if (loud) showError(error, rev);
+      }
+    },
+    [showError],
+  );
+
+  const pullLogs = useCallback(
+    async (jobId: string, rev: number, watchSeq: number, startOffset: number, drain: boolean) => {
+      if (!drain && logController.current) return;
+      if (drain) logController.current?.abort();
+      const controller = new AbortController();
+      logController.current = controller;
+      const lines: string[] = [];
+      let cursor = startOffset;
+      try {
+        do {
+          const body = await api<LogsResponse>(
+            stateRef.current.baseUrl,
+            `${JOBS_PATH}/${encodeURIComponent(jobId)}/logs?offset=${cursor}&limit=500`,
+            { signal: controller.signal },
+          );
+          lines.push(...body.logs);
+          cursor = body.next_offset ?? body.offset + body.logs.length;
+          if (body.next_offset === null) break;
+        } while (drain);
+        dispatch({ type: "logs", lines, offset: cursor, expectedOffset: startOffset, rev, watchSeq, jobId });
+      } catch (error) {
+        if (!controller.signal.aborted) throw error;
+      } finally {
+        if (logController.current === controller) logController.current = null;
+      }
+    },
+    [],
+  );
+
+  // ---- Engine health probe ----
   useEffect(() => {
-    const epoch = state.epoch; dispatch({ type: "connection", value: "checking", epoch });
-    const check = async () => { try { await api(state.baseUrl, "/health"); dispatch({ type: "connection", value: "online", epoch }); } catch { dispatch({ type: "connection", value: "offline", epoch }); } };
-    void check(); const timer = window.setInterval(check, 5000); return () => window.clearInterval(timer);
-  }, [state.baseUrl, state.epoch]);
+    const rev = state.baseRev;
+    dispatch({ type: "connection", value: "checking", rev });
+    const check = async () => {
+      try {
+        await api(state.baseUrl, "/health");
+        if (rev === stateRef.current.baseRev) dispatch({ type: "connection", value: "online", rev });
+      } catch {
+        if (rev === stateRef.current.baseRev) dispatch({ type: "connection", value: "offline", rev });
+      }
+    };
+    void check();
+    const timer = window.setInterval(check, HEALTH_INTERVAL_MS);
+    return () => window.clearInterval(timer);
+  }, [state.baseRev, state.baseUrl]);
 
-  useEffect(() => { void refreshJobs(); }, [refreshJobs]);
+  // ---- Adaptive list synchronization ----
+  // 2s while any job is active or a cancellation is settling locally; 30s
+  // otherwise. The loop re-arms only after the previous request settles
+  // (single-flight), and every response is validated against its epoch/seq.
+  const hasActiveJobs = state.jobs.some((job) => ACTIVE_STATUSES.has(job.status));
+  const syncFast = hasActiveJobs || state.cancellationPending !== null;
   useEffect(() => {
+    // liveJobs=false disables the adaptive auto-sync loop entirely; manual
+    // refresh and the detail/log lifecycles are unaffected.
     if (!state.liveJobs) return;
-    if (state.jobs.length > 0 && !state.jobs.some((job) => ACTIVE_STATUSES.has(job.status)) && !state.cancellationPending) return;
-    const timer = window.setInterval(() => void refreshJobs(), 2000); return () => window.clearInterval(timer);
-  }, [refreshJobs, state.cancellationPending, state.jobs, state.liveJobs]);
+    let timer = 0;
+    let alive = true;
+    const intervalMs = syncFast ? JOBS_FAST_INTERVAL_MS : JOBS_SLOW_INTERVAL_MS;
+    const loop = async () => {
+      await syncJobs(false);
+      if (alive) timer = window.setTimeout(loop, intervalMs);
+    };
+    void loop();
+    // StrictMode/unmount cleanup: do not chain a new timer; stale responses are
+    // additionally dropped by the seq guard inside syncJobs.
+    return () => {
+      alive = false;
+      window.clearTimeout(timer);
+    };
+  }, [syncJobs, syncFast, state.liveJobs, state.baseRev]);
 
-  // Cancellation observation follows the accepted job even when the user selects a different row.
-  // It uses a dedicated action so its response can never replace the selected job's detail card.
+  // ---- Cancellation observation (follows the job regardless of selection) ----
   useEffect(() => {
-    if (!state.cancellationPending) return;
     const jobId = state.cancellationPending;
-    const epoch = state.epoch;
+    const opId = state.cancelOpId;
+    if (!jobId || opId === null) return;
+    const rev = state.baseRev;
+    let timer = 0;
+    let alive = true;
     const observe = async () => {
       try {
-        const detail = await api<JobDetail>(state.baseUrl, `${JOBS_PATH}/${encodeURIComponent(jobId)}`);
-        dispatch({ type: "cancelOutcome", value: detail, jobId, epoch });
-      } catch (error) { showError(error, epoch); }
+        const detail = await api<JobDetail>(
+          stateRef.current.baseUrl,
+          `${JOBS_PATH}/${encodeURIComponent(jobId)}`,
+        );
+        if (alive && rev === stateRef.current.baseRev) {
+          dispatch({ type: "cancelOutcome", value: detail, jobId, opId, rev });
+          if (!ACTIVE_STATUSES.has(detail.status)) releaseCancelLock(rev, jobId, opId);
+        }
+      } catch (error) {
+        if (alive && rev === stateRef.current.baseRev) showError(error, rev);
+      }
     };
     void observe();
-    const timer = window.setInterval(observe, 1000);
-    return () => window.clearInterval(timer);
-  }, [showError, state.baseUrl, state.cancellationPending, state.epoch]);
+    timer = window.setInterval(observe, 1000);
+    return () => {
+      alive = false;
+      window.clearInterval(timer);
+    };
+  }, [state.cancellationPending, state.cancelOpId, state.baseRev, releaseCancelLock, showError]);
 
+  // ---- Selected-job identity snapshot: detail + first log window + artifacts ----
   useEffect(() => {
-    if (!state.selectedJobId) return;
-    const { selectedJobId: jobId, epoch, logOffset } = state;
-    void fetchDetail(jobId, epoch).catch((error) => showError(error, epoch));
-    void pullLogs(jobId, epoch, logOffset, false).catch((error) => showError(error, epoch));
-    void fetchArtifacts(jobId, epoch);
-    return () => { logController.current?.abort(); logController.current = null; };
-    // Polling is handled below; this effect is a selection/base identity snapshot.
+    const jobId = state.selectedJobId;
+    if (!jobId) return;
+    const { baseRev: rev, watchSeq, logOffset } = state;
+    void fetchDetail(jobId, rev, watchSeq).catch((error) => {
+      if (error instanceof ApiError && error.status === 404) {
+        dispatch({ type: "detailMissing", rev, watchSeq, jobId });
+      } else {
+        showError(error, rev);
+      }
+    });
+    void pullLogs(jobId, rev, watchSeq, logOffset, false).catch((error) => showError(error, rev));
+    void fetchArtifacts(jobId, rev, watchSeq);
+    return () => {
+      logController.current?.abort();
+      logController.current = null;
+    };
+    // Polling lives in the effects below; this snapshot binds identity only.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [state.epoch, state.selectedJobId]);
+  }, [state.baseRev, state.watchSeq, state.selectedJobId]);
 
-  // Status monitoring remains active when Tail Logs is disabled, including after cancel returns 202.
+  // ---- Detail status monitoring while active (also after a 202 cancel) ----
   useEffect(() => {
     if (!state.selectedJobId || !state.detail || !ACTIVE_STATUSES.has(state.detail.status)) return;
     const jobId = state.selectedJobId;
-    const epoch = state.epoch;
-    const timer = window.setInterval(() => void fetchDetail(jobId, epoch).catch(() => undefined), 1000);
+    const rev = state.baseRev;
+    const watchSeq = state.watchSeq;
+    const timer = window.setInterval(
+      () => void fetchDetail(jobId, rev, watchSeq).catch(() => undefined),
+      DETAIL_INTERVAL_MS,
+    );
     return () => window.clearInterval(timer);
-  }, [fetchDetail, state.detail, state.epoch, state.selectedJobId]);
+  }, [fetchDetail, state.detail, state.baseRev, state.watchSeq, state.selectedJobId]);
 
+  // ---- Live log tailing while active ----
   useEffect(() => {
-    if (!state.liveLogs || !state.selectedJobId || !state.detail || !ACTIVE_STATUSES.has(state.detail.status)) return;
+    if (!state.liveLogs || !state.selectedJobId || !state.detail || !ACTIVE_STATUSES.has(state.detail.status)) {
+      return;
+    }
     const jobId = state.selectedJobId;
-    const epoch = state.epoch;
+    const rev = state.baseRev;
+    const watchSeq = state.watchSeq;
     const logOffset = state.logOffset;
-    const timer = window.setInterval(() => void pullLogs(jobId, epoch, logOffset, false).catch(() => undefined), 1000);
+    const timer = window.setInterval(
+      () => void pullLogs(jobId, rev, watchSeq, logOffset, false).catch(() => undefined),
+      DETAIL_INTERVAL_MS,
+    );
     return () => window.clearInterval(timer);
-  }, [pullLogs, state.detail, state.epoch, state.liveLogs, state.logOffset, state.selectedJobId]);
+  }, [pullLogs, state.detail, state.baseRev, state.watchSeq, state.liveLogs, state.logOffset, state.selectedJobId]);
 
-  // A terminal transition drains all remaining pages through next_offset=null, even if live tailing is off.
+  // ---- Terminal transition: drain every remaining log page + refresh artifacts ----
   useEffect(() => {
     if (!state.selectedJobId || !state.detail || ACTIVE_STATUSES.has(state.detail.status)) return;
-    const { selectedJobId: jobId, epoch, logOffset } = state;
-    void pullLogs(jobId, epoch, logOffset, true).catch((error) => showError(error, epoch)); void fetchArtifacts(jobId, epoch);
+    const { selectedJobId: jobId, baseRev: rev, watchSeq, logOffset } = state;
+    void pullLogs(jobId, rev, watchSeq, logOffset, true).catch((error) => showError(error, rev));
+    void fetchArtifacts(jobId, rev, watchSeq);
     // logOffset changes after draining and must not retrigger the terminal drain.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [state.detail?.status, state.epoch, state.selectedJobId]);
+  }, [state.detail?.status, state.baseRev, state.watchSeq, state.selectedJobId]);
 
-  useEffect(() => { if (!state.banner) return; const timer = window.setTimeout(() => dispatch({ type: "banner", value: null }), 8000); return () => window.clearTimeout(timer); }, [state.banner]);
-  useEffect(() => { cancellationInFlight.current = state.cancellationPending; }, [state.cancellationPending]);
+  // Banner auto-dismiss.
+  useEffect(() => {
+    if (!state.banner) return;
+    const timer = window.setTimeout(() => dispatch({ type: "banner", value: null }), 8000);
+    return () => window.clearTimeout(timer);
+  }, [state.banner]);
 
-  const value = useMemo<JobContextValue>(() => ({
-    ...state,
-    applyBaseUrl(value) { logController.current?.abort(); cancellationInFlight.current = null; const normalized = (value.trim() || DEFAULT_BASE_URL).replace(/\/+$/, ""); localStorage.setItem(STORAGE_KEY, normalized); dispatch({ type: "base", value: normalized }); },
-    refreshJobs,
-    selectJob(jobId) { logController.current?.abort(); dispatch({ type: "select", value: jobId, epoch: state.epoch }); },
-    async submitJob(payload) {
-      const epoch = state.epoch;
-      try {
-        const result = await api<JobRequest>(state.baseUrl, JOBS_PATH, { method: "POST", body: JSON.stringify(payload) });
-        dispatch({ type: "banner", epoch, value: { kind: "success", message: `Job ${result.job_id} dispatched successfully — monitoring now.` } });
-        dispatch({ type: "select", value: result.job_id, epoch }); await refreshJobs();
-      } catch (error) { showError(error, epoch); throw error; }
-    },
-    async cancelJob(jobId) {
-      const epoch = state.epoch;
-      const pendingJobId = cancellationInFlight.current || state.cancellationPending;
-      if (pendingJobId) {
-        dispatch({ type: "banner", value: { kind: "error", message: `Wait for cancellation of ${pendingJobId} to reach a terminal state before cancelling another job.` } });
-        return;
-      }
-      cancellationInFlight.current = jobId;
-      dispatch({ type: "cancelStart", jobId });
-      try {
-        const result = await api<{ message: string }>(state.baseUrl, `${JOBS_PATH}/${encodeURIComponent(jobId)}/cancel`, { method: "POST" });
-        dispatch({ type: "banner", value: { kind: "success", message: `${result.message || "Cancellation accepted"} Waiting for cancelled / USER_CANCELLED terminal state…` } });
-        dispatch({ type: "select", value: jobId, epoch }); await refreshJobs();
-      } catch (error) {
-        cancellationInFlight.current = null;
-        dispatch({ type: "cancelClear", jobId });
-        showError(error);
-      }
-    },
-    async refreshArtifacts(loud = false) { if (state.selectedJobId) await fetchArtifacts(state.selectedJobId, state.epoch, loud); },
-    clearLogs() { dispatch({ type: "clearLogs" }); }, dismissBanner() { dispatch({ type: "banner", value: null }); },
-    setToggle(key, value) { dispatch({ type: "toggle", key, value }); },
-  }), [fetchArtifacts, refreshJobs, showError, state]);
+  const value = useMemo<JobContextValue>(
+    () => ({
+      ...state,
+      applyBaseUrl(value) {
+        logController.current?.abort();
+        const lock = cancelLock.current;
+        if (lock) releaseCancelLock(lock.rev, lock.jobId, lock.opId);
+        const normalized = (value.trim() || DEFAULT_BASE_URL).replace(/\/+$/, "");
+        localStorage.setItem(STORAGE_KEY, normalized);
+        dispatch({ type: "base", value: normalized });
+      },
+      refreshJobs: (loud = false) => refreshJobs(loud),
+      selectJob,
+      async submitJob(payload) {
+        const rev = stateRef.current.baseRev;
+        try {
+          const result = await api<JobRequest>(stateRef.current.baseUrl, JOBS_PATH, {
+            method: "POST",
+            body: JSON.stringify(payload),
+          });
+          dispatch({
+            type: "banner",
+            rev,
+            value: { kind: "success", message: `Job ${result.job_id} dispatched successfully — monitoring now.` },
+          });
+          await syncJobs(false);
+          return result.job_id;
+        } catch (error) {
+          showError(error, rev);
+          throw error;
+        }
+      },
+      async cancelJob(jobId) {
+        const rev = stateRef.current.baseRev;
+
+        // Terminal guard first: never POST cancel against an already-terminal job.
+        const known: JobSummary | JobDetail | null =
+          stateRef.current.jobs.find((job) => job.job_id === jobId) ??
+          (stateRef.current.selectedJobId === jobId ? stateRef.current.detail : null);
+        if (known && !ACTIVE_STATUSES.has(known.status)) {
+          dispatch({
+            type: "banner",
+            value: { kind: "error", message: `Job ${jobId} is already in terminal state '${known.status}'.` },
+          });
+          return;
+        }
+
+        // The synchronous ref closes the same-tick gap; cancellationPending
+        // keeps serialization enforced until the accepted operation settles.
+        if (cancelLock.current || stateRef.current.cancellationPending) {
+          const pendingJobId = cancelLock.current?.jobId ?? stateRef.current.cancellationPending;
+          dispatch({
+            type: "banner",
+            value: {
+              kind: "error",
+              message: `Wait for cancellation of ${pendingJobId} to reach a terminal state before cancelling another job.`,
+            },
+          });
+          return;
+        }
+
+        const opId = ++cancelOpSeq.current;
+        const lock = { rev, jobId, opId };
+        cancelLock.current = lock;
+
+        let ack: CancelAck;
+        try {
+          ack = await api<CancelAck>(
+            stateRef.current.baseUrl,
+            `${JOBS_PATH}/${encodeURIComponent(jobId)}/cancel`,
+            { method: "POST" },
+          );
+        } catch (error) {
+          releaseCancelLock(rev, jobId, opId);
+          if (rev === stateRef.current.baseRev) showError(error, rev);
+          return;
+        }
+
+        // Identity check before any side effect: still the same engine epoch and
+        // the same operation (the observer may have settled, or the epoch flipped).
+        if (cancelLock.current !== lock || rev !== stateRef.current.baseRev) return;
+
+        const accepted = ack.status === "cancel_requested";
+
+        if (!accepted) {
+          // 200 idempotent replay: the job was already terminal. Settle directly
+          // (no observer) and refresh the watched detail so its terminal drain runs.
+          dispatch({
+            type: "banner",
+            rev,
+            value: {
+              kind: "success",
+              message: `${ack.message || "Cancellation acknowledged"} (terminal state: ${ack.status})`,
+            },
+          });
+          try {
+            const detail = await api<JobDetail>(
+              stateRef.current.baseUrl,
+              `${JOBS_PATH}/${encodeURIComponent(jobId)}`,
+            );
+            if (cancelLock.current !== lock || rev !== stateRef.current.baseRev) return;
+            const current = stateRef.current;
+            if (current.selectedJobId === jobId) {
+              dispatch({ type: "detail", value: detail, rev, watchSeq: current.watchSeq, jobId });
+            }
+          } catch (error) {
+            if (rev === stateRef.current.baseRev) showError(error, rev);
+          } finally {
+            releaseCancelLock(rev, jobId, opId);
+          }
+          await syncJobs(false);
+          return;
+        }
+
+        // 202 accepted: only now start the observer (cancellationPending gates it).
+        dispatch({ type: "cancelStart", jobId, opId });
+        dispatch({
+          type: "banner",
+          rev,
+          value: {
+            kind: "success",
+            message: `${ack.message || "Cancellation accepted"} Waiting for cancelled / USER_CANCELLED terminal state…`,
+          },
+        });
+
+        await syncJobs(false);
+
+        // Post-POST compensating drain: use the latest log offset, and never
+        // write to a selection that has since switched away from this job.
+        const current = stateRef.current;
+        if (
+          current.baseRev === rev &&
+          current.selectedJobId === jobId &&
+          current.detail &&
+          !ACTIVE_STATUSES.has(current.detail.status)
+        ) {
+          void pullLogs(jobId, rev, current.watchSeq, current.logOffset, true).catch(() => undefined);
+        }
+      },
+      async refreshArtifacts(loud = false) {
+        const { selectedJobId, baseRev, watchSeq } = stateRef.current;
+        if (selectedJobId) await fetchArtifacts(selectedJobId, baseRev, watchSeq, loud);
+      },
+      clearLogs() {
+        dispatch({ type: "clearLogs" });
+      },
+      dismissBanner() {
+        dispatch({ type: "banner", value: null });
+      },
+      setToggle(key, value) {
+        dispatch({ type: "toggle", key, value });
+      },
+    }),
+    [fetchArtifacts, pullLogs, refreshJobs, releaseCancelLock, selectJob, showError, state, syncJobs],
+  );
 
   return <JobContext.Provider value={value}>{children}</JobContext.Provider>;
 }
@@ -237,5 +634,7 @@ export function JobProvider({ children }: { children: ReactNode }) {
 // The provider and its hook intentionally share this module as one public context API.
 // eslint-disable-next-line react-refresh/only-export-components
 export function useJobs(): JobContextValue {
-  const value = useContext(JobContext); if (!value) throw new Error("useJobs must be used inside JobProvider"); return value;
+  const value = useContext(JobContext);
+  if (!value) throw new Error("useJobs must be used inside JobProvider");
+  return value;
 }

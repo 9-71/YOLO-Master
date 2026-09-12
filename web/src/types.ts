@@ -42,6 +42,14 @@ export interface LogsResponse {
 export interface ArtifactEntry { filename: string; artifact_id: string; is_image: boolean; download_url: string }
 export interface ArtifactsResponse { job_id: string; artifacts: ArtifactEntry[]; image_artifacts: string[] }
 
+/** POST /jobs/{id}/cancel acknowledgment. `status` is "cancel_requested" for a
+ * fresh 202 accept, or the job's terminal status string for an idempotent 200. */
+export interface CancelAck {
+  job_id: string;
+  status: string;
+  message: string;
+}
+
 export type ConnectionState = "checking" | "online" | "offline";
 export interface BannerState { kind: "error" | "success" | "security"; message: string }
 
@@ -50,4 +58,9 @@ export const EMPTY_ARTIFACTS: ArtifactsResponse = { job_id: "", artifacts: [], i
 
 export function formatDuration(duration: number | null): string {
   return duration === null ? "—" : `${duration.toFixed(2)}s`;
+}
+
+/** Full local date and time, e.g. 2026/9/12 14:03:07 — never time-only. */
+export function formatCreatedAt(value: string | null): string {
+  return value ? new Date(value).toLocaleString() : "—";
 }

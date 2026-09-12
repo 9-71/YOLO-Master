@@ -242,6 +242,7 @@ class TestTrainHandlerExecution:
         The fake engine writes best.pt/last.pt/results.csv into the job directory,
         exercising artifact collection, seed determinism injection, and metadata.
         """
+        train_kwargs = {}
 
         class FakeTrainModel:
             def __init__(self, path):
@@ -249,6 +250,7 @@ class TestTrainHandlerExecution:
                 self.trainer = None
 
             def train(self, **kwargs):
+                train_kwargs.update(kwargs)
                 job_dir = Path(kwargs["project"]) / kwargs["name"]
                 weights_dir = job_dir / "weights"
                 weights_dir.mkdir(parents=True, exist_ok=True)
@@ -273,6 +275,7 @@ class TestTrainHandlerExecution:
         assert len(result["artifacts"]) == 3  # best.pt + last.pt + results.csv
         assert any(p.endswith("best.pt") for p in result["artifacts"])
         assert any(p.endswith("last.pt") for p in result["artifacts"])
+        assert train_kwargs["seed"] == 42
 
         # Discussion #244 Defect B: seed determinism must be recorded in metadata
         metadata = result["metadata"]

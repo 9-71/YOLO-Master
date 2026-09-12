@@ -232,6 +232,9 @@ class TrainHandler(BaseTaskHandler):
             device = params.get("device", "cpu")
 
             # Execute training with artifact saving
+            train_kwargs: dict[str, Any] = {}
+            if seed_applied is not None:
+                train_kwargs["seed"] = seed_applied
             model.train(
                 data=data_source,
                 epochs=epochs,
@@ -240,6 +243,7 @@ class TrainHandler(BaseTaskHandler):
                 project=str(job_output_dir.parent.resolve()),
                 name=job_id,
                 exist_ok=True,
+                **train_kwargs,
             )
 
             # Discussion #244 Defect A: Audit optimizer parameter groups
