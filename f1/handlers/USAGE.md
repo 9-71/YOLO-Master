@@ -136,13 +136,13 @@ The framework enforces the following security policies:
 ```python
 def validate_params(self, params, security_constraints):
     allowed_paths = security_constraints.get("allowed_paths", [])
-    
+
     # Validate all input paths
     for key in ["model_path", "data_source"]:
         path = params.get(key, "")
         if path and not self._is_path_safe(path, allowed_paths):
             return False, f"{key} path '{path}' not in whitelist"
-    
+
     return True, None
 ```
 
@@ -183,7 +183,7 @@ if security_constraints.get("allow_shell"):
 TaskHandlerRegistry.get(task_type: str) -> type[BaseTaskHandler]
 ```
 
-**Returns**: Handler class (not instance)  
+**Returns**: Handler class (not instance)<br>
 **Raises**: `ValueError` for unregistered `task_type` with list of available types
 
 ### Utility Methods
@@ -316,6 +316,6 @@ class TrainHandler(BaseTaskHandler):
 
 ---
 
-**Version**: 1.0.0  
-**Last Updated**: 2026-09-01  
+**Version**: 1.0.0<br>
+**Last Updated**: 2026-09-01<br>
 **Maintained By**: [@9-71](https://github.com/9-71)

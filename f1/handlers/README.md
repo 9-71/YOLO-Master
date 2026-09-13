@@ -62,11 +62,11 @@ result = handler.execute(job_id, params, output_dir)
 
 ## Core Features
 
-✅ **Type-Safe**: Complete type hints and abstract base class enforcement  
-✅ **Decorator Registration**: `@TaskHandlerRegistry.register(task_type)` auto-registration  
-✅ **Factory Method**: `TaskHandlerRegistry.get(task_type)` dynamic retrieval  
-✅ **Security-First**: Built-in path whitelisting and shell execution protection  
-✅ **Clear Errors**: Duplicate registration and unregistered types throw explicit exceptions  
+✅ **Type-Safe**: Complete type hints and abstract base class enforcement<br>
+✅ **Decorator Registration**: `@TaskHandlerRegistry.register(task_type)` auto-registration<br>
+✅ **Factory Method**: `TaskHandlerRegistry.get(task_type)` dynamic retrieval<br>
+✅ **Security-First**: Built-in path whitelisting and shell execution protection<br>
+✅ **Clear Errors**: Duplicate registration and unregistered types throw explicit exceptions
 
 ## File Structure
 

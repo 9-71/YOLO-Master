@@ -150,9 +150,9 @@ The F1 entry smoke test validates five critical dimensions:
 ```log
 [Case 1] Contract Parsing & E2E Real Inference Execution...
   [StateMachine] Job job_20260824_f1_001 transitioned to: RUNNING
-Results saved to D:\Projects\YOLO-Master\runs\detect\runs\predict\job_20260824_f1_001
+Results saved to runs/detect/runs/predict/job_20260824_f1_001
   [Executor] Real inference executed on device=0. Detected count: 6
-  [Artifacts] Verified artifacts (1 files) at: ['D:\\Projects\\YOLO-Master\\runs\\detect\\runs\\predict\\job_20260824_f1_001\\bus.jpg']
+  [Artifacts] Verified artifacts (1 files) at: ['runs\\detect\\runs\\predict\\job_20260824_f1_001\\bus.jpg']
   [StateMachine] Job job_20260824_f1_001 transitioned to: COMPLETED
   [PASS] in 3.59s
 ```

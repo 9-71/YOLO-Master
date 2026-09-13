@@ -45,10 +45,10 @@ This report verifies three **official security red lines** and confirms complian
 
 | Dimension | Value |
 | --- | --- |
-| **Runtime** | `Python 3.12.10 (Project Virtual Environment)` — `D:\Projects\YOLO-Master-Recovered\.venv\Scripts\python.exe` |
+| **Runtime** | `Python 3.12.10 (Project Virtual Environment)` — `python` interpreter from the project virtual environment (`.venv\Scripts\python.exe`) |
 | **Test harness** | `pytest 9.1.1`, `pluggy 1.6.0` |
 | **Platform** | `Windows (x86_64)` |
-| **pytest config** | Repository-root `pytest.ini` (`rootdir = D:\Projects\YOLO-Master-Recovered`) |
+| **pytest config** | Repository-root `pytest.ini` (`rootdir = <repository root>`) |
 | **Isolation technique** | In-memory single-process execution; `tmp_path` fixture for filesystem-bound cases; `monkeypatch.setitem` for registry injection; mock `BaseTaskHandler` subclasses with no real model inference |
 | **Mocked environment states** | `TaskHandlerRegistry._handlers` mutated via `monkeypatch`; secret-carrying handler raises a `RuntimeError` embedding a plaintext token to exercise the leak vector |
 | **Test data** | Ephemeral string fixtures only — no real credentials, no network, no GPU; the selected tests run offline |
@@ -145,7 +145,7 @@ The full sanitizer suite was executed on 2026-09-13 under the project virtual en
 **Session command and output (2026-09-13):**
 
 ```text
-.\.venv\Scripts\python.exe -m pytest tests/f1/test_security_sanitizer.py -q -o addopts= -p no:cacheprovider --basetemp=runs/doc-security-sanitizer
+python -m pytest tests/f1/test_security_sanitizer.py -q -o addopts= -p no:cacheprovider --basetemp=runs/doc-security-sanitizer
 .........                                                                [100%]
 9 passed in 0.22s
 ```
@@ -153,7 +153,7 @@ The full sanitizer suite was executed on 2026-09-13 under the project virtual en
 **Supplementary path-whitelist command and output (2026-09-13):**
 
 ```text
-.\.venv\Scripts\python.exe -m pytest tests/f1/test_handlers_framework.py::TestBaseTaskHandler::test_path_safety_validation_baseline tests/f1/test_handlers_framework.py::TestPathSafetyLiteralWhitelist tests/f1/test_handlers_framework.py::TestPathSafetyRegexWhitelist -q -o addopts= -p no:cacheprovider --basetemp=runs/doc-path-whitelist
+python -m pytest tests/f1/test_handlers_framework.py::TestBaseTaskHandler::test_path_safety_validation_baseline tests/f1/test_handlers_framework.py::TestPathSafetyLiteralWhitelist tests/f1/test_handlers_framework.py::TestPathSafetyRegexWhitelist -q -o addopts= -p no:cacheprovider --basetemp=runs/doc-path-whitelist
 ......ssss......s                                                        [100%]
 12 passed, 5 skipped in 0.19s
 ```
