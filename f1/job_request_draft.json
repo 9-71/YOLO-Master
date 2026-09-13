@@ -12,7 +12,7 @@
   "params": {
     "model_path": "yolov8n.pt",
     "data_source": "ultralytics/assets/bus.jpg",
-    "conf_threshold": 0.25,
+    "conf": 0.25,
     "device": "0"
   },
   "output": {

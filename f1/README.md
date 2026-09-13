@@ -67,7 +67,7 @@ The shared `JobRequest` contract serves as the inter-component interface:
   "params": {
     "model_path": "string",              // Model checkpoint path
     "data_source": "string",             // Input data path
-    "conf_threshold": "float",           // Confidence threshold
+    "conf": "float",                     // Confidence threshold
     "device": "string"                   // CUDA device index or 'cpu'
   },
   "output": {
@@ -80,7 +80,7 @@ The shared `JobRequest` contract serves as the inter-component interface:
   "security_constraints": {
     "path_whitelisted": "boolean",       // Path whitelist enforcement
     "allow_shell": "boolean",            // Shell execution permission
-    "allowed_paths": ["array of paths"]  // Whitelisted directory roots
+    "allowed_paths": ["array of paths"]  // Compatibility field; API replaces it with trusted server roots
   },
   "runtime_tracking": {
     "stream_logs": "boolean",            // Real-time log streaming
@@ -259,11 +259,12 @@ The F1 Studio Platform implements the following mandatory security constraints:
    - Jobs requesting shell access immediately fail with `SEC_ERR_001`
 2. **Path Whitelisting**:
 
-   - All `params` paths (`model_path`, `data_source`) and `output.output_dir` are resolved
-     with `Path.resolve()` and checked for containment within an `allowed_paths` root
-   - Contract whitelist: `[".", "ultralytics/assets", "runs/predict", "ckpts"]`
-   - Enforcement is *positive*: an empty `allowed_paths` rejects every path rather than
-     defaulting to permissive, so a malformed contract fails closed
+   - The API discards client-supplied `allowed_paths` / `allowed_path_patterns` and replaces them
+     with the trusted roots configured by `F1_MODEL_ROOTS`, `F1_DATA_ROOTS`, and `F1_OUTPUT_ROOT`
+   - `model_path`, `data_source`, and `output.output_dir` are resolved independently and checked
+     against their corresponding server-owned root
+   - The handler layer remains fail-closed: an empty trusted whitelist rejects every path rather
+     than defaulting to permissive
    - Path traversal (`../`) is neutralized by resolution before the containment check
 3. **Environment Variable Sanitization**:
 
@@ -281,7 +282,7 @@ The F1 Studio Platform implements the following mandatory security constraints:
 | ------------------- | ----------------------------------------------- | --------------------------- |
 | Shell execution     | `allow_shell=false` check                     | Case 2 smoke test           |
 | Path traversal      | `_is_path_safe()` resolve + containment check | Case 3 smoke test           |
-| Resource exhaustion | `timeout_seconds` contract field              | Declared; enforcement is P1 |
+| Resource exhaustion | Backend-enforced `timeout_seconds` deadline   | Worker lifecycle tests      |
 | State corruption    | State machine transition guards                 | Case 4 / Case 5 smoke tests |
 
 ---

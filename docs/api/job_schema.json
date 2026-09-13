@@ -35,7 +35,8 @@
             "pending",
             "running",
             "completed",
-            "failed"
+            "failed",
+            "cancelled"
           ],
           "title": "JobStatus",
           "type": "string"
@@ -46,6 +47,30 @@
             "created_at": {
               "title": "Created At",
               "type": "string"
+            },
+            "started_at": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Started At"
+            },
+            "completed_at": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Completed At"
             },
             "created_by": {
               "default": "anonymous",
@@ -188,6 +213,9 @@
       "description": "Strongly typed job submission contract shared by UI, skills and dispatcher.\n\nAttributes:\n    job_id: Unique job identifier (``{task_type}_{timestamp}_{uuid}`` from the UI).\n    task_type: Registered task type resolved by the handler registry.\n    status: Current lifecycle state; transitions are FSM-enforced.\n    metadata: Bookkeeping metadata (author, priority, tags, timestamps).\n    params: Task-specific parameters validated by the resolved handler.\n    output: Output directory and artifact capture configuration.\n    security_constraints: Fail-closed security policy for the job.\n    runtime_tracking: Deadline, streaming and cooperative-cancellation flags.\n    error: Structured failure detail; ``None`` while the job is not FAILED.\n    logs: Sanitized in-memory execution log lines; only written through\n        :meth:`append_log`, which redacts credentials before storage so\n        UI-facing and persisted logs never carry plaintext secrets.",
       "properties": {
         "job_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9_-]+$",
           "title": "Job Id",
           "type": "string"
         },
@@ -201,7 +229,9 @@
         "metadata": {
           "$ref": "#/$defs/Metadata",
           "default": {
-            "created_at": "2026-09-05T03:00:45.905711+00:00",
+            "created_at": "2026-09-13T11:53:11.992191+00:00",
+            "started_at": null,
+            "completed_at": null,
             "created_by": "anonymous",
             "description": null,
             "priority": "normal",
@@ -273,13 +303,15 @@
         "pending",
         "running",
         "completed",
-        "failed"
+        "failed",
+        "cancelled"
       ],
       "names": [
         "PENDING",
         "RUNNING",
         "COMPLETED",
-        "FAILED"
+        "FAILED",
+        "CANCELLED"
       ]
     },
     "ArtifactManifest": {

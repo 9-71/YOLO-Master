@@ -554,23 +554,18 @@ from `f1/ui/jobs_tab.py` is only a lazy compatibility shim for legacy imports.
 
 ## Appendix — Quick reference
 
-### Default path whitelist
+### Server-owned trusted roots
 
-The submission form ships with the following authorized roots
-(`Allowed Paths` field, comma-separated):
-
-```
-., ultralytics/assets, runs, ckpts
-```
-
-Only these roots (and any you append) may contain the *Model Path*, *Data Source*, and *Output
-Directory* values you submit.
+The submission form may serialize `allowed_paths` for compatibility, but client-supplied
+`allowed_paths` and `allowed_path_patterns` never grant filesystem access. The FastAPI backend
+discards both fields and replaces them with its trusted `F1_MODEL_ROOTS` and `F1_DATA_ROOTS`;
+`output_dir` is checked independently against `F1_OUTPUT_ROOT` (see §7.10).
 
 ### Security guarantees
 
 - **Shell execution** is permanently disabled (`allow_shell = False`).
-- **Path whitelisting** is always enforced (`path_whitelisted = True`) and fails closed — an empty
-  whitelist rejects every path.
+- **Path whitelisting** is always enforced (`path_whitelisted = True`) using server-owned roots;
+  the handler layer fails closed when its trusted whitelist is empty.
 - **Directory traversal** (`../`) is neutralized by resolving paths to absolute form before the
   containment check.
 - **Log sanitization** redacts credentials (API keys, `KEY=value` secrets) before they ever reach

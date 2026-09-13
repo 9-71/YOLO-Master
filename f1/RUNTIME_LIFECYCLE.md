@@ -6,7 +6,7 @@ Gradio components.
 
 ## Execution
 
-All four task types follow the same backend-owned entry point:
+All five task types follow the same backend-owned entry point:
 
 `Gradio UI → StudioJobsApiClient → FastAPI task API → JobsManager → CPU/GPU waiting queue → fixed supervisor slot → managed process → F1 dispatcher → handler → YOLO Python API`
 

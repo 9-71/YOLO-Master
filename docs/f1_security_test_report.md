@@ -20,7 +20,7 @@ This report verifies three **official security red lines** and confirms complian
 
 | # | Security Objective | Compliance Result |
 | --- | --- | --- |
-| SO-1 | **Shell injection defense** — prohibit arbitrary shell execution; task dispatch must never invoke an OS shell with attacker-influenced input. | **COMPLIANT** — `allow_shell=True` is rejected at dispatcher pre-execution guard (`SEC_ERR_001`); handlers delegate to the Python engine directly (no `shell=`, no `subprocess`, no `os.system`/`os.popen`). |
+| SO-1 | **Shell injection defense** — prohibit arbitrary shell execution; task dispatch must never invoke an OS shell with attacker-influenced input. | **COMPLIANT** — `allow_shell=True` is rejected at dispatcher pre-execution guard (`SEC_ERR_001`); handlers delegate to the Python engine directly without `shell=True`, shell interpolation, or arbitrary shell execution. |
 | SO-2 | **Directory traversal / unauthorized path blocking** — enforce strict path whitelisting (models, datasets, output artifacts) so `../` escapes, symlink escapes, and non-whitelisted patterns cannot read or write outside approved roots. | **COMPLIANT** — fail-closed containment + regex whitelist in `BaseTaskHandler._is_path_safe`; violations raise `PathWhitelistViolationError` mapped to `SEC_ERR_001`. |
 | SO-3 | **Sensitive credential masking** — environment variables and tokens (`API_KEY`, `TOKEN`, `PASSWORD`, `SECRET`, etc.) must never reach terminal output, log files, error messages, or tracebacks. | **COMPLIANT** — `core/security.py` redacts keys, secret-shaped values, and `KEY=value` assignments; the canonical log append path (`JobRequest.append_log`) sanitizes before storage; dispatcher error messages are sanitized before `ErrorInfo` attachment. |
 
@@ -166,7 +166,7 @@ python -m pytest tests/f1/test_handlers_framework.py::TestBaseTaskHandler::test_
 
 The FastAPI service is the sole lifecycle owner and holds one process-wide `JobsManager`; Gradio uses `StudioJobsApiClient` and owns no workers, lifecycle registry, or persistence. Jobs execute in managed worker processes under the service owner's supervision. The current protections are strong for this threat model:
 
-- No OS shell is ever instantiated; no `subprocess`, `os.system`, or `os.popen` call sites exist.
+- Task dispatch never uses `shell=True`, shell interpolation, `os.system`, or `os.popen`; handlers call the Python engine directly.
 - Path whitelisting is fail-closed, resolves symlinks/`..` before decision, and regex patterns must fully consume the resolved path (no prefix/substring bypass).
 - Credential redaction covers key names, value shapes, and `KEY=value` assignments, and is enforced at the canonical log append boundary *and* the dispatcher error boundary.
 

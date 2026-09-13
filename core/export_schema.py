@@ -21,7 +21,7 @@ Example:
     >>> from core.export_schema import _enum_schema_record
     >>> from core.schema import JobStatus
     >>> _enum_schema_record(JobStatus)["values"]
-    ['pending', 'running', 'completed', 'failed']
+    ['pending', 'running', 'completed', 'failed', 'cancelled']
 """
 
 from __future__ import annotations
