@@ -49,6 +49,7 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
+from core.path_safety import resolve_path_allow_missing
 from core.schema import TERMINAL_STATUSES, ErrorInfo, JobRequest, JobStatus, SecurityConstraints, TaskType
 from core.security import sanitize_for_persistence, sanitize_log_text
 from f1.dispatcher import JobDispatcherStateMachine
@@ -105,7 +106,7 @@ def _configured_roots(env_name: str, defaults: list[Path]) -> list[Path]:
     """Resolve a server-owned root list; request payloads never participate."""
     raw = os.environ.get(env_name)
     entries = raw.split(os.pathsep) if raw else [str(path) for path in defaults]
-    return [Path(entry).resolve() for entry in entries if entry.strip()]
+    return [resolve_path_allow_missing(entry) for entry in entries if entry.strip()]
 
 
 def _resolve_contained(path_value: str, roots: list[Path], label: str) -> Path:
@@ -113,8 +114,8 @@ def _resolve_contained(path_value: str, roots: list[Path], label: str) -> Path:
     if not path_value or any(ord(char) < 32 for char in path_value):
         raise ValueError(f"{label} is empty or contains control characters")
     try:
-        resolved = Path(path_value).resolve()
-    except (OSError, ValueError) as exc:
+        resolved = resolve_path_allow_missing(path_value)
+    except (OSError, RuntimeError, ValueError) as exc:
         raise ValueError(f"{label} is not a valid local path") from exc
     for root in roots:
         try:
@@ -187,19 +188,19 @@ class JobsManager:
         self._workers: dict[str, ManagedWorker] = {}
         self._closing = False
         self._worker_executor = execute_job  # Server-only injection seam for lightweight process tests.
-        cwd = Path.cwd().resolve()
+        cwd = resolve_path_allow_missing(Path.cwd())
         self._model_roots = (
-            [Path(path).resolve() for path in model_roots]
+            [resolve_path_allow_missing(path) for path in model_roots]
             if model_roots is not None
             else _configured_roots(MODEL_ROOTS_ENV, [cwd])
         )
         self._data_roots = (
-            [Path(path).resolve() for path in data_roots]
+            [resolve_path_allow_missing(path) for path in data_roots]
             if data_roots is not None
             else _configured_roots(DATA_ROOTS_ENV, [cwd])
         )
         self._output_root = (
-            Path(output_root).resolve()
+            resolve_path_allow_missing(output_root)
             if output_root is not None
             else _configured_roots(OUTPUT_ROOT_ENV, [cwd / "runs"])[0]
         )

@@ -11,6 +11,7 @@ production modules no longer import data structures from a test file.
 from __future__ import annotations
 
 import json
+import os
 import sys
 import time
 from pathlib import Path
@@ -144,6 +145,8 @@ def run_smoke_test_suite():
     t0 = time.time()
     with open("f1/job_request_draft.json", encoding="utf-8-sig") as f:
         data = json.load(f)
+    data["params"]["device"] = os.environ.get("F1_SMOKE_DEVICE", data["params"]["device"])
+    data["params"]["model_path"] = os.environ.get("F1_SMOKE_MODEL_PATH", data["params"]["model_path"])
     job1 = JobRequest(**data)
     final_job1 = dispatcher.execute(job1)
     e2e_duration = time.time() - t0

@@ -55,9 +55,16 @@ jobs:
       - name: Ruff format check (restricted scope)
         run: ruff format --check f1/ tests/f1/ smoke/ core/ api/ main_engine.py tests/api/ app.py
 
+      - name: Run F1 smoke suite
+        env:
+          F1_SMOKE_DEVICE: cpu
+          F1_SMOKE_MODEL_PATH: tests/f1/yolov8n.pt
+          YOLO_OFFLINE: "true"
+        run: python -m smoke.test_f1_smoke
+
       - name: Run F1 unit tests with coverage
         run: |
-          pytest tests/f1/ smoke/ tests/api/ \
+          pytest tests/f1/ tests/api/ \
             --cov=f1 \
             --cov=core \
             --cov-report=term-missing \

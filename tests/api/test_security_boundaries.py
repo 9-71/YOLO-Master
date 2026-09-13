@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import json
 import time
 from pathlib import Path
@@ -44,6 +45,22 @@ def _require_real_symlink(link: Path) -> None:
             "creation reported success; the current platform/execution environment does "
             "not create real symlinks"
         )
+
+
+def _make_symlink(link: Path, target: Path, *, target_is_directory: bool = False) -> None:
+    """Create one real symlink, skipping only known platform capability failures."""
+    try:
+        link.symlink_to(target, target_is_directory=target_is_directory)
+    except NotImplementedError as exc:
+        pytest.skip(f"symlink creation unavailable on this Windows environment: {exc}")
+    except OSError as exc:
+        unavailable_errnos = {errno.EACCES, errno.ENOSYS, errno.EPERM}
+        if hasattr(errno, "EOPNOTSUPP"):
+            unavailable_errnos.add(errno.EOPNOTSUPP)
+        if exc.errno in unavailable_errnos or getattr(exc, "winerror", None) in {50, 1314}:
+            pytest.skip(f"symlink creation unavailable on this Windows environment: {exc}")
+        raise
+    _require_real_symlink(link)
 
 
 @pytest.mark.parametrize("job_id", ["abc", "job_001", "job-001", "A12_test"])
@@ -112,29 +129,71 @@ def test_server_roots_override_client_whitelist_and_regex(tmp_path: Path) -> Non
         manager.submit_job_request(file_url)
 
 
-def test_symlink_escape_is_rejected_when_supported(tmp_path: Path) -> None:
+@pytest.mark.parametrize("boundary", ["model_path", "output_dir"], ids=["model-path", "output-dir"])
+def test_symlink_escape_is_rejected_when_supported(tmp_path: Path, boundary: str) -> None:
+    """Each server-owned root independently rejects a direct symlink escape."""
     model_root, data_root, output_root, outside = (tmp_path / name for name in ("models", "data", "outputs", "outside"))
     for directory in (model_root, data_root, output_root, outside):
         directory.mkdir()
     data = data_root / "image.jpg"
     data.touch()
-    link = model_root / "escape"
-    try:
-        link.symlink_to(outside, target_is_directory=True)
-    except OSError as exc:
-        pytest.skip(f"symlink creation unavailable on this Windows environment: {exc}")
-    _require_real_symlink(link)
     manager = JobsManager(model_roots=[model_root], data_roots=[data_root], output_root=output_root)
-    with pytest.raises(ValueError, match="model_path"):
-        manager.submit_job_request(_request("link-escape", link / "model.pt", data, output_root))
-    output_link = output_root / "escape"
-    try:
-        output_link.symlink_to(outside, target_is_directory=True)
-    except OSError as exc:
-        pytest.skip(f"symlink creation unavailable on this Windows environment: {exc}")
-    _require_real_symlink(output_link)
-    with pytest.raises(ValueError, match="output_dir"):
-        manager.submit_job_request(_request("output-link-escape", model_root / "model.pt", data, output_link))
+    if boundary == "model_path":
+        link = model_root / "escape"
+        _make_symlink(link, outside, target_is_directory=True)
+        request = _request("model-link-escape", link / "model.pt", data, output_root)
+    else:
+        link = output_root / "escape"
+        _make_symlink(link, outside, target_is_directory=True)
+        model = model_root / "model.pt"
+        model.touch()
+        request = _request("output-link-escape", model, data, link)
+
+    with pytest.raises(ValueError, match=boundary):
+        manager.submit_job_request(request)
+
+
+@pytest.mark.parametrize(
+    ("case", "accepted"),
+    [
+        pytest.param("nested_escape", False, id="escape-nested-symlink"),
+        pytest.param("internal_target", True, id="positive-internal-symlink"),
+        pytest.param("broken_internal_target", False, id="fail-closed-broken-symlink"),
+    ],
+)
+def test_server_model_root_symlink_matrix(tmp_path: Path, case: str, accepted: bool) -> None:
+    """Server admission resolves nested links but fails closed on broken links."""
+    model_root, data_root, output_root, outside = (tmp_path / name for name in ("models", "data", "outputs", "outside"))
+    internal = model_root / "internal"
+    for directory in (internal, data_root, output_root, outside):
+        directory.mkdir(parents=True)
+    data = data_root / "image.jpg"
+    data.touch()
+
+    if case == "nested_escape":
+        first = model_root / "first"
+        second = internal / "second"
+        _make_symlink(first, internal, target_is_directory=True)
+        _make_symlink(second, outside, target_is_directory=True)
+        model = first / "second" / "model.pt"
+    elif case == "internal_target":
+        link = model_root / "link"
+        _make_symlink(link, internal, target_is_directory=True)
+        model = link / "model.pt"
+        (internal / "model.pt").touch()
+    else:
+        link = model_root / "broken"
+        _make_symlink(link, model_root / "missing", target_is_directory=True)
+        model = link / "model.pt"
+
+    manager = JobsManager(model_roots=[model_root], data_roots=[data_root], output_root=output_root)
+    manager._start_supervisors = lambda: None
+    request = _request(f"symlink-{case.replace('_', '-')}", model, data, output_root)
+    if accepted:
+        assert manager.submit_job_request(request).params["model_path"] == str(model)
+    else:
+        with pytest.raises(ValueError, match="model_path"):
+            manager.submit_job_request(request)
 
 
 def test_artifact_symlink_escape_is_rejected_when_supported(tmp_path: Path) -> None:
@@ -145,11 +204,7 @@ def test_artifact_symlink_escape_is_rejected_when_supported(tmp_path: Path) -> N
     outside = tmp_path / "outside.txt"
     outside.write_text("secret", encoding="utf-8")
     link = job_root / "escape.txt"
-    try:
-        link.symlink_to(outside)
-    except OSError as exc:
-        pytest.skip(f"symlink creation unavailable on this Windows environment: {exc}")
-    _require_real_symlink(link)
+    _make_symlink(link, outside)
     job = JobRequest(job_id=job_id, task_type=TaskType.PREDICT, status=JobStatus.COMPLETED)
     job.output.output_dir = str(output_root / "predict")
     job.output.artifacts = [str(link)]

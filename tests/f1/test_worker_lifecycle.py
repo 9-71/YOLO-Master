@@ -472,6 +472,144 @@ def test_api_cancel_ack_precedes_confirmed_tree_exit(manager, tmp_path):
         assert not any(live(pid) for pid in owned)
 
 
+def test_api_lifespan_shutdown_stops_manager_worker_and_supervisors(manager, tmp_path):
+    """Leaving the API lifespan closes its manager and all manager-owned background execution."""
+    app = create_app()
+    app.dependency_overrides[get_jobs_manager] = lambda: manager
+    with TestClient(app) as client:
+        payload = JobRequest(
+            job_id="api-shutdown",
+            task_type=TaskType.PREDICT,
+            params={"device": "cpu"},
+            output={"output_dir": str(tmp_path)},
+        ).model_dump(mode="json")
+        assert client.post("/api/v1/jobs", json=payload).status_code == 201
+        owned = pids(tmp_path, "api-shutdown")
+        assert manager.get_job("api-shutdown").status == JobStatus.RUNNING
+
+    stopped = manager.get_job("api-shutdown")
+    assert manager._closing is True
+    assert stopped.status == JobStatus.FAILED
+    assert stopped.error.code == "SERVICE_SHUTDOWN"
+    assert manager._workers == {}
+    assert manager._supervisors and all(not thread.is_alive() for thread in manager._supervisors)
+    assert not any(live(pid) for pid in owned)
+
+
+def test_cancel_while_running_wins_over_late_worker_completion(monkeypatch, tmp_path):
+    """A result arriving after an accepted cancellation cannot replace CANCELLED."""
+    import f1.jobs_manager as jobs_manager_module
+
+    manager = JobsManager(output_root=tmp_path, model_roots=[tmp_path], data_roots=[tmp_path])
+    job_id = "cancel-late-result"
+    job = JobRequest(job_id=job_id, task_type=TaskType.PREDICT, output={"output_dir": str(tmp_path)})
+    manager.jobs[job_id] = job
+    manager.job_logs[job_id] = []
+    completed_result = job.model_copy(deep=True)
+    completed_result.status = JobStatus.COMPLETED
+
+    worker_started = threading.Event()
+    result_waiting = threading.Event()
+    release_late_result = threading.Event()
+
+    class FakeProcess:
+        @staticmethod
+        def is_alive():
+            return True
+
+    class FakeWorker:
+        def __init__(self, *_args, **_kwargs):
+            self.process = FakeProcess()
+
+        def start(self):
+            worker_started.set()
+
+        def receive(self):
+            result_waiting.set()
+            assert release_late_result.wait(timeout=5)
+            return "result", completed_result.model_dump(mode="json")
+
+        def stop(self, _grace):
+            return None
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr(jobs_manager_module, "ManagedWorker", FakeWorker)
+    execution = threading.Thread(target=manager._execute_job, args=(job_id,), daemon=True)
+    execution.start()
+    assert worker_started.wait(timeout=5)
+    assert result_waiting.wait(timeout=5)
+
+    assert "Cancellation requested" in manager.cancel_job(job_id)
+    release_late_result.set()
+    execution.join(timeout=5)
+
+    assert not execution.is_alive()
+    assert manager.jobs[job_id].status == JobStatus.CANCELLED
+    assert manager.jobs[job_id].error.code == "USER_CANCELLED"
+    assert manager.jobs[job_id].runtime_tracking.cancel_requested is True
+    manager.shutdown()
+
+
+def test_timeout_wins_without_consuming_late_worker_completion(monkeypatch, tmp_path):
+    """Once the deadline expires, a completion waiting behind it cannot replace TIMEOUT."""
+    import f1.jobs_manager as jobs_manager_module
+
+    manager = JobsManager(output_root=tmp_path, model_roots=[tmp_path], data_roots=[tmp_path])
+    job_id = "timeout-late-result"
+    job = JobRequest(
+        job_id=job_id,
+        task_type=TaskType.PREDICT,
+        output={"output_dir": str(tmp_path)},
+        runtime_tracking={"timeout_seconds": 1},
+    )
+    manager.jobs[job_id] = job
+    manager.job_logs[job_id] = []
+    completed_result = job.model_copy(deep=True)
+    completed_result.status = JobStatus.COMPLETED
+    receive_calls = 0
+
+    class FakeProcess:
+        @staticmethod
+        def is_alive():
+            return True
+
+    class FakeWorker:
+        def __init__(self, *_args, **_kwargs):
+            self.process = FakeProcess()
+
+        def start(self):
+            return None
+
+        def receive(self):
+            nonlocal receive_calls
+            receive_calls += 1
+            if receive_calls == 1:
+                return None, None
+            return "result", completed_result.model_dump(mode="json")
+
+        def stop(self, _grace):
+            return None
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr(jobs_manager_module, "ManagedWorker", FakeWorker)
+    monkeypatch.setattr(
+        jobs_manager_module,
+        "time",
+        SimpleNamespace(monotonic=lambda: 2.0 if receive_calls else 0.0, sleep=time.sleep),
+    )
+
+    manager._execute_job(job_id)
+
+    assert receive_calls == 1
+    assert manager.jobs[job_id].status == JobStatus.FAILED
+    assert manager.jobs[job_id].error.code == "TIMEOUT"
+    manager.shutdown()
+
+
 @pytest.mark.parametrize("natural_status", [JobStatus.COMPLETED, JobStatus.FAILED])
 def test_natural_terminal_publication_wins_cancel_api_race(monkeypatch, tmp_path, natural_status):
     """A cancel request with a stale RUNNING read cannot overwrite a published terminal result."""
@@ -613,6 +751,131 @@ def test_old_persistence_without_execution_timestamps_loads(tmp_path):
     assert restored.status == JobStatus.COMPLETED
     assert restored.metadata.started_at is None
     assert restored.metadata.completed_at is None
+
+
+def test_shutdown_preserves_terminal_job_and_never_launches_queued_job(monkeypatch, tmp_path):
+    """Shutdown stops the active slot, drains queued IDs inertly, and leaves prior terminal state untouched."""
+    import f1.jobs_manager as jobs_manager_module
+
+    manager = JobsManager(
+        output_root=tmp_path,
+        model_roots=[tmp_path],
+        data_roots=[tmp_path],
+        cpu_concurrency=1,
+        gpu_concurrency=1,
+    )
+    active_started = threading.Event()
+    allow_active_poll = threading.Event()
+    queued_failed = threading.Event()
+    constructed: list[str] = []
+
+    class FakeProcess:
+        @staticmethod
+        def is_alive():
+            return True
+
+    class FakeWorker:
+        def __init__(self, job, *_args, **_kwargs):
+            constructed.append(job.job_id)
+            self.process = FakeProcess()
+
+        def start(self):
+            active_started.set()
+
+        def receive(self):
+            assert allow_active_poll.wait(timeout=5)
+            return None, None
+
+        def stop(self, _grace):
+            return None
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr(jobs_manager_module, "ManagedWorker", FakeWorker)
+    original_fail_job = manager._fail_job
+
+    def observe_queued_shutdown(job, code, message):
+        original_fail_job(job, code, message)
+        if job.job_id == "queued":
+            queued_failed.set()
+
+    monkeypatch.setattr(manager, "_fail_job", observe_queued_shutdown)
+    manager.submit_job_request(
+        JobRequest(
+            job_id="active",
+            task_type=TaskType.PREDICT,
+            params={"device": "cpu"},
+            output={"output_dir": str(tmp_path)},
+        )
+    )
+    assert active_started.wait(timeout=5)
+    manager.submit_job_request(
+        JobRequest(
+            job_id="queued",
+            task_type=TaskType.PREDICT,
+            params={"device": "cpu"},
+            output={"output_dir": str(tmp_path)},
+        )
+    )
+    terminal_job = JobRequest(job_id="existing-terminal", task_type=TaskType.PREDICT, status=JobStatus.COMPLETED)
+    manager.jobs[terminal_job.job_id] = terminal_job
+    manager.job_logs[terminal_job.job_id] = ["already complete"]
+    terminal_snapshot = terminal_job.model_dump(mode="json")
+
+    shutdown = threading.Thread(target=manager.shutdown, daemon=True)
+    shutdown.start()
+    assert queued_failed.wait(timeout=5)
+    assert manager.jobs["queued"].status == JobStatus.FAILED
+    assert manager.jobs["queued"].error.code == "SERVICE_SHUTDOWN"
+    assert manager.jobs["queued"].metadata.started_at is None
+    allow_active_poll.set()
+    shutdown.join(timeout=5)
+
+    assert not shutdown.is_alive()
+    assert constructed == ["active"]
+    assert manager.jobs["active"].status == JobStatus.FAILED
+    assert manager.jobs["active"].error.code == "SERVICE_SHUTDOWN"
+    assert manager.jobs["existing-terminal"].model_dump(mode="json") == terminal_snapshot
+    assert manager.job_logs["existing-terminal"] == ["already complete"]
+    assert manager._workers == {}
+    assert all(not thread.is_alive() for thread in manager._supervisors)
+
+
+def test_terminal_jobs_reload_without_being_reexecuted(tmp_path):
+    """Persisted terminal jobs remain terminal and are never added back to execution queues."""
+    jobs = {
+        "completed": JobRequest(job_id="completed", task_type=TaskType.PREDICT, status=JobStatus.COMPLETED).model_dump(
+            mode="json"
+        ),
+        "failed": JobRequest(
+            job_id="failed",
+            task_type=TaskType.PREDICT,
+            status=JobStatus.FAILED,
+            error=ErrorInfo(code="EXPECTED_FAILURE", message="already failed"),
+        ).model_dump(mode="json"),
+        "cancelled": JobRequest(
+            job_id="cancelled",
+            task_type=TaskType.PREDICT,
+            status=JobStatus.CANCELLED,
+            error=ErrorInfo(code="USER_CANCELLED", message="already cancelled"),
+        ).model_dump(mode="json"),
+    }
+    state_path = tmp_path / "terminal-state.json"
+    state_path.write_text(json.dumps({"jobs": jobs, "job_logs": {}}))
+    restored = JobsManager(storage_path=str(state_path), output_root=tmp_path)
+    executed: list[str] = []
+    restored._execute_job = executed.append
+
+    with restored.lock:
+        restored._start_supervisors()
+    restored.shutdown()
+
+    assert executed == []
+    assert restored._workers == {}
+    assert restored.jobs["completed"].status == JobStatus.COMPLETED
+    assert restored.jobs["failed"].error.code == "EXPECTED_FAILURE"
+    assert restored.jobs["cancelled"].error.code == "USER_CANCELLED"
 
 
 @pytest.mark.parametrize("task", ["train", "val", "predict", "export"])

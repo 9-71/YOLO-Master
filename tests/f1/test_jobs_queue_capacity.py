@@ -105,6 +105,44 @@ def test_concurrent_submissions_share_one_capacity_check(tmp_path) -> None:
     assert set(manager.jobs) == set(accepted)
 
 
+def test_repeated_supervisor_start_is_idempotent_and_consumes_job_once(tmp_path) -> None:
+    """Starting an initialized manager again neither adds workers nor double-dispatches a job."""
+    manager = JobsManager(
+        output_root=tmp_path,
+        cpu_concurrency=1,
+        gpu_concurrency=1,
+        max_pending_jobs=1,
+    )
+    execution_started = threading.Event()
+    release_execution = threading.Event()
+    execution_finished = threading.Event()
+    consumed: list[str] = []
+
+    def execute(job_id: str) -> None:
+        consumed.append(job_id)
+        execution_started.set()
+        assert release_execution.wait(timeout=5)
+        execution_finished.set()
+
+    manager._execute_job = execute
+    try:
+        manager.submit_job_request(_request("only-once", tmp_path))
+        assert execution_started.wait(timeout=5)
+        original_supervisors = tuple(manager._supervisors)
+
+        with manager.lock:
+            manager._start_supervisors()
+
+        assert tuple(manager._supervisors) == original_supervisors
+        assert len(manager._supervisors) == 2
+        release_execution.set()
+        assert execution_finished.wait(timeout=5)
+        assert consumed == ["only-once"]
+    finally:
+        release_execution.set()
+        manager.shutdown()
+
+
 def test_max_pending_jobs_configuration_requires_positive_integer(monkeypatch) -> None:
     """The environment setting is honored and rejects non-positive values."""
     monkeypatch.setenv("F1_MAX_PENDING_JOBS", "2")

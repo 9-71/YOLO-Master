@@ -26,11 +26,10 @@ Security:
       persistent localized status banner
 
 P2 decoupling:
-    The backend core (``JobsManager`` and its thread-safe job/log/artifact helpers)
-    lives in :mod:`f1.jobs_manager` so it can be imported and executed headlessly
-    by the FastAPI engine (``api.v1.jobs``) without any Gradio UI state. This module
-    re-exports those public names for backward compatibility with ``app.py``,
-    ``demo_jobs_tab.py`` and the F1 test suites.
+    The Gradio layer consumes :class:`StudioJobsApiClient`; the FastAPI service is
+    the sole owner of ``JobsManager``, workers, lifecycle state and persistence.
+    The historical ``JobsManager`` export remains available lazily for import
+    compatibility, but the backend type is not bound or used by the UI path.
 """
 
 from __future__ import annotations
@@ -40,6 +39,7 @@ import subprocess
 import sys
 from dataclasses import dataclass, field
 from datetime import datetime
+from importlib import import_module
 from pathlib import Path
 from typing import Any
 
@@ -48,13 +48,16 @@ import gradio as gr
 from f1.jobs_manager import (
     ACTIVE_STATUSES,
     IMAGE_EXTENSIONS,
-    JobsManager,
     _compute_duration,
     get_job_image_artifacts,
     is_terminal_status,
 )
 from f1.ui.i18n import DEFAULT_LANGUAGE, get_columns, get_text
-from f1.ui.studio_jobs_client import ArtifactMetadata, StudioJobsApiError
+from f1.ui.studio_jobs_client import ArtifactMetadata, StudioJobsApiClient, StudioJobsApiError
+
+# Declared for static export validation; resolved only for legacy callers by
+# ``__getattr__`` below. The Gradio runtime itself never binds this backend type.
+JobsManager: Any
 
 __all__ = [
     "ACTIVE_STATUSES",
@@ -81,6 +84,13 @@ POLL_FAST_SECONDS = 1.0
 POLL_SLOW_SECONDS = 30.0
 #: Shared queue for every callback that writes the Jobs monitoring panels.
 POLL_CONCURRENCY_ID = "gradio-jobs-status-sync"
+
+
+def __getattr__(name: str) -> Any:
+    """Resolve the historical backend export without coupling the UI runtime to it."""
+    if name == "JobsManager":
+        return import_module("f1.jobs_manager").JobsManager
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 def platform_error_diagnostics(lang: str, error: StudioJobsApiError, api_url: str = "") -> str:
@@ -251,7 +261,7 @@ def format_created_at(created_at: str | None) -> str:
         return str(created_at)
 
 
-def recent_jobs_rows(jobs_manager: JobsManager, limit: int = 20) -> list[list[str]]:
+def recent_jobs_rows(jobs_manager: StudioJobsApiClient, limit: int = 20) -> list[list[str]]:
     """Format the recent-jobs listing into Recent Jobs dataframe rows.
 
     Each row is ``[job_id, task_type, status, local_time]``, newest first, with
@@ -261,16 +271,14 @@ def recent_jobs_rows(jobs_manager: JobsManager, limit: int = 20) -> list[list[st
     consistent with every polling refresh.
 
     Args:
-        jobs_manager: JobsManager instance (or duck-typed equivalent).
+        jobs_manager: Studio Jobs API client (or duck-typed equivalent).
         limit: Maximum number of recent jobs to include.
 
     Returns:
         list[list[str]]: Formatted rows for the Recent Jobs ``gr.Dataframe``.
 
     Example:
-        >>> manager = JobsManager()
-        >>> recent_jobs_rows(manager)
-        []
+        The client response is formatted without changing backend values.
     """
     return [
         [j["job_id"], j["task_type"], j["status"], format_created_at(j["created_at"])]
@@ -356,14 +364,14 @@ class PollState:
 
 
 def compute_poll_state(
-    jobs_manager: JobsManager,
+    jobs_manager: StudioJobsApiClient,
     job_id: str,
     lang: str = DEFAULT_LANGUAGE,
     raw_status: dict[str, Any] | None = None,
 ) -> PollState:
     """Compute the complete polling snapshot for one job in the given language.
 
-    Pure presentation logic over the JobsManager backend API: the backend responses
+    Pure presentation logic over the Studio Jobs API client: backend responses
     are never modified, so backend-level test assertions remain valid. The Status
     Monitor JSON payload carries canonical backend keys/values only — localized
     display text is confined to banners, toasts and column headers. Recent-jobs
@@ -373,7 +381,7 @@ def compute_poll_state(
     :func:`recent_jobs_rows`, so polling never clears the Recent Jobs table.
 
     Args:
-        jobs_manager: JobsManager instance (or duck-typed equivalent for tests).
+        jobs_manager: Studio Jobs API client (or duck-typed equivalent for tests).
         job_id: Selected job identifier (may be empty).
         lang: ISO language code passed to i18n lookups.
         raw_status: Optional status already fetched by the polling callback. This
@@ -384,12 +392,7 @@ def compute_poll_state(
         jobs, and the keep_polling flag used to deactivate high-frequency polling.
 
     Example:
-        >>> manager = JobsManager()
-        >>> state = compute_poll_state(manager, "", "en")
-        >>> state.keep_polling
-        False
-        >>> state.status
-        {'status': 'NO_SELECTION'}
+        An empty job id produces the idle ``NO_SELECTION`` snapshot.
     """
     if not job_id:
         # Idle state: there is no selected job to monitor, but the Recent Jobs
@@ -551,11 +554,11 @@ def jobs_tab_language_updates(lang_value: str) -> tuple[Any, ...]:
     )
 
 
-def create_jobs_tab(jobs_manager: JobsManager, lang: str = DEFAULT_LANGUAGE) -> gr.Blocks:
+def create_jobs_tab(jobs_manager: StudioJobsApiClient, lang: str = DEFAULT_LANGUAGE) -> gr.Blocks:
     """Create the Jobs Tab UI with adaptive polling, security alerts and i18n.
 
     Args:
-        jobs_manager: Application-level JobsManager singleton shared across tabs.
+        jobs_manager: Application-level Studio Jobs API client shared across tabs.
         lang: Initial UI language ("en" or "zh"); the host app (app.py) owns the
             language selector and relabels this zone via the language broadcast.
 

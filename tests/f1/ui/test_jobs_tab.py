@@ -39,12 +39,6 @@ from f1.ui.jobs_tab import (
 )
 
 
-@pytest.fixture
-def jobs_manager():
-    """Create JobsManager instance for testing."""
-    return JobsManager()
-
-
 def _wired_fn(tab: gr.Blocks, component: gr.Component, event: str) -> Callable[..., Any]:
     """Resolve the live callable Gradio registered for ``(component, event)``."""
     return next(bf.fn for bf in tab.fns.values() if bf.fn and (component._id, event) in bf.targets)
@@ -65,9 +59,25 @@ def sample_job_params():
 
 
 def _stub_execute(job):
-    """Dispatcher stub marking a job COMPLETED without any engine work."""
-    job.status = JobStatus.COMPLETED
-    return job
+    """Run validation/FSM deterministically while blocking all engine work."""
+    from f1.dispatcher import JobDispatcherStateMachine
+    from f1.handlers.registry import TaskHandlerRegistry
+
+    handler = TaskHandlerRegistry.get(job.task_type.value)
+    fake_result = {"success": True, "artifacts": [], "metadata": {}, "error": None}
+    with patch.object(handler, "execute", autospec=True, return_value=fake_result):
+        return JobDispatcherStateMachine().execute(job, managed=True)
+
+
+@pytest.fixture
+def jobs_manager():
+    """Create an isolated manager whose workers cannot run real engines."""
+    manager = JobsManager(stop_grace_seconds=0)
+    manager._worker_executor = _stub_execute
+    try:
+        yield manager
+    finally:
+        manager.shutdown()
 
 
 class TestJobsManager:

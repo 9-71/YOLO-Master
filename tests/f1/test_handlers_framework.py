@@ -9,6 +9,7 @@ This test suite validates:
 
 from __future__ import annotations
 
+import errno
 import re
 import sys
 from pathlib import Path
@@ -21,6 +22,36 @@ project_root = Path(__file__).parent.parent.parent
 sys.path.insert(0, str(project_root))
 
 from f1.handlers import BaseTaskHandler, TaskHandlerRegistry
+
+
+def _make_concrete_handler() -> BaseTaskHandler:
+    """Return the smallest concrete handler needed to exercise base helpers."""
+
+    class ConcreteHandler(BaseTaskHandler):
+        def validate_params(self, params, security_constraints):
+            return True, None
+
+        def execute(self, job_id, params, output_dir):
+            return {"success": True, "artifacts": []}
+
+    return ConcreteHandler()
+
+
+def _make_directory_symlink(link: Path, target: Path) -> None:
+    """Create one real directory symlink or skip only the current test case."""
+    try:
+        link.symlink_to(target, target_is_directory=True)
+    except NotImplementedError as exc:
+        pytest.skip(f"directory symlink creation unavailable on this platform: {exc}")
+    except OSError as exc:
+        unavailable_errnos = {errno.EACCES, errno.ENOSYS, errno.EPERM}
+        if hasattr(errno, "EOPNOTSUPP"):
+            unavailable_errnos.add(errno.EOPNOTSUPP)
+        if exc.errno in unavailable_errnos or getattr(exc, "winerror", None) in {50, 1314}:
+            pytest.skip(f"directory symlink creation unavailable on this platform: {exc}")
+        raise
+    if not link.is_symlink():
+        pytest.skip("symlink creation reported success but the link did not materialize (link.is_symlink() is False)")
 
 
 class TestBaseTaskHandler:
@@ -45,15 +76,7 @@ class TestBaseTaskHandler:
 
     def test_path_safety_validation_baseline(self):
         """Test _is_path_safe helper method with various path scenarios."""
-
-        class ConcreteHandler(BaseTaskHandler):
-            def validate_params(self, params, security_constraints):
-                return True, None
-
-            def execute(self, job_id, params, output_dir):
-                return {"success": True, "artifacts": []}
-
-        handler = ConcreteHandler()
+        handler = _make_concrete_handler()
 
         # Case 1: Valid path within allowed root
         assert handler._is_path_safe("ultralytics/assets/bus.jpg", [".", "runs"]) is True
@@ -72,19 +95,82 @@ class TestBaseTaskHandler:
         assert handler._is_path_safe("./././ultralytics/../ultralytics/assets", ["."]) is True
 
 
+class TestPathSafetyLiteralWhitelist:
+    """Literal-root containment ablations, grouped by security mechanism."""
+
+    @pytest.mark.parametrize(
+        ("case", "expected"),
+        [
+            pytest.param("allowed_root", True, id="positive-root"),
+            pytest.param("allowed_descendant", True, id="positive-descendant"),
+            pytest.param("normalized_descendant", True, id="positive-normalized-descendant"),
+            pytest.param("normalized_escape", False, id="escape-normalized-dot-dot"),
+            pytest.param("sibling_prefix", False, id="escape-sibling-prefix"),
+        ],
+    )
+    def test_literal_root_containment_matrix(self, tmp_path: Path, case: str, expected: bool) -> None:
+        """Normalization must preserve valid descendants without enabling escapes."""
+        handler = _make_concrete_handler()
+        allowed = tmp_path / "runs"
+        (allowed / "nested").mkdir(parents=True)
+        sibling = tmp_path / "runs_evil"
+        sibling.mkdir()
+        targets = {
+            "allowed_root": allowed,
+            "allowed_descendant": allowed / "nested" / "result.pt",
+            "normalized_descendant": allowed / "nested" / ".." / "result.pt",
+            "normalized_escape": allowed / "nested" / ".." / ".." / "outside.pt",
+            "sibling_prefix": sibling / "result.pt",
+        }
+
+        assert handler._is_path_safe(str(targets[case]), [str(allowed)]) is expected
+
+    @pytest.mark.parametrize(
+        ("case", "expected"),
+        [
+            pytest.param("direct_escape", False, id="escape-direct-symlink"),
+            pytest.param("nested_escape", False, id="escape-nested-symlink"),
+            pytest.param("internal_target", True, id="positive-internal-symlink"),
+            pytest.param("broken_internal_target", False, id="fail-closed-broken-symlink"),
+        ],
+    )
+    def test_literal_root_symlink_matrix(self, tmp_path: Path, case: str, expected: bool) -> None:
+        """Resolve symlink chains, allowing contained targets and rejecting uncertainty."""
+        handler = _make_concrete_handler()
+        allowed = tmp_path / "runs"
+        internal = allowed / "internal"
+        outside = tmp_path / "outside"
+        internal.mkdir(parents=True)
+        outside.mkdir()
+
+        if case == "direct_escape":
+            link = allowed / "link"
+            _make_directory_symlink(link, outside)
+            target = link / "result.pt"
+        elif case == "nested_escape":
+            first = allowed / "first"
+            second = internal / "second"
+            _make_directory_symlink(first, internal)
+            _make_directory_symlink(second, outside)
+            target = first / "second" / "result.pt"
+        elif case == "internal_target":
+            link = allowed / "link"
+            _make_directory_symlink(link, internal)
+            target = link / "result.pt"
+        else:
+            link = allowed / "broken"
+            _make_directory_symlink(link, allowed / "missing")
+            target = link / "result.pt"
+
+        assert handler._is_path_safe(str(target), [str(allowed)]) is expected
+
+
 class TestPathSafetyRegexWhitelist:
     """Regex-enhanced path whitelisting unit tests (P1)."""
 
     @staticmethod
     def _make_handler() -> BaseTaskHandler:
-        class ConcreteHandler(BaseTaskHandler):
-            def validate_params(self, params, security_constraints):
-                return True, None
-
-            def execute(self, job_id, params, output_dir):
-                return {"success": True, "artifacts": []}
-
-        return ConcreteHandler()
+        return _make_concrete_handler()
 
     @staticmethod
     def _posix_root(path: Path) -> str:
@@ -150,17 +236,8 @@ class TestPathSafetyRegexWhitelist:
         """A symlink escape resolves outside the pattern's boundary and is rejected."""
         handler = self._make_handler()
         root = self._posix_root(tmp_path)
-        try:
-            link = tmp_path / "link_out"
-            link.symlink_to(tmp_path.parent, target_is_directory=True)
-        except OSError:
-            pytest.skip("symlink creation not permitted on this platform")
-        if not link.is_symlink():
-            pytest.skip(
-                "symlink creation reported success but the link did not materialize "
-                "(link.is_symlink() is False); the current platform/execution "
-                "environment does not create real symlinks"
-            )
+        link = tmp_path / "link_out"
+        _make_directory_symlink(link, tmp_path.parent)
         # Literal path matches "^{root}/.*"; the resolved path (outside tmp_path)
         # does not -> rejected.
         target = link / "secret.pt"

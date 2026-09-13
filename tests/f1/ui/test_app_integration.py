@@ -783,7 +783,15 @@ class TestAppIntegration:
         # Exactly the two Jobs Tab timers (fast lifecycle + slow sync), no strays
         assert sum(1 for c in cfg["components"] if c.get("type") == "timer") == 2
 
-    def test_build_app_launches_headless(self, tmp_path):
+    def test_build_app_launches_headless(self, tmp_path, monkeypatch):
+        # Gradio's launch() self-checks {local_api_url}startup-events via httpx.get(),
+        # which honours *_PROXY by default (trust_env=True). On hosts where a local
+        # HTTP/SOCKS proxy is injected, that proxy also intercepts the 127.0.0.1
+        # loopback request and answers 502 ("upstream connect failed"), failing the
+        # launch. Scope loopback out of the proxy for this test only.
+        monkeypatch.setenv("NO_PROXY", "127.0.0.1,localhost")
+        monkeypatch.setenv("no_proxy", "127.0.0.1,localhost")
+
         from app import YOLO_Master_WebUI
 
         ui = YOLO_Master_WebUI(str(tmp_path))

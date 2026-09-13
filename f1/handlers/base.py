@@ -13,8 +13,9 @@ from __future__ import annotations
 
 import re
 from abc import ABC, abstractmethod
-from pathlib import Path
 from typing import Any
+
+from core.path_safety import resolve_path_allow_missing
 
 
 class CooperativeCancellationError(Exception):
@@ -206,14 +207,14 @@ class BaseTaskHandler(ABC):
         if not dir_entries and not pattern_entries:
             return False
         try:
-            resolved = Path(target_path).resolve()
-        except (ValueError, OSError):
+            resolved = resolve_path_allow_missing(target_path)
+        except (OSError, RuntimeError, ValueError):
             return False
         # 1) Directory containment (unchanged legacy semantics)
         for root in dir_entries:
             try:
-                root_resolved = Path(root).resolve()
-            except (ValueError, OSError):
+                root_resolved = resolve_path_allow_missing(root)
+            except (OSError, RuntimeError, ValueError):
                 continue  # unusable entry contributes nothing (fail-closed)
             if resolved == root_resolved or root_resolved in resolved.parents:
                 return True
