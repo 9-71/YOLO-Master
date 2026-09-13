@@ -4,16 +4,17 @@ This module owns the ``JobsManager`` backend plus the thread-safe job, log and
 artifact helpers it depends on. It is intentionally free of any Gradio (or
 other UI-framework) import: P2 (Standalone FastAPI Engine & Decoupled
 Architecture) requires the job engine to be importable and executable
-headlessly, so the FastAPI layer (``api.v1.jobs``) and the Gradio layer
-(``f1.ui.jobs_tab``) both consume this module instead of each other.
+headlessly. The FastAPI layer (``api.v1.jobs``) is its sole production owner;
+the Gradio layer reaches that owner through ``StudioJobsApiClient``.
 
 History: the code below originally lived in ``f1.ui.jobs_tab`` (P0/P1). P2
 relocated it here verbatim (plus the API-facing ``submit_job_request``,
 ``get_job`` and ``get_job_log_lines`` additions) so that importing the job
-engine never requires Gradio UI state; ``f1.ui.jobs_tab`` re-exports the public
-names for backward compatibility.
+engine never requires Gradio UI state. ``f1.ui.jobs_tab`` resolves the
+historical ``JobsManager`` name lazily only for import compatibility; its
+production UI path does not construct or own a manager.
 
-Security invariants (unchanged from the UI path):
+Security invariants (unchanged from the original direct-call implementation):
 
     - ``allow_shell=False`` and ``path_whitelisted=True`` are forced on every
       submission, regardless of the caller's payload (fail-closed).
@@ -346,9 +347,9 @@ class JobsManager:
         """Submit a fully-constructed ``JobRequest`` for background execution.
 
         This is the canonical headless submission API consumed by the FastAPI
-        engine (``POST /api/v1/jobs``). The UI path :meth:`submit_job` builds
-        its request and delegates here, so both surfaces share one execution
-        pipeline.
+        engine (``POST /api/v1/jobs``). The legacy direct-call compatibility
+        method :meth:`submit_job` builds its request and delegates here, so both
+        backend entry points share one execution pipeline.
 
         Server-side normalization (fail-closed, applied before registration):
 

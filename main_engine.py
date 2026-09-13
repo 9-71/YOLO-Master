@@ -28,8 +28,8 @@ base URL is ``http://localhost:8000``, making calls from the other spelling
 cross-origin.
 
 Configuration environment variables:
-    - ``F1_JOBS_STATE_PATH``: JobsManager persistence file (default
-      ``runs/jobs_state.json``, shared with the Gradio WebUI).
+    - ``F1_JOBS_STATE_PATH``: API-owned JobsManager persistence file (default
+      ``runs/jobs_state.json``); Gradio observes it only through the task API.
     - ``F1_CORS_ORIGINS``: comma-separated CORS allowlist overriding the local
       frontend development defaults.
     - ``F1_ENGINE_HOST`` / ``F1_ENGINE_PORT``: bind address for

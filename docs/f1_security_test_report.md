@@ -5,16 +5,16 @@
 | **Project Title** | YOLO-Master F1 Platform — Security Verification & Test Report |
 | **Version** | 1.0 |
 | **Author** | F1 Platform Security Engineering & Technical Writing |
-| **Date** | 2026-09-08 |
+| **Date** | 2026-09-13 |
 | **Target Scope** | F1 Task Dispatcher (`f1/dispatcher.py`) & Core Handlers (`f1/handlers/`), including the credential sanitizer (`core/security.py`) and strongly-typed job contract (`core/schema.py`) |
-| **Test Evidence** | `f1/test_security_sanitizer.py`, `f1/test_handlers_framework.py` |
-| **Overall Result** | **13 passed (6 sanitizer + 7 path-whitelist) · 1 skipped (Windows OS symlink privilege) · 0 failed** |
+| **Test Evidence** | `tests/f1/test_security_sanitizer.py`, `tests/f1/test_handlers_framework.py` |
+| **Overall Result** | **Security-directed test result (sum of the two targeted commands in §4): 21 passed (9 sanitizer + 12 path-whitelist) · 5 skipped (Windows OS symlink privilege) · 0 failed** — this is not the full project test suite |
 
 ---
 
 ## 1. Executive Summary & Security Objectives
 
-The F1 platform is a single-process task-dispatch layer that bridges the Studio orchestration surface to the Ultralytics YOLO engine. Because the dispatcher is the security boundary between untrusted job submissions and the host filesystem/runtime, its enforcement logic was treated as a first-class security control rather than a functional convenience.
+The F1 platform exposes a FastAPI task backend that is the sole owner of `JobsManager`, workers, lifecycle state, and persistence. Gradio reaches that owner through the stateless `StudioJobsApiClient`; it does not create a second lifecycle. Because the dispatcher is the security boundary between untrusted job submissions and the host filesystem/runtime, its enforcement logic was treated as a first-class security control rather than a functional convenience.
 
 This report verifies three **official security red lines** and confirms compliance against each:
 
@@ -39,19 +39,19 @@ This report verifies three **official security red lines** and confirms complian
 - `f1/dispatcher.py` — `JobDispatcherStateMachine` pre-execution security guard (`SEC_ERR_001`) and exception/log sanitization on the `FAILED` path.
 - `core/schema.py` — `SecurityConstraints` (fail-closed defaults) and `JobRequest.append_log` (sanitizing log interface).
 
-**Out of scope (future P2):** network-facing API authentication, role-based access control (RBAC), multi-tenant isolation, and cross-process dispatch hardening — documented in §5 Residual Risk.
+**Out of scope:** API authentication, role-based access control (RBAC), multi-tenant isolation, and cross-process dispatch hardening — documented in §5 Residual Risk.
 
 ### 2.2 Test Environment
 
 | Dimension | Value |
 | --- | --- |
-| **Runtime** | `Python 3.12.10 (Project Virtual Environment)` — `D:\Projects\YOLO-Master\.venv\Scripts\python.exe` |
+| **Runtime** | `Python 3.12.10 (Project Virtual Environment)` — `D:\Projects\YOLO-Master-Recovered\.venv\Scripts\python.exe` |
 | **Test harness** | `pytest 9.1.1`, `pluggy 1.6.0` |
 | **Platform** | `Windows (x86_64)` |
-| **pytest config** | `smoke/pytest.ini` (`rootdir = D:\Projects\YOLO-Master\smoke`) |
+| **pytest config** | Repository-root `pytest.ini` (`rootdir = D:\Projects\YOLO-Master-Recovered`) |
 | **Isolation technique** | In-memory single-process execution; `tmp_path` fixture for filesystem-bound cases; `monkeypatch.setitem` for registry injection; mock `BaseTaskHandler` subclasses with no real model inference |
 | **Mocked environment states** | `TaskHandlerRegistry._handlers` mutated via `monkeypatch`; secret-carrying handler raises a `RuntimeError` embedding a plaintext token to exercise the leak vector |
-| **Test data** | Ephemeral string fixtures only — no real credentials, no network, no GPU; every test runs offline and terminates in < 0.2 s |
+| **Test data** | Ephemeral string fixtures only — no real credentials, no network, no GPU; the selected tests run offline |
 
 ---
 
@@ -61,9 +61,9 @@ This report verifies three **official security red lines** and confirms complian
 
 | Requirement (red line) | Enforcement point | Test evidence |
 | --- | --- | --- |
-| Prohibit arbitrary shell execution | Dispatcher guard `Rule 1` + per-handler `allow_shell` check → `SEC_ERR_001` | `test_handlers_framework.py::TestEndToEndIntegration` (happy path uses `allow_shell: False`; violation path rejected) |
-| Strict path whitelisting | `SecurityConstraints.path_whitelisted` + `BaseTaskHandler._is_path_safe` | `test_handlers_framework.py::TestBaseTaskHandler::test_path_safety_validation_baseline`, `::TestPathSafetyRegexWhitelist` |
-| No credential leakage | `core.security.sanitize_log_text` / `sanitize_env_dict` + `JobRequest.append_log` | `test_security_sanitizer.py` (6 cases) |
+| Prohibit arbitrary shell execution | Dispatcher guard `Rule 1` + per-handler `allow_shell` check → `SEC_ERR_001` | `tests/f1/test_handlers_framework.py::TestEndToEndIntegration` (happy path uses `allow_shell: False`; violation path rejected) |
+| Strict path whitelisting | `SecurityConstraints.path_whitelisted` + `BaseTaskHandler._is_path_safe` | `tests/f1/test_handlers_framework.py::TestBaseTaskHandler::test_path_safety_validation_baseline`, `::TestPathSafetyLiteralWhitelist`, `::TestPathSafetyRegexWhitelist` |
+| No credential leakage | `core.security.sanitize_log_text` / `sanitize_env_dict` + `JobRequest.append_log` | `tests/f1/test_security_sanitizer.py` (9 cases) |
 
 ### 3.1 Path Traversal & Regex Whitelist
 
@@ -84,9 +84,9 @@ Implemented by `BaseTaskHandler._is_path_safe`, which partitions `allowed_roots`
 | Symlink escape | link → `tmp_path.parent`, target `link/secret.pt` vs `^{root}/.*\.pt$` | **DENY** | Returns `False` (resolved path leaves the pattern boundary) |
 | Malformed regex (fail-closed) | pattern `^[unclosed(` | **DENY, no crash** | Returns `False` without raising |
 
-**Verified results:** 7 passed, 1 skipped (`test_regex_symlink_escape_fails` — symlink creation requires elevated privilege on Windows and is conditionally skipped via `pytest.skip`); 9 unrelated cases deselected by the `-k` filter.
+**Verified results:** 12 passed, 5 skipped. The four literal-root symlink matrix cases and `test_regex_symlink_escape_fails` require symlink creation, which this Windows host denied; each is conditionally skipped via `pytest.skip`.
 
-> **Warning:** The symlink-escape case is **SKIPPED** on the current Windows host (not *failing*). Its logic is exercised on Linux/macOS CI where symlinks are creatable; if a future environment runs only on Windows, an administrator-gated run is recommended to close this residual verification gap.
+> **Warning:** Five symlink cases are **SKIPPED** on the current Windows host (not *failing*). Their logic can run on hosts where the test process may create symlinks.
 
 ### 3.2 Command & Shell Injection Prevention
 
@@ -106,7 +106,7 @@ Additionally, every concrete handler (`predict`, `train`, `val`, `export`, `diag
 | Happy path (direct param list) | `allow_shell: False`, valid path | Handler validates & executes without any OS shell |
 | Traversal via params | `model_path = "../../etc/passwd"` | Handler `validate_params` returns `(False, "... not in whitelist")` |
 
-The codebase contains **no** `subprocess.run(..., shell=True)`, `os.system`, `os.popen`, or string-concatenated shell command construction. Handlers delegate execution to the Ultralytics Python engine using direct parameter lists — shell-interpreted metacharacters (`;`, `|`, `&&`, `` ` ``, `$()`) have no interpreter to act on.
+The dispatcher and task handlers contain **no** `subprocess.run(..., shell=True)`, `os.system`, `os.popen`, or string-concatenated shell command construction. Handlers delegate execution to the Ultralytics Python engine using direct parameter lists — shell-interpreted metacharacters (`;`, `|`, `&&`, `` ` ``, `$()`) have no interpreter to act on.
 
 ### 3.3 Credential & Sensitive Variable Sanitization
 
@@ -128,7 +128,7 @@ Redaction behavior:
 
 ## 4. Execution Results & Coverage
 
-The full sanitizer suite was executed on 2026-09-08 under the project virtual environment (`python -m pytest`) and produced **6 passed in 0.19 s**. Below is the complete verification matrix for `f1/test_security_sanitizer.py`.
+The full sanitizer suite was executed on 2026-09-13 under the project virtual environment (`python -m pytest`) and produced **9 passed in 0.22 s**. Below is the complete verification matrix for `tests/f1/test_security_sanitizer.py`.
 
 | # | Test Case | Status | Key Assertions | Log / Output Snippet |
 | --- | --- | --- | --- | --- |
@@ -136,60 +136,35 @@ The full sanitizer suite was executed on 2026-09-08 under the project virtual en
 | 2 | `TestSanitizeEnvDictValues::test_sanitize_env_dict_values` | **PASS** | Secret-shaped values under innocent names (`MY_VAR`, `MY_OTHER_VAR`) redacted; `PLAIN_VAR` kept. | `MY_VAR="Bearer eyJhbGciOiJIUzI1NiIs…" → ***REDACTED***`; `MY_OTHER_VAR="sk-1234567890abcdef12345678" → ***REDACTED***` |
 | 3 | `TestSanitizeLogText::test_sanitize_log_text_patterns` | **PASS** | Multi-line text: Bearer token, `API_KEY=`, `AKIA` ID, `ghp_` and `hf_` tokens all masked; prefixes and ordinary lines preserved. | `Connecting with Bearer ***REDACTED***`; `Exporting API_KEY=***REDACTED***`; `DEBUG: epoch=1 loss=0.4231` (unchanged) |
 | 4 | `TestSanitizeLogText::test_sanitize_log_text_idempotent_and_empty` | **PASS** | Idempotency (`sanitize(once) == once`) and empty-input passthrough (`""` → `""`). | `token sk-secret998877665544332211 → ***REDACTED***`; re-run is a no-op |
-| 5 | `TestDispatcherExceptionLogSanitization::test_dispatcher_exception_log_sanitization` | **PASS** | End-to-end: secret-carrying handler → job `FAILED` with `EXEC_ERR_500`; secret absent from both `error_message` and joined `logs`; `***REDACTED***` present in both. | `✓ Dispatcher exception path fully sanitized: <REDACTED message>` |
-| 6 | `TestDispatcherExceptionLogSanitization::test_append_log_interface_sanitizes` | **PASS** | Canonical `job.append_log` redacts before storage; `len(job.logs)==1`; secret absent, placeholder present; no-failure job exposes empty `error_message`. | `uploading artifact with token ***REDACTED***` stored in `job.logs[0]` |
+| 5 | `TestKnownSecretConfigLiteralFilter::test_ambient_boolean_flag_does_not_redact_ordinary_log_literal` | **PASS** | Boolean/config literals from sensitive-named ambient flags do not over-redact ordinary metrics. | `epoch=1`, `ratio=0`, and `mode=True` remain readable. |
+| 6 | `TestKnownSecretConfigLiteralFilter::test_short_real_secret_is_still_redacted` | **PASS** | A short real secret under a sensitive key remains protected without redacting larger ordinary words. | Known secret value redacted; `alphabet` preserved. |
+| 7 | `TestKnownSecretConfigLiteralFilter::test_ordinary_credential_redaction_unaffected` | **PASS** | Token/password assignments and Bearer-shaped values remain redacted. | All three credential forms become `***REDACTED***`. |
+| 8 | `TestDispatcherExceptionLogSanitization::test_dispatcher_exception_log_sanitization` | **PASS** | End-to-end: secret-carrying handler → job `FAILED` with `EXEC_ERR_500`; secret absent from both `error_message` and joined `logs`; `***REDACTED***` present in both. | `✓ Dispatcher exception path fully sanitized: <REDACTED message>` |
+| 9 | `TestDispatcherExceptionLogSanitization::test_append_log_interface_sanitizes` | **PASS** | Canonical `job.append_log` redacts before storage; `len(job.logs)==1`; secret absent, placeholder present; no-failure job exposes empty `error_message`. | `uploading artifact with token ***REDACTED***` stored in `job.logs[0]` |
 
-**Session output (verbatim):**
+**Session command and output (2026-09-13):**
 
 ```text
-============================= test session starts =============================
-platform win32 -- Python 3.12.10, pytest-9.1.1, pluggy-1.6.0 -- D:\Projects\YOLO-Master\.venv\Scripts\python.exe
-cachedir: .pytest_cache
-rootdir: D:\Projects\YOLO-Master\smoke
-configfile: pytest.ini
-plugins: anyio-4.14.2, cov-7.1.0
-collecting ... collected 6 items
-
-test_security_sanitizer.py::TestSanitizeEnvDictKeys::test_sanitize_env_dict_keys PASSED [ 16%]
-test_security_sanitizer.py::TestSanitizeEnvDictValues::test_sanitize_env_dict_values PASSED [ 33%]
-test_security_sanitizer.py::TestSanitizeLogText::test_sanitize_log_text_patterns PASSED [ 50%]
-test_security_sanitizer.py::TestSanitizeLogText::test_sanitize_log_text_idempotent_and_empty PASSED [ 66%]
-test_security_sanitizer.py::TestDispatcherExceptionLogSanitization::test_dispatcher_exception_log_sanitization PASSED [ 83%]
-test_security_sanitizer.py::TestDispatcherExceptionLogSanitization::test_append_log_interface_sanitizes PASSED [100%]
-
-============================== 6 passed in 0.19s ==============================
+.\.venv\Scripts\python.exe -m pytest tests/f1/test_security_sanitizer.py -q -o addopts= -p no:cacheprovider --basetemp=runs/doc-security-sanitizer
+.........                                                                [100%]
+9 passed in 0.22s
 ```
 
-**Supplementary path-whitelist session (verbatim):**
+**Supplementary path-whitelist command and output (2026-09-13):**
 
 ```text
-============================= test session starts =============================
-platform win32 -- Python 3.12.10, pytest-9.1.1, pluggy-1.6.0 -- D:\Projects\YOLO-Master\.venv\Scripts\python.exe
-cachedir: .pytest_cache
-rootdir: D:\Projects\YOLO-Master\smoke
-configfile: pytest.ini
-plugins: anyio-4.14.2, cov-7.1.0
-collecting ... collected 17 items / 9 deselected / 8 selected
-
-test_handlers_framework.py::TestBaseTaskHandler::test_path_safety_validation_baseline PASSED [ 12%]
-test_handlers_framework.py::TestPathSafetyRegexWhitelist::test_regex_pattern_match_succeeds PASSED [ 25%]
-test_handlers_framework.py::TestPathSafetyRegexWhitelist::test_regex_pattern_resolving_outside_allowed_boundaries_fails PASSED [ 37%]
-test_handlers_framework.py::TestPathSafetyRegexWhitelist::test_regex_substring_partial_match_bypass_rejected PASSED [ 50%]
-test_handlers_framework.py::TestPathSafetyRegexWhitelist::test_regex_entry_detected_inside_allowed_paths PASSED [ 62%]
-test_handlers_framework.py::TestPathSafetyRegexWhitelist::test_malformed_regex_fails_closed_without_crash PASSED [ 75%]
-test_handlers_framework.py::TestPathSafetyRegexWhitelist::test_empty_whitelist_and_patterns_reject_all PASSED [ 87%]
-test_handlers_framework.py::TestPathSafetyRegexWhitelist::test_regex_symlink_escape_fails SKIPPED [100%]
-
-================= 7 passed, 1 skipped, 9 deselected in 0.06s ==================
+.\.venv\Scripts\python.exe -m pytest tests/f1/test_handlers_framework.py::TestBaseTaskHandler::test_path_safety_validation_baseline tests/f1/test_handlers_framework.py::TestPathSafetyLiteralWhitelist tests/f1/test_handlers_framework.py::TestPathSafetyRegexWhitelist -q -o addopts= -p no:cacheprovider --basetemp=runs/doc-path-whitelist
+......ssss......s                                                        [100%]
+12 passed, 5 skipped in 0.19s
 ```
 
 ---
 
 ## 5. Residual Risk & Mitigation Roadmap
 
-### 5.1 Current Boundary (P1)
+### 5.1 Current Boundary
 
-The F1 dispatcher operates as a **single-process, local-only** component. Its current protections are strong for this threat model:
+The FastAPI service is the sole lifecycle owner and holds one process-wide `JobsManager`; Gradio uses `StudioJobsApiClient` and owns no workers, lifecycle registry, or persistence. Jobs execute in managed worker processes under the service owner's supervision. The current protections are strong for this threat model:
 
 - No OS shell is ever instantiated; no `subprocess`, `os.system`, or `os.popen` call sites exist.
 - Path whitelisting is fail-closed, resolves symlinks/`..` before decision, and regex patterns must fully consume the resolved path (no prefix/substring bypass).
@@ -199,10 +174,10 @@ The F1 dispatcher operates as a **single-process, local-only** component. Its cu
 
 | Risk | Severity | Notes |
 | --- | --- | --- |
-| Symlink-escape test skipped on Windows | Low | `test_regex_symlink_escape_fails` skips when symlink creation is non-permitted. Logic is sound but not executed on the current host; verify on Linux/macOS CI or via an elevated run. |
-| Regex whitelist is author-authored | Medium | Patterns are supplied by the caller (via `allowed_paths`/`allowed_path_patterns`); a mis-specified overly-broad pattern (e.g. `^/.*$`) would whitelist everything. No central pattern-policy validation exists yet. |
-| Single-process trust model | Medium | All handlers run in-process with full ambient privileges; there is no per-job OS-level sandbox. Acceptable for local dispatch, not for multi-tenant or remote untrusted submission. |
-| No authentication / authorization | High (P2) | The dispatcher has no caller authentication and no RBAC; any in-process caller can submit jobs. |
+| Symlink tests skipped on Windows | Low | Five literal/regex symlink cases skip when symlink creation is non-permitted. Their assertions were not executed on this host. |
+| Regex whitelist is policy-authored | Medium | Trusted backend or embedding policy can supply patterns to handlers; the Job API discards client path lists/patterns and injects server-configured roots. An overly broad trusted pattern could still whitelist too much. |
+| Worker privilege model | Medium | Managed worker processes retain ambient host privileges; there is no per-job OS-level sandbox. Acceptable for trusted local operation, not for multi-tenant or remote untrusted submission. |
+| No authentication / authorization | High | The task API has no caller authentication and no RBAC; any caller able to reach it can submit jobs. |
 | Redaction is regex heuristics | Low | `core/security.py` is pattern-based, not a parser; novel secret formats (e.g. a new vendor token shape) are not covered until a pattern is added. |
 
 ### 5.3 Hardening Roadmap (P2)

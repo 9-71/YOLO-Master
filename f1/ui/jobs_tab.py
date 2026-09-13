@@ -4,13 +4,14 @@ This module provides a dedicated Jobs Tab UI component for submitting tasks, mon
 real-time lifecycle states, viewing live logs, and downloading generated artifacts.
 
 Architecture:
-    UI Components → Job Submission → JobDispatcherStateMachine.execute()
-                 ↓
-            Adaptive Polling → 1s lifecycle timer while PENDING/RUNNING
-                 ↓            → 30s background sync (recent jobs, artifacts)
-            Log Console → stdout/stderr streaming
-                 ↓
-            Artifacts → File explorer with download buttons
+    UI Components → StudioJobsApiClient → FastAPI task API
+                                             ↓
+                                    API-owned JobsManager
+                                             ↓
+       Adaptive Polling → 1s lifecycle timer while PENDING/RUNNING
+                        → 30s background sync (recent jobs, artifacts)
+       Log Console → sanitized API log windows
+       Artifacts → API manifest/download → preview and file controls
 
 Polling:
     The fast lifecycle timer (1s) ticks while the selected job is active. The tick that

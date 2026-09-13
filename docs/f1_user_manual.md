@@ -521,7 +521,7 @@ a comma-delimited list.
 
 | Variable | Meaning | Default |
 |---|---|---|
-| `F1_JOBS_STATE_PATH` | JobsManager persistence file (shared with Gradio). | `runs/jobs_state.json` |
+| `F1_JOBS_STATE_PATH` | API/backend JobsManager persistence file; Gradio observes it through the Studio Job API. | `runs/jobs_state.json` |
 | `F1_ENGINE_HOST` / `F1_ENGINE_PORT` | Bind address for `python main_engine.py`. | `127.0.0.1` / `8000` |
 | `F1_CORS_ORIGINS` | Comma-separated CORS allowlist; when non-empty it fully replaces the dev defaults. | dev defaults (§7.11) |
 | `F1_MODEL_ROOTS` | Server-owned trusted model roots (`os.pathsep`-separated). | project root (cwd) |
@@ -544,10 +544,11 @@ rather than appending to them.
 
 ### 7.12 Relationship to the Gradio Jobs tab
 
-The REST engine and the Gradio **📋 Jobs** tab are two surfaces over the *same* engine and
-persistence: both consume `f1.jobs_manager.JobsManager` and share the `F1_JOBS_STATE_PATH` state file
-by default, so each can observe the other's job history. There is a single lifecycle owner — the
-JobsManager — and no second lifecycle system.
+The FastAPI REST engine is the sole lifecycle owner. It owns the process-wide
+`f1.jobs_manager.JobsManager`, workers, lifecycle state, and the `F1_JOBS_STATE_PATH` persistence file.
+The Gradio **📋 Jobs** tab uses `StudioJobsApiClient` to submit, poll, cancel, and download through the
+task API; it neither opens that state file nor creates another manager. The `JobsManager` name exported
+from `f1/ui/jobs_tab.py` is only a lazy compatibility shim for legacy imports.
 
 ---
 

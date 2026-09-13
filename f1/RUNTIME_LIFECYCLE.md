@@ -6,9 +6,12 @@ Gradio components.
 
 ## Execution
 
-All four task types follow the same entry point:
+All four task types follow the same backend-owned entry point:
 
-`API/UI → JobsManager → CPU/GPU waiting queue → fixed supervisor slot → managed process → F1 dispatcher → handler → YOLO Python API`
+`Gradio UI → StudioJobsApiClient → FastAPI task API → JobsManager → CPU/GPU waiting queue → fixed supervisor slot → managed process → F1 dispatcher → handler → YOLO Python API`
+
+Other API clients join at the FastAPI task API. The Gradio path never constructs
+its own `JobsManager`.
 
 On Windows the managed process owns computation and is assigned to a kill-on-close
 Job Object before the parent permits execution. Child and grandchild processes
@@ -17,9 +20,10 @@ computation child runs the same dispatcher and handler. The guardian retains
 orphaned dataloader/DDP descendants, including torchrun ranks that create a new
 session. No fork of the server's GPU context is used: workers use `spawn`.
 
-Studio calls the dispatcher with `managed=True`, executing the handler on the
-computation process's main thread. The old direct-dispatcher thread mode remains
-for compatibility outside Studio; it does not provide forced termination.
+The API-owned `JobsManager` calls the dispatcher with `managed=True`, executing
+the handler on the computation process's main thread. The old direct-dispatcher
+thread mode remains for compatibility outside Studio; it does not provide forced
+termination.
 
 ## Capacity and waiting
 
@@ -31,9 +35,9 @@ for compatibility outside Studio; it does not provide forced termination.
   `cpu`. Auto/empty/None, CUDA device IDs/lists and MPS use GPU slots.
 - Waiting jobs remain publicly `pending` and do not get a process or a dedicated
   thread. Each slot is retained through execution and cleanup.
-- Limits apply to one JobsManager in one service process. Run the Studio API with
-  one ASGI worker. Multiple service processes or separate UI/API managers must not
-  share a state file; cross-process scheduling/storage coordination is not provided.
+- Limits apply to the sole API-owned JobsManager in one service process. Run the
+  Studio API with one ASGI worker. Multiple service processes must not share a
+  state file; cross-process scheduling/storage coordination is not provided.
 
 The waiting/history records remain in memory and JSON persistence; this is not a
 distributed or durable execution queue. There is no priority preemption, resource

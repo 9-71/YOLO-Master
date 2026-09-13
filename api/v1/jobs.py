@@ -18,7 +18,8 @@ Endpoints (the collection routes accept both ``/api/v1/jobs`` and
 
 The process-wide manager is exposed through the :func:`get_jobs_manager`
 dependency so tests and embeddings can replace it via
-``app.dependency_overrides``.
+``app.dependency_overrides``. The API/backend is the sole lifecycle owner;
+Gradio reaches these routes through ``StudioJobsApiClient``.
 """
 
 from __future__ import annotations
@@ -42,7 +43,7 @@ router = APIRouter(prefix="/api/v1/jobs", tags=["jobs"])
 
 #: Environment variable naming the JobsManager persistence file.
 F1_JOBS_STATE_PATH_ENV = "F1_JOBS_STATE_PATH"
-#: Default persistence file, shared with the Gradio WebUI (``app.py``).
+#: Default persistence file owned by the API/backend JobsManager.
 DEFAULT_JOBS_STATE_PATH = "runs/jobs_state.json"
 
 _manager: JobsManager | None = None
@@ -62,14 +63,14 @@ def get_jobs_manager() -> JobsManager:
     """Return the process-wide :class:`JobsManager` singleton, built lazily.
 
     The storage path comes from ``F1_JOBS_STATE_PATH`` or defaults to
-    ``runs/jobs_state.json`` (the same state file the Gradio WebUI persists
-    to), so the REST engine and the WebUI can observe each other's job
-    history. Construction is guarded by a lock; FastAPI routes consume this
-    function through ``Depends`` and tests can replace it via
-    ``app.dependency_overrides``.
+    ``runs/jobs_state.json``. The FastAPI service exclusively owns this
+    manager and its persistence; the Gradio WebUI observes job history through
+    ``StudioJobsApiClient`` requests instead of opening the state file.
+    Construction is guarded by a lock; FastAPI routes consume this function
+    through ``Depends`` and tests can replace it via ``app.dependency_overrides``.
 
     Returns:
-        JobsManager: The shared job manager instance.
+        JobsManager: The API-owned process-wide job manager instance.
 
     Example:
         >>> manager = get_jobs_manager()

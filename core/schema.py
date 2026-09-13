@@ -14,7 +14,7 @@ Semantics (unchanged from the original contract):
       ``OutputConfig``, ``SecurityConstraints``, ``RuntimeTracking``) is
       deep-copied by Pydantic at instance creation, so two jobs never share a
       single class-definition-time instance. ``JobRequest.metadata.created_at``
-      is nevertheless stamped per submission by the Jobs UI so Recent Jobs
+      is nevertheless stamped per submission by the API/backend so Recent Jobs
       ordering reflects real creation times.
     - ``allow_shell=False`` and ``path_whitelisted=True`` are the fail-closed
       security defaults enforced by the dispatcher before any execution.
