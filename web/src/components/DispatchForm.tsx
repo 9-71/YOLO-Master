@@ -119,7 +119,7 @@ export function DispatchForm({ onJobCreated }: { onJobCreated: (jobId: string) =
   const [seed, setSeed] = useState("");
   const [conf, setConf] = useState("");
   const [imgsz, setImgsz] = useState("");
-  const [device, setDevice] = useState("");
+  const [device, setDevice] = useState("0");
   const [format, setFormat] = useState<string>("onnx");
   const [half, setHalf] = useState(false);
   const [int8, setInt8] = useState(false);
@@ -146,7 +146,7 @@ export function DispatchForm({ onJobCreated }: { onJobCreated: (jobId: string) =
     setSeed("");
     setConf("");
     setImgsz("");
-    setDevice("");
+    setDevice("0");
     setFormat("onnx");
     setHalf(false);
     setInt8(false);
