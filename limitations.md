@@ -11,6 +11,6 @@ Confirmed known limitations of the F1 platform.
 - API 无认证 / RBAC。
 - Worker 无 per-job OS sandbox，继承宿主进程权限。
 - `gradio`、`fastapi`、`pydantic`、`uvicorn` 等关键依赖尚未完整锁定版本上限。
-- Windows 无 symlink 权限时相关测试会 skip，Linux CI 应实际执行。
+- Windows 无 symlink 权限时相关测试会 skip；Final HEAD `0e7a8f83b53c97abc8eb3caedc532f5779fbb086` 的 Ubuntu CI 已实际执行对应 symlink 边界用例。
 - OBB / classification 结果表支持仍不完整，列为 future scope。
 - ONNX legacy exporter deprecation warning 为已知 P3。

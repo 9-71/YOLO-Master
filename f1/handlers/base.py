@@ -1,7 +1,7 @@
 """Base handler abstraction for F1 task execution.
 
 This module defines the core abstraction for YOLO-Master F1 platform task handlers.
-Each task type (predict, train, export, diagnose) implements BaseTaskHandler to provide
+Each task type (predict, train, val, export, diagnose) implements BaseTaskHandler to provide
 validation and execution logic while maintaining strict security and state machine constraints.
 
 Architecture Principle:
@@ -63,7 +63,10 @@ class BaseTaskHandler(ABC):
 
     Security Model:
         Handlers MUST NOT bypass security constraints. Path whitelisting, shell execution
-        restrictions, and timeout enforcement are mandatory at validation stage.
+        restrictions, and task-specific parameter checks are enforced before execution.
+        Production timeout enforcement belongs to the API-owned JobsManager, which
+        supervises and stops the ManagedWorker process; handlers do not enforce the
+        execution deadline in validate_params().
     """
 
     # Injected by the dispatcher immediately before execute() so handlers can honor
@@ -78,7 +81,11 @@ class BaseTaskHandler(ABC):
         This method enforces security policies BEFORE task execution begins:
         - Path whitelisting (model_path, data_source, output_dir)
         - Shell execution prohibition
-        - Resource limit verification (timeout, memory)
+        - Task-specific parameter validation
+
+        Runtime timeout is intentionally outside this method. In the production
+        Studio path, JobsManager supervises the ManagedWorker against
+        runtime_tracking.timeout_seconds.
 
         Args:
             params: Task-specific parameters from JobRequest.params
@@ -140,7 +147,9 @@ class BaseTaskHandler(ABC):
             - Output artifacts MUST be isolated per job_id to prevent collision
             - Artifact paths MUST be absolute and verified to exist
             - GPU memory MUST be released after execution (use context managers)
-            - Execution MUST respect timeout_seconds from runtime_tracking
+            - Cooperative cancellation checkpoints MAY be observed through
+              _check_cancelled(); production timeout and forced termination are
+              enforced externally by JobsManager and ManagedWorker
 
         Example:
             >>> handler = PredictHandler()

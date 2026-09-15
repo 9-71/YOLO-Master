@@ -1,121 +1,149 @@
-# F1 Task Handler Framework
+# F1 Task Handlers
 
-Decorator-based task handler decoupling framework providing type-safe, security-first handler registration mechanism for the YOLO-Master F1 platform.
+The F1 handler package adapts the canonical job contract to the existing
+Ultralytics YOLO Python API. Handlers validate task parameters, call the engine,
+and return a structured result and artifact manifest. Queueing, process ownership,
+timeouts, terminal publication, and persistence belong to `JobsManager`, not to
+the handler layer.
 
-## Quick Start
+This document describes the current handler implementation.
 
-### Define a Handler
+## Runtime position
+
+```text
+FastAPI -> JobsManager -> ManagedWorker -> dispatcher -> registry -> handler
+                                                               |
+                                                               v
+                                                    Ultralytics YOLO API
+```
+
+Production jobs must enter through the FastAPI API and its singleton
+`JobsManager`. Direct dispatcher/handler use is supported for tests and embedding,
+but it does not provide the managed process-tree termination guarantees.
+
+## Package structure
+
+```text
+f1/handlers/
+|-- __init__.py       # imports all production handlers and triggers registration
+|-- base.py           # BaseTaskHandler and validation/cancellation helpers
+|-- registry.py       # TaskHandlerRegistry
+|-- predict.py        # predict handler
+|-- train.py          # train handler
+|-- val.py            # validation handler
+|-- export.py         # model export handler
+|-- diagnose.py       # system diagnostics handler
+|-- demo_handlers.py  # direct-use examples, not the production entry point
+|-- README.md
+`-- USAGE.md
+```
+
+Importing `f1.handlers` registers exactly these public task types:
+
+```text
+diagnose | export | predict | train | val
+```
+
+`core/schema.py::TaskType` is the API contract. Adding another registry entry is
+not sufficient to expose a new public task: the schema, API/client surfaces, task
+catalog, documentation, and tests must also be updated.
+
+## Handler contract
+
+Every concrete handler inherits `BaseTaskHandler` and implements:
 
 ```python
-from f1.handlers import BaseTaskHandler, TaskHandlerRegistry
+def validate_params(
+    self,
+    params: dict[str, Any],
+    security_constraints: dict[str, Any],
+) -> tuple[bool, str | None]: ...
 
 
-@TaskHandlerRegistry.register("predict")
-class PredictHandler(BaseTaskHandler):
-    def validate_params(self, params, security_constraints):
-        """Validate parameters and security constraints"""
-        if security_constraints.get("allow_shell"):
-            return False, "Shell execution not permitted"
-
-        allowed_paths = security_constraints.get("allowed_paths", [])
-        model_path = params.get("model_path", "")
-        if model_path and not self._is_path_safe(model_path, allowed_paths):
-            return False, f"Model path not in whitelist"
-
-        return True, None
-
-    def execute(self, job_id, params, output_dir):
-        """Execute the task"""
-        from ultralytics import YOLO
-
-        model = YOLO(params["model_path"])
-        results = model.predict(
-            source=params["data_source"], device=params.get("device", "0"), project=output_dir, name=job_id
-        )
-
-        artifacts = [str(p) for p in Path(results[0].save_dir).glob("*.jpg")]
-
-        return {
-            "success": True,
-            "artifacts": artifacts,
-            "metadata": {"detected_count": len(results[0].boxes)},
-            "error": None,
-        }
+def execute(
+    self,
+    job_id: str,
+    params: dict[str, Any],
+    output_dir: str,
+) -> dict[str, Any]: ...
 ```
 
-### Dispatcher Integration
+`execute()` returns:
 
 ```python
-# Retrieve handler and execute
-handler_class = TaskHandlerRegistry.get(job_request.task_type)
-handler = handler_class()
-
-# Validate
-is_valid, err = handler.validate_params(params, security_constraints)
-if not is_valid:
-    # Handle validation failure
-    pass
-
-# Execute
-result = handler.execute(job_id, params, output_dir)
+{
+    "success": bool,
+    "artifacts": list[str],
+    "metadata": dict[str, Any],
+    "error": str | None,
+}
 ```
 
-## Core Features
+Artifacts are existing files collected from the job-specific output directory.
+The manager normalizes them into safe relative IDs before the API exposes them.
 
-✅ **Type-Safe**: Complete type hints and abstract base class enforcement<br>
-✅ **Decorator Registration**: `@TaskHandlerRegistry.register(task_type)` auto-registration<br>
-✅ **Factory Method**: `TaskHandlerRegistry.get(task_type)` dynamic retrieval<br>
-✅ **Security-First**: Built-in path whitelisting and shell execution protection<br>
-✅ **Clear Errors**: Duplicate registration and unregistered types throw explicit exceptions
+## Task behavior
 
-## File Structure
+- `predict`: requires model and data source; accepts a file, a non-recursive media
+  directory, or a list; processes deterministic chunks with cancellation checks.
+- `train`: requires model and dataset YAML; applies validated training parameters
+  and collects the full job output tree.
+- `val`: requires model and dataset YAML; returns JSON-serializable metrics when
+  the underlying result exposes them and collects validation outputs.
+- `export`: requires a model and a closed-allowlist format; copies the model into
+  the job directory before calling `YOLO.export()` so concurrent exports do not
+  modify the source directory.
+- `diagnose`: writes JSON and text environment reports; it does not invoke a YOLO
+  training/inference operation.
 
-```
-handlers/
-├── __init__.py          # Module entry point
-├── base.py              # BaseTaskHandler abstract base class
-├── registry.py          # TaskHandlerRegistry
-├── USAGE.md             # Detailed usage guide
-└── README.md            # This file
-```
+## Security boundary
 
-## Testing
+Handlers reject enabled shell access, disabled path whitelisting, missing trusted
+roots, and unsafe model/data paths. Path failures raise
+`PathWhitelistViolationError`; ordinary parameter errors return `(False, message)`.
+The dispatcher maps these categories to structured errors.
+
+For production API submissions, `JobsManager` is the authoritative admission
+boundary. It discards client path lists/patterns, applies server model/data/output
+roots, checks network input hosts, clears client artifacts, and forces shell off
+and path whitelisting on before queueing. Direct handler calls do not perform all
+of those manager-level checks.
+
+`_check_cancelled()` is a cooperative checkpoint injected by the dispatcher.
+Forced cancellation and timeout are provided by `ManagedWorker`/`JobsManager`,
+not by the handler method itself.
+
+## Registry API
+
+- `@TaskHandlerRegistry.register(task_type)` registers a handler at import time.
+- `TaskHandlerRegistry.get(task_type)` returns the registered class.
+- `TaskHandlerRegistry.list_registered()` returns sorted names.
+- `TaskHandlerRegistry.clear()` exists for isolated tests only.
+
+Registration is not thread-safe and must finish before concurrent dispatch.
+Duplicate names raise `ValueError`; non-`BaseTaskHandler` classes raise `TypeError`.
+
+## Verification
+
+Run the focused handler and dispatcher tests from the repository root:
 
 ```bash
-cd f1
-python -m pytest test_handlers_framework.py -v
+python -m pytest \
+  tests/f1/test_handlers_framework.py \
+  tests/f1/test_handler_inventory.py \
+  tests/f1/test_phase1_handlers.py \
+  tests/f1/test_predict_diagnose.py \
+  tests/f1/test_val_batch_runtime.py \
+  tests/f1/test_dispatcher.py -v
 ```
 
-**Test Coverage**: 10 test cases covering registration, retrieval, validation, security enforcement, and end-to-end integration.
+The recorded F1 suite and API suite are documented in `f1/README.md`. The CI
+workflow runs the broader `tests/f1/ tests/api/` set plus smoke and Ruff checks.
 
-## Design Principles
-
-- **Open-Closed Principle**: Adding new task types requires no dispatcher modifications
-- **Dependency Inversion**: Dispatcher depends on abstract base class, not concrete implementations
-- **Security-First**: Empty whitelist defaults to deny (fail-closed)
-- **Type-Safe**: Runtime enforcement of BaseTaskHandler inheritance
-
-## API Reference
-
-### BaseTaskHandler
-
-Abstract base class defining handler contract:
-
-- `validate_params(params, security_constraints)` → `(bool, str | None)`
-- `execute(job_id, params, output_dir)` → `dict[str, Any]`
-- `_is_path_safe(target_path, allowed_roots)` → `bool` (helper method)
-
-### TaskHandlerRegistry
-
-- `@register(task_type)` - Decorator registration
-- `get(task_type)` - Factory method retrieval
-- `list_registered()` - List registered types
-- `clear()` - Clear registry (testing only)
-
-## Detailed Documentation
-
-Complete usage guide, security model, and extension examples available in [USAGE.md](USAGE.md)
+See [USAGE.md](USAGE.md) for extension guidance and the Agent/F1 boundary.
 
 ---
 
-**Version**: 1.0.0 | **Created**: 2026-09-01
+**Document version**: 1.2.0
+
+**Last synchronized**: 2026-09-15

@@ -22,7 +22,7 @@ This report verifies three **official security red lines** and confirms complian
 | --- | --- | --- |
 | SO-1 | **Shell injection defense** — prohibit arbitrary shell execution; task dispatch must never invoke an OS shell with attacker-influenced input. | **COMPLIANT** — `allow_shell=True` is rejected at dispatcher pre-execution guard (`SEC_ERR_001`); handlers delegate to the Python engine directly without `shell=True`, shell interpolation, or arbitrary shell execution. |
 | SO-2 | **Directory traversal / unauthorized path blocking** — enforce strict path whitelisting (models, datasets, output artifacts) so `../` escapes, symlink escapes, and non-whitelisted patterns cannot read or write outside approved roots. | **COMPLIANT** — fail-closed containment + regex whitelist in `BaseTaskHandler._is_path_safe`; violations raise `PathWhitelistViolationError` mapped to `SEC_ERR_001`. |
-| SO-3 | **Sensitive credential masking** — environment variables and tokens (`API_KEY`, `TOKEN`, `PASSWORD`, `SECRET`, etc.) must never reach terminal output, log files, error messages, or tracebacks. | **COMPLIANT** — `core/security.py` redacts keys, secret-shaped values, and `KEY=value` assignments; the canonical log append path (`JobRequest.append_log`) sanitizes before storage; dispatcher error messages are sanitized before `ErrorInfo` attachment. |
+| SO-3 | **Sensitive credential masking** — environment variables and tokens (`API_KEY`, `TOKEN`, `PASSWORD`, `SECRET`, etc.) must be redacted from controlled job logs, structured errors, and persisted state. | **COMPLIANT WITH DEFINED SCOPE** — `core/security.py` redacts keys, secret-shaped values, and `KEY=value` assignments; the canonical log append path (`JobRequest.append_log`) sanitizes before storage; dispatcher error messages are sanitized before `ErrorInfo` attachment. Arbitrary third-party output written directly to process stdout/stderr is not captured or covered by this guarantee. |
 
 > **Note:** All three objectives are enforced under a **fail-closed** philosophy: empty whitelists reject everything, `allow_shell` defaults to `False`, and `path_whitelisted` defaults to `True`. A missing or malformed security control yields *deny*, never *allow*.
 
@@ -124,6 +124,10 @@ Redaction behavior:
 - Prefix-preserving patterns keep a readable prefix (e.g. `Bearer ***REDACTED***`, `API_KEY=***REDACTED***`); whole-secret patterns (e.g. `ghp_…`) redact the entire match.
 - `JobRequest.append_log` routes every log line through `sanitize_log_text` **before** entering `job.logs`, and the dispatcher sanitizes the exception message before attaching `ErrorInfo`.
 
+This guarantee applies to the controlled `job.logs`, structured error, and persistence paths. The
+runtime does not redirect arbitrary Ultralytics or third-party child-process stdout/stderr through
+`JobRequest.append_log`, so such console output is outside the verified sanitization boundary.
+
 ---
 
 ## 4. Execution Results & Coverage
@@ -168,13 +172,13 @@ The FastAPI service is the sole lifecycle owner and holds one process-wide `Jobs
 
 - Task dispatch never uses `shell=True`, shell interpolation, `os.system`, or `os.popen`; handlers call the Python engine directly.
 - Path whitelisting is fail-closed, resolves symlinks/`..` before decision, and regex patterns must fully consume the resolved path (no prefix/substring bypass).
-- Credential redaction covers key names, value shapes, and `KEY=value` assignments, and is enforced at the canonical log append boundary *and* the dispatcher error boundary.
+- Credential redaction covers key names, value shapes, and `KEY=value` assignments at the canonical structured log append, dispatcher error, and persistence boundaries. Arbitrary child-process stdout/stderr remains outside this guarantee.
 
 ### 5.2 Known Residual Gaps
 
 | Risk | Severity | Notes |
 | --- | --- | --- |
-| Symlink tests skipped on Windows | Low | Five literal/regex symlink cases skip when symlink creation is non-permitted. Their assertions were not executed on this host. |
+| Symlink tests skipped on Windows | Low | Five literal/regex symlink cases skip when symlink creation is non-permitted on the Windows host. The corresponding symlink boundaries were executed by the final-HEAD Ubuntu CI run. |
 | Regex whitelist is policy-authored | Medium | Trusted backend or embedding policy can supply patterns to handlers; the Job API discards client path lists/patterns and injects server-configured roots. An overly broad trusted pattern could still whitelist too much. |
 | Worker privilege model | Medium | Managed worker processes retain ambient host privileges; there is no per-job OS-level sandbox. Acceptable for trusted local operation, not for multi-tenant or remote untrusted submission. |
 | No authentication / authorization | High | The task API has no caller authentication and no RBAC; any caller able to reach it can submit jobs. |
@@ -186,4 +190,4 @@ The FastAPI service is the sole lifecycle owner and holds one process-wide `Jobs
 2. **Pattern-policy validation** — validate `allowed_path_patterns` against a deny-of-broad-pattern rule (reject `.*`-to-root patterns) at schema/validation time.
 3. **Per-job sandboxing** — move execution to an isolated subprocess or container with a read-only filesystem and restricted environment.
 4. **Extensible secret catalog** — promote `SENSITIVE_VALUE_PATTERNS` to a configuration-driven registry so new credential formats can be added without code changes.
-5. **Windows symlink CI leg** — add an admin-gated or Linux CI leg so the symlink-escape case is always executed, not skipped.
+5. **Linux symlink CI verification — completed for Final HEAD** — Ubuntu/Python 3.10 executed the symlink boundary cases at `0e7a8f83b53c97abc8eb3caedc532f5779fbb086`; the source-branch run completed with `422 passed, 1 skipped, 3 warnings`: <https://github.com/9-71/YOLO-Master/actions/runs/34793607227>. This is source-branch push evidence, not a Tencent required PR check.

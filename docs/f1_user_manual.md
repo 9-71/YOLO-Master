@@ -3,14 +3,14 @@
 > **Audience**: end-users and evaluation reviewers.
 > **Scope**: submitting and monitoring detection jobs through the Gradio Web UI and the standalone REST engine (FastAPI) — not framework development.
 
-**Version**: 1.1 · **Last updated**: 2026-09-12
+**Version**: 1.2 · **Last synchronized**: 2026-09-15
 
 ---
 
 ## 1. Introduction
 
 The **F1 Task Platform** is the unified, browser-based job console of YOLO-Master. It wraps the
-training / validation / inference / export engines behind a single submission form and a real-time
+training / validation / inference / export engines behind a single submission form and an incremental
 monitoring dashboard. You never touch training or inference internals — the platform acts as an
 orchestration layer that accepts a job, enforces security rules, forwards the work to the underlying
 Ultralytics engine, and collects the results back for you.
@@ -20,8 +20,8 @@ The platform provides four core capabilities:
 | Capability | What it does |
 |---|---|
 | **Unified submission** | One form dispatches every task type — `predict`, `train`, `val`, `export`, and `diagnose`. |
-| **Task dispatcher** | A state machine routes each job to the correct handler and enforces safe state transitions. |
-| **Real-time logging** | A live console streams progress while the job runs. |
+| **Task dispatcher** | The manager routes each admitted job through a worker, dispatcher, and registered handler. |
+| **Incremental logging** | The consoles poll sanitized structured logs with an HTTP cursor while the job runs. |
 | **Artifact management** | Generated files (weights, metrics, plots, exported models) are listed, previewed, and exposed for download. |
 
 ### 1.1 Supported task types
@@ -36,8 +36,10 @@ The platform provides four core capabilities:
 
 ### 1.2 Job lifecycle at a glance
 
-Every job moves through a strict state machine. A job may only transition along the arrows below;
-terminal states cannot be restarted or reset.
+Every job follows the public lifecycle below. `JobsManager` owns admission, queueing,
+cancellation, timeout, and terminal publication. Inside the worker, the dispatcher enforces
+`PENDING → RUNNING → COMPLETED/FAILED`; `CANCELLED` is published by the manager after it has
+stopped the owned process tree. Terminal status/result/error snapshots cannot be restarted or reset.
 
 ```
 PENDING ──► RUNNING ──► COMPLETED   (success)
@@ -52,7 +54,9 @@ PENDING ──► RUNNING ──► COMPLETED   (success)
 
 ### 2.1 Prerequisites
 
-The platform runs on the same environment as YOLO-Master. Verified baseline:
+The platform runs in the same environment as YOLO-Master. The recorded verification used
+Windows/Python 3.12 and by the Ubuntu/Python 3.10 F1 CI job; these are verification environments,
+not an additional package compatibility guarantee beyond the project metadata.
 
 | Component | Requirement |
 |---|---|
@@ -132,7 +136,7 @@ A top-level **Language** selector (English / 中文) switches the entire interfa
 
 ---
 
-## 3. Job Submission Workflow (Train / Val / Predict / Export)
+## 3. Job Submission Workflow
 
 All asynchronous work is submitted through the **Jobs** tab. The submission panel is on the left;
 the monitoring panels are on the right.
@@ -144,7 +148,8 @@ the monitoring panels are on the right.
    Selecting a task auto-fills the form with sensible defaults for that task.
 3. Fill in **Model Path**, **Data Source**, and **Output Directory** (see the parameter tables below).
 4. (Optional) Open **⚙️ Hyperparameters** and adjust **Confidence Threshold** and **Device**.
-5. (Optional) Open **🔒 Security Constraints** and review the **Allowed Paths** whitelist.
+5. (Optional) Open **🔒 Security Constraints** to inspect the compatibility path list. The
+   FastAPI service does not trust or extend access from this client-controlled value.
 6. Click **🔥 Submit Job**. The generated **Job ID** appears in the *Status Monitor*.
 
 ### 3.2 Form field reference
@@ -157,7 +162,11 @@ the monitoring panels are on the right.
 | **Output Directory** | Base directory where per-job results are written. | `runs/predict` |
 | **Confidence Threshold** | Detection confidence cutoff, in `(0.0, 1.0]`. | `0.25` |
 | **Device** | Compute device: `0` (GPU), `cpu`, or `mps`. | `0` |
-| **Allowed Paths** | Comma-separated whitelist of authorized directory roots. | `., ultralytics/assets, runs, ckpts` |
+| **Allowed Paths** | Compatibility field serialized by the client. The server discards it and applies its own trusted roots. | `., ultralytics/assets, runs, ckpts` |
+
+> **Security boundary** — editing **Allowed Paths** cannot grant filesystem access. The server
+> independently validates model, data, and output locations against `F1_MODEL_ROOTS`,
+> `F1_DATA_ROOTS`, and `F1_OUTPUT_ROOT`.
 
 The **🔄 Reset** buttons next to *Model Path* and *Data Source* restore the active task’s default
 value without changing the selected task type.
@@ -185,6 +194,9 @@ The `predict` handler normalizes the *Data Source* into a deterministic file lis
 - A **single file** path → one input.
 - A **directory** → all supported media files inside it, sorted (recursive-free).
 - A **list** of paths → expanded entry-by-entry, order preserved.
+- An explicitly authorized `http`, `https`, `rtmp`, `rtsp`, or `tcp` URL → one
+  network input. The hostname must appear in the server's `F1_NETWORK_INPUT_HOSTS`;
+  network inputs are rejected by default.
 
 Supported media extensions: `.jpg .jpeg .png .bmp .webp .tif .tiff .mp4 .avi .mov .mkv .ts`.
 Inputs are split into batches (`batch_size` defaults to 8), and each batch is written to its own
@@ -229,9 +241,11 @@ the *Recent Jobs* table and final artifacts fresh at all other times.
 1. Select the job (its Job ID must be shown in the *Status Monitor*).
 2. Click **🚫 Cancel Job**.
 
-Cancellation is **cooperative**: the dispatcher checks the cancellation flag before execution, during
-execution, and after the engine returns, and handlers check again between long-running work items
-(e.g. between batch chunks of a prediction).
+Cancellation is manager-owned. For a waiting job, `JobsManager` can publish cancellation without
+starting a process. For a running job, it records the request, asks the managed worker to stop,
+escalates through the platform process-tree cleanup path when needed, joins and closes the worker,
+and only then publishes `CANCELLED / USER_CANCELLED`. Dispatcher/handler checkpoints provide an
+additional cooperative path between engine calls, but do not replace manager-owned termination.
 
 > **Warning** — constraints on cancellation:
 > - You can only cancel a job that is `PENDING` or `RUNNING`. A job already in `COMPLETED` or
@@ -243,9 +257,10 @@ execution, and after the engine returns, and handlers check again between long-r
 
 Every job carries a **default execution limit of 300 seconds** (`timeout_seconds = 300`).
 
-- The dispatcher supervises the handler in a worker thread against this deadline.
-- If the handler is still running when the deadline expires, the job transitions to `FAILED` with
-  the error code `TIMEOUT`.
+- The deadline starts when a queue slot launches the managed worker. Time spent waiting in
+  `PENDING` does not consume the timeout.
+- `JobsManager` supervises the managed process against this deadline, stops and joins the owned
+  process tree, and then publishes `FAILED / TIMEOUT`.
 - A timeout never produces a partial `COMPLETED` result.
 
 > **Tip** — Long-running `train` jobs with many epochs can exceed the 300-second limit. Keep early
@@ -256,17 +271,23 @@ Every job carries a **default execution limit of 300 seconds** (`timeout_seconds
 
 ## 5. Live Diagnostics & Log Inspection
 
-### 5.1 Viewing real-time output
+### 5.1 Viewing incremental output
 
-Open the **📜 Live Logs** sub-tab while a job is active. The console streams a timestamped,
-line-by-line record including:
+Open the **📜 Live Logs** sub-tab while a job is active. The console polls the HTTP log endpoint
+and displays the available structured entries, including:
 
 - Submission and state-machine transitions (`transitioned to: RUNNING/COMPLETED/FAILED/CANCELLED`).
 - Handler progress (e.g. the number of artifacts captured).
 - A sanitized environment audit line.
-- Any tracebacks from a failed execution.
+- Sanitized tracebacks captured by the dispatcher for failed execution.
 
 The log panel keeps up to the most recent 100 lines and refreshes automatically.
+
+The sanitizer covers controlled job log entries, structured errors, and persisted fields. Output
+written directly to stdout/stderr by Ultralytics or another third-party component is not guaranteed
+to be captured by this API log stream or processed by the sanitizer. A terminal job's state,
+result, and error are immutable; historical or already-in-flight log entries may remain readable
+without changing that terminal snapshot.
 
 ### 5.2 Error codes and troubleshooting
 
@@ -296,15 +317,18 @@ The *Status Monitor* shows the `error_code` and `error_message`. Common causes:
 
 ## 6. Artifact Retrieval & Verification
 
-When a job reaches `COMPLETED`, the engine writes its outputs under
-`<output_dir>/<job_id>/` and the platform indexes every generated file.
+Handlers write outputs under `<output_dir>/<job_id>/` and collect existing files into the job's
+artifact manifest. The manager normalizes those files to safe relative artifact IDs before the API
+exposes them. Failed or cancelled jobs may leave partial files on disk, but only manifest entries
+are downloadable through the API.
 
 ### 6.1 Locating artifacts
 
 Open the **📁 Artifacts** sub-tab. The *Generated Artifacts* table lists each file with:
 
 - **Filename** — the file’s base name.
-- **Path** — the absolute on-disk location.
+- **Path** — in the same-host Gradio client, a resolved local source path when it can be safely
+  reconstructed; otherwise an API download URL.
 
 Alternatively, click **📂 Open Folder** to open the job’s specific output directory in your
 operating system’s file manager (Windows Explorer / macOS Finder / Linux file manager).
@@ -328,9 +352,9 @@ through them. Clicking an image row in the artifacts table also loads it into th
 | `export` | The exported model file (e.g. `yolov8n.onnx`) plus the job-local `.pt` copy. |
 | `diagnose` | `system_diagnostics.json` and `system_diagnostics.txt`. |
 
-> **Note** — Artifacts are captured with a **full-tree scan** of the job directory, so every file
-> (weights, CSVs, plots, images, and engine side-files) appears in the manifest — the platform does
-> not filter by extension.
+> **Note** — Production handlers capture artifacts with a sorted **full-tree scan** of the job
+> directory. The API filters the result to existing files below that job root and serves only exact
+> manifest matches; it does not expose a general filesystem browser.
 
 ### 6.4 Verifying exported models
 
@@ -461,8 +485,10 @@ curl "http://127.0.0.1:8000/api/v1/jobs/predict_demo_001/logs?offset=0&limit=100
 - `limit` — maximum lines in this window (default `null` = the full remainder, capped at `10000`).
 - `next_offset` — the cursor for the next page, or `null` once the tail is reached.
 
-Every line returned is **sanitized**: credentials (Bearer tokens, `sk-` keys, `KEY=value` secrets)
-are redacted as `***REDACTED***` before they ever reach the response or persisted state.
+Every structured line returned by this endpoint is sanitized: credentials (Bearer tokens, `sk-`
+keys, `KEY=value` secrets) are redacted as `***REDACTED***` before the line reaches the response or
+persisted state. This does not claim capture or sanitization of arbitrary child-process
+stdout/stderr outside the structured log path.
 
 ### 7.7 Cancellation
 
@@ -470,8 +496,9 @@ are redacted as `***REDACTED***` before they ever reach the response or persiste
 curl -X POST http://127.0.0.1:8000/api/v1/jobs/predict_demo_001/cancel
 ```
 
-Cancellation is **cooperative**: the engine sets the cancellation flag and stops the owned process
-tree, then finally transitions the job to `CANCELLED` with error code `USER_CANCELLED`.
+Cancellation is asynchronous and manager-owned: the engine sets the cancellation flag, stops and
+joins the owned process tree, then publishes `CANCELLED` with error code `USER_CANCELLED`.
+Dispatcher/handler checkpoints supplement this process-level stop between engine calls.
 
 - `202 Accepted` — a fresh cancellation request was acknowledged.
 - `200 OK` — an idempotent replay against a job already in a terminal state, returning its existing state.
@@ -487,7 +514,7 @@ safe and does not produce a second lifecycle transition.
 curl http://127.0.0.1:8000/api/v1/jobs/predict_demo_001/artifacts
 ```
 
-The response lists the dispatcher-produced artifact manifest (`artifacts`, with per-file
+The response lists the handler-produced, manager-normalized artifact manifest (`artifacts`, with per-file
 `download_url`) and safe image artifact IDs (`image_artifacts`). Server filesystem paths are never
 returned. Download one file via its `download_url`:
 
@@ -505,13 +532,17 @@ Artifact delivery is **manifest-gated and fail-closed**:
 
 ### 7.9 Console entry points
 
-The engine serves three frontends, all optional:
+The platform provides three client entry points with different hosting relationships:
 
 | Entry point | Path | Notes |
 |---|---|---|
-| Zero-build console | `/` | Single-page dispatch/monitoring UI (`frontend/index.html` + `app.js`, plain ES6). |
+| Zero-build console | `/` | Always mounted by FastAPI (`frontend/index.html` + `app.js`, plain ES6). |
 | React console | `/console` | Served only when `web/dist` is present on disk. |
-| Gradio WebUI | `http://127.0.0.1:7860` | Launched by `python start_studio.py` (see §2.2). |
+| Gradio WebUI | `http://127.0.0.1:7860` | Runs in the `start_studio.py` launcher process, separate from the API child service; it calls FastAPI through `StudioJobsApiClient`. |
+
+The repository contains React/TypeScript/Vite source under `web/`, but does not commit a guaranteed
+`web/dist` deployment artifact. The current F1 CI workflow does not run Node lint, TypeScript
+checking, or a Vite production build.
 
 ### 7.10 Environment configuration
 
@@ -550,6 +581,46 @@ The Gradio **📋 Jobs** tab uses `StudioJobsApiClient` to submit, poll, cancel,
 task API; it neither opens that state file nor creates another manager. The `JobsManager` name exported
 from `f1/ui/jobs_tab.py` is only a lazy compatibility shim for legacy imports.
 
+### 7.13 Relationship to Agent Skills
+
+The F1 production runtime ends at `f1/handlers/` and does not dispatch through
+`agent/runtime/cli/async_jobs.py` or an Agent worker. `agent/` is a separate skill/CLI integration
+layer documented by `agent/SKILL.md`. Agent validation does not replace F1 API, lifecycle, handler,
+or security tests. Shared task names are defined through the explicit contracts under `core/`.
+
+---
+
+## 8. Recorded verification and limits
+
+The recorded review range is baseline
+`acce839c7e895d6b179de7f7093fa879e237cc7b` to reviewed commit
+`0e7a8f83b53c97abc8eb3caedc532f5779fbb086`.
+
+Windows/Python 3.12 verification in the repository `.venv` produced:
+
+```text
+412 passed, 11 skipped, 3 warnings
+78% combined f1/core coverage
+F1 smoke: 5/5 passed
+```
+
+The 11 skips require Windows symlink privileges. The Ubuntu/Python 3.10 source-branch CI at the
+reviewed commit produced `422 passed, 1 skipped, 3 warnings`, 78% coverage, smoke 5/5, and passing
+Ruff lint/format:
+<https://github.com/9-71/YOLO-Master/actions/runs/34793607227>. This is source-branch push evidence,
+not a Tencent repository required PR check.
+
+Current operational limits:
+
+- one API process / one lifecycle owner; task execution uses spawned child processes
+- local best-effort JSON persistence; no distributed durable queue, priority, or automatic retry
+- static CPU/GPU slots; no memory-aware or per-GPU placement
+- HTTP cursor polling; no WebSocket/SSE
+- no authentication, RBAC, tenant isolation, or per-job OS sandbox
+- Windows/Linux process containment verified; other POSIX platforms have weaker guarantees
+- React deployment build and Node checks are not covered by the current F1 CI
+- some OBB/classification metric displays remain incomplete
+
 ---
 
 ## Appendix — Quick reference
@@ -568,11 +639,14 @@ discards both fields and replaces them with its trusted `F1_MODEL_ROOTS` and `F1
   the handler layer fails closed when its trusted whitelist is empty.
 - **Directory traversal** (`../`) is neutralized by resolving paths to absolute form before the
   containment check.
-- **Log sanitization** redacts credentials (API keys, `KEY=value` secrets) before they ever reach
-  the live console or persisted state.
+- **Structured log sanitization** redacts credentials (API keys, `KEY=value` secrets) before
+  controlled job entries reach the API console or persisted state. Arbitrary child stdout/stderr
+  is outside this guarantee.
 - **Job isolation** uses a unique `job_id` sub-directory per job to prevent output collisions.
 
 ### State persistence
 
-The FastAPI service persists job history across restarts to `runs/jobs_state.json`. Jobs left in `PENDING`/`RUNNING`
-when the service shuts down are marked `FAILED` on the next startup so they never appear eternally active.
+The FastAPI service makes a best-effort local persistence of job history to
+`runs/jobs_state.json`, using temporary-file replacement. Jobs left in `PENDING`/`RUNNING` when the
+service restarts are marked `FAILED / SERVICE_RESTARTED`; execution is not resumed. This is not a
+transactional database or durable distributed queue.

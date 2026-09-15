@@ -1,422 +1,262 @@
-# F1 Entry Smoke Test: YOLO-Master Studio Platform Core
+# YOLO-Master F1 Task Platform
 
-**Topic**: F1 - YOLO-Master Studio Platform Core
-**Milestone**: Entry Check - 2026-08-24
-**Status**: ✅ **P0 Complete · P1 Complete · P2 Complete** · v1.4.0
+This document describes the current F1 implementation and runtime boundaries.
 
----
+F1 is an orchestration layer around the existing Ultralytics YOLO Python API. It
+does not replace the training, validation, prediction, or export engines.
 
-## 1. Baseline & System Matrix
+## 1. Runtime architecture
 
-### 1.1 Git Baseline Anchor
-
-- **Commit SHA**: `acce839c7e895d6b179de7f7093fa879e237cc7b`
-- **Commit Date**: 2026-08-21 23:59:59 UTC+8
-- **Working Branch**: `rhino-f1-dev`
-- **Remote**: `origin/main` (upstream tracking)
-
-### 1.2 Runtime Environment
-
-| Component                  | Version / Specification |
-| -------------------------- | ----------------------- |
-| **Operating System** | Windows 11 (x64)        |
-| **Python**           | 3.12.10                 |
-| **PyTorch**          | 2.5.1+cu121             |
-| **Torchvision**      | 0.20.1+cu121            |
-| **Ultralytics**      | 8.4.101                 |
-| **CUDA Runtime**     | 12.1                    |
-
-### 1.3 Hardware Acceleration
-
-- **GPU**: 1x NVIDIA GeForce RTX 4050 Laptop GPU
-- **VRAM**: 6GB
-- **CUDA Capability**: Verified (device=0 operational)
-- **Driver**: NVIDIA display driver compatible with CUDA 12.1
-
----
-
-## 2. Interface Contract & Architecture
-
-### 2.1 Core Architecture Principle
-
-> **Studio does NOT rewrite training/inference engines; it bridges the product orchestration layer.**
-
-The F1 Studio Platform follows a strict separation of concerns:
-
-- **Gradio WebUI**: User-facing interface for job submission and monitoring
-- **Job Dispatcher**: Unified task orchestration with state machine control
-- **Ultralytics Engine**: Underlying YOLO training/inference execution
-- **Artifact Management**: Persistent storage for results, logs, and intermediate outputs
-
-### 2.2 JobRequest Contract Schema
-
-The shared `JobRequest` contract serves as the inter-component interface:
-
-```json
-{
-  "job_id": "string",                    // Unique job identifier
-  "task_type": "predict|train|val|export|diagnose",
-  "status": "pending|running|completed|failed|cancelled",
-  "metadata": {
-    "created_at": "ISO8601 timestamp",
-    "created_by": "string",
-    "description": "string",
-    "priority": "normal|high|low",
-    "tags": ["array of strings"]
-  },
-  "params": {
-    "model_path": "string",              // Model checkpoint path
-    "data_source": "string",             // Input data path
-    "conf": "float",                     // Confidence threshold
-    "device": "string"                   // CUDA device index or 'cpu'
-  },
-  "output": {
-    "output_dir": "string",              // Results directory
-    "save_images": "boolean",
-    "save_labels": "boolean",
-    "save_logs": "boolean",
-    "artifacts": ["array of paths"]      // Generated output files
-  },
-  "security_constraints": {
-    "path_whitelisted": "boolean",       // Path whitelist enforcement
-    "allow_shell": "boolean",            // Shell execution permission
-    "allowed_paths": ["array of paths"]  // Compatibility field; API replaces it with trusted server roots
-  },
-  "runtime_tracking": {
-    "stream_logs": "boolean",            // Real-time log streaming
-    "timeout_seconds": "integer",        // Execution timeout
-    "cancellable": "boolean",            // Cancel support flag
-    "cancel_requested": "boolean"        // User cancel signal
-  },
-  "error": {
-    "code": "string",                    // Error code (e.g., SEC_ERR_001)
-    "message": "string",                 // Human-readable error message
-    "timestamp": "ISO8601 timestamp"
-  } | null
-}
+```text
+Gradio UI -- StudioJobsApiClient --+
+Zero-build console (/) ------------+--> FastAPI task API
+React/Vite console (/console) -----+          |
+Other REST clients ----------------+          v
+                                     JobsManager
+                                      |       |
+                                  CPU queue  GPU queue
+                                      |       |
+                                  fixed supervisor slots
+                                              |
+                                              v
+                                  ManagedWorker (spawn process)
+                                              |
+                                              v
+                                  JobDispatcherStateMachine
+                                              |
+                                              v
+                                    TaskHandlerRegistry
+                                              |
+                                              v
+                         train / val / predict / export / diagnose
+                                              |
+                                              v
+                                  Ultralytics YOLO Python API
 ```
 
-### 2.3 Task State Machine
+The singleton `JobsManager` owned by the FastAPI service is the sole production
+lifecycle owner. It owns admission, queues, workers, cancellation, timeout,
+terminal publication, history, logs, artifacts, and the state file. Gradio uses
+`StudioJobsApiClient`; it does not create a second production manager or open the
+state file. The `JobsManager` export in `f1/ui/jobs_tab.py` is a lazy compatibility
+shim for legacy imports.
 
-The dispatcher enforces strict state transitions to prevent race conditions and illegal operations:
+Run the API with one ASGI worker. F1 does not coordinate multiple API processes
+or multiple hosts. Task execution itself is not single-process: each running job
+uses a spawned managed process.
 
-```
-PENDING ──┬──> RUNNING ──┬──> COMPLETED (terminal)
-          │              ├──> FAILED (terminal)
-          │              └──> CANCELLED (terminal)
-          │
-          ├──> FAILED (terminal)
-          └──> CANCELLED (terminal)
-```
+## 2. Contract and task routing
 
-**Transition Rules**:
+`core/schema.py` is the canonical contract. Public task types are:
 
-- `PENDING → RUNNING`: Job execution started
-- `PENDING → FAILED`: Pre-execution validation failure (e.g., security violation)
-- `PENDING → CANCELLED`: User cancellation before worker launch
-- `RUNNING → COMPLETED`: Successful task completion with artifacts
-- `RUNNING → FAILED`: Runtime execution error
-- `RUNNING → CANCELLED`: Cooperative user cancellation
-- `COMPLETED`, `FAILED` and `CANCELLED` are **terminal states** with no outgoing transitions
+- `predict` -> `f1/handlers/predict.py`
+- `train` -> `f1/handlers/train.py`
+- `val` -> `f1/handlers/val.py`
+- `export` -> `f1/handlers/export.py`
+- `diagnose` -> `f1/handlers/diagnose.py`
 
-**Illegal Transitions** (enforced by `JobDispatcherStateMachine`):
+Importing `f1.handlers` registers all five handlers. The dispatcher resolves the
+concrete class through `TaskHandlerRegistry`, validates parameters and security
+constraints, injects cooperative cancellation tracking, invokes the handler, and
+normalizes the returned result.
 
-- `COMPLETED → RUNNING` (Cannot restart finished job)
-- `COMPLETED → PENDING` (Cannot reset finished job)
-- `FAILED → RUNNING` (Cannot resume failed job without resubmission)
+The public statuses are:
 
----
-
-## 3. Smoke Test Verification Results
-
-### 3.1 Test Suite Overview
-
-The F1 entry smoke test validates five critical dimensions:
-
-| Case             | Verification Target                                 | Expected Outcome                              |
-| ---------------- | --------------------------------------------------- | --------------------------------------------- |
-| **Case 1** | E2E GPU inference with artifact persistence         | `status=COMPLETED`, `len(artifacts) > 0`  |
-| **Case 2** | Security policy defense (shell execution)           | `status=FAILED`, `error.code=SEC_ERR_001` |
-| **Case 3** | Security policy defense (path traversal)            | `status=FAILED`, `error.code=SEC_ERR_001` |
-| **Case 4** | Illegal state transition guard (COMPLETED→RUNNING) | `ValueError` raised                         |
-| **Case 5** | Illegal state transition guard (PENDING→COMPLETED) | `ValueError` raised                         |
-
-### 3.2 Execution Evidence (from `smoke_run.log`)
-
-#### Case 1: E2E Happy Path Execution
-
-**Objective**: Validate contract parsing, GPU inference, and artifact capture.
-
-```log
-[Case 1] Contract Parsing & E2E Real Inference Execution...
-  [StateMachine] Job job_20260824_f1_001 transitioned to: RUNNING
-Results saved to runs/detect/runs/predict/job_20260824_f1_001
-  [Executor] Real inference executed on device=0. Detected count: 6
-  [Artifacts] Verified artifacts (1 files) at: ['runs\\detect\\runs\\predict\\job_20260824_f1_001\\bus.jpg']
-  [StateMachine] Job job_20260824_f1_001 transitioned to: COMPLETED
-  [PASS] in 3.59s
+```text
+pending | running | completed | failed | cancelled
 ```
 
-**Evidence Analysis**:
+The worker-side dispatcher state machine permits:
 
-- ✅ Contract parsed successfully from `job_request_draft.json`
-- ✅ State transition `PENDING → RUNNING → COMPLETED` executed correctly
-- ✅ Real GPU inference on `device=0` (RTX 4050) detected 6 objects in `bus.jpg`
-- ✅ Output artifact `bus.jpg` persisted to `runs/detect/runs/predict/job_20260824_f1_001/`
-- ✅ Total execution time: **3.59 seconds**
-
-#### Case 2: Security Constraint Defense (Shell Execution)
-
-**Objective**: Verify rejection of jobs attempting shell execution.
-
-```log
-[Case 2] Security Constraint Defense (Shell Attempt)...
-  [StateMachine] Job smoke-sec-002 transitioned to: FAILED
-  [PASS] (Shell execution blocked)
+```text
+PENDING -> RUNNING -> COMPLETED
+    |          |
+    +----------+----> FAILED
 ```
 
-**Evidence Analysis**:
+`CANCELLED` is published by `JobsManager`, not by the dispatcher state machine.
+For a running job the manager first stops and joins the owned process tree, then
+publishes `CANCELLED / USER_CANCELLED`. Terminal status, result, and error
+snapshots cannot be overwritten by a late worker result.
 
-- ✅ Job with `allow_shell=true` immediately transitioned to `FAILED`
-- ✅ Error code `SEC_ERR_001` correctly assigned
-- ✅ No shell execution attempted; policy enforced at dispatch stage
-- ✅ Error message: `"Security policy violation: Shell execution not permitted"`
+## 3. Lifecycle and capacity
 
-#### Case 3: Security Constraint Defense (Path Traversal)
+- CPU and accelerator jobs use separate queues.
+- Defaults are two CPU slots, one accelerator slot, and 100 pending jobs.
+- Explicit `device=cpu` uses a CPU slot. Empty/auto values, CUDA device strings,
+  multi-GPU strings, and MPS use the accelerator queue.
+- A waiting job remains `pending` and owns no process or dedicated thread.
+- A full pending queue returns HTTP `429`.
+- Timeout starts when a slot launches a worker; queue waiting time is excluded.
+- A fresh cancellation request returns HTTP `202`. The caller polls until the
+  job reaches a terminal state.
+- Graceful shutdown stops pending/running work before the service exits.
+- On startup, persisted `pending` or `running` jobs become
+  `FAILED / SERVICE_RESTARTED`; execution is not resumed.
 
-**Objective**: Verify rejection of jobs accessing non-whitelisted paths.
+Windows uses a kill-on-close Job Object. Linux uses a guardian, process groups,
+and subreaper behavior to contain and reap descendants. These mechanisms provide
+lifecycle cleanup, not an OS security sandbox. Other POSIX platforms do not have
+the same verified subreaper guarantee. See `f1/RUNTIME_LIFECYCLE.md`.
 
-```log
-[Case 3] Security Constraint Defense (Path Traversal)...
-  [StateMachine] Job smoke-sec-003 transitioned to: FAILED
-  [PASS] (Path traversal blocked)
-```
+## 4. State, logs, and artifacts
 
-**Evidence Analysis**:
+The API manager persists history to `F1_JOBS_STATE_PATH`, defaulting to
+`runs/jobs_state.json`. Writes use a temporary file and replace, but persistence
+is local and best-effort; it is not a transactional database or durable queue.
 
-- ✅ Job with `data_source="../../etc/passwd"` immediately failed validation
-- ✅ Error code `SEC_ERR_001` correctly assigned
-- ✅ Path whitelist enforcement prevented directory traversal attack
-- ✅ Error message: `"Security policy violation: Data_source path '../../etc/passwd' not in whitelist"`
+Logs are exposed with HTTP offset/limit cursors. `JobRequest.append_log()` and
+manager-owned structured log/error paths sanitize credentials before storage and
+API delivery. This guarantee applies to controlled job logs, errors, and persisted
+fields; arbitrary third-party output written directly to process stdout/stderr is
+not captured or guaranteed to pass through the sanitizer.
 
-#### Case 4: State Machine Illegal Transition Guard (COMPLETED→RUNNING)
+Terminal status/result/error snapshots are immutable. Historical log entries
+remain readable, and log events already in flight may still be retained without
+changing the terminal snapshot.
 
-**Objective**: Ensure terminal states cannot transition back to active states.
+Handlers collect existing files below their job-specific output directory into a
+sorted artifact manifest. The API returns safe relative artifact IDs and serves a
+file only when that exact ID exists in the stored manifest. It does not expose an
+arbitrary directory browser or accept client-preloaded artifact entries.
 
-```log
-[Case 4] State Machine Guard (COMPLETED -> RUNNING)...
-  [PASS] (Illegal transition prevented)
-```
+## 5. Security boundary
 
-**Evidence Analysis**:
+At API admission, `JobsManager` resets client-controlled lifecycle state and
+enforces the server policy:
 
-- ✅ Attempted transition `COMPLETED → RUNNING` raised `ValueError`
-- ✅ State machine integrity preserved
-- ✅ Terminal state immutability enforced
+- `allow_shell = false`
+- `path_whitelisted = true`
+- client `allowed_paths` and `allowed_path_patterns` are discarded
+- model, data, and output paths are validated against independent server roots
+- network data sources require an explicitly allowlisted hostname
+- client-provided artifact entries are cleared
+- `job_id` accepts only safe alphanumeric, underscore, and hyphen identifiers
 
-#### Case 5: State Machine Illegal Transition Guard (PENDING→COMPLETED)
+Path validation rejects traversal, sibling-prefix escapes, existing symlink
+components, and broken symlinks. A missing ordinary output leaf below the trusted
+output root is allowed so the handler can create it.
 
-**Objective**: Ensure jobs cannot skip mandatory execution stage.
+The API has no authentication, RBAC, tenant isolation, or per-job filesystem
+sandbox. It is intended for a trusted host/network and controlled service account.
 
-```log
-[Case 5] State Machine Guard (PENDING -> COMPLETED)...
-  [PASS] (Skip prevented)
-```
+## 6. Frontends and startup
 
-**Evidence Analysis**:
-
-- ✅ Attempted transition `PENDING → COMPLETED` raised `ValueError`
-- ✅ State machine prevents skipping `RUNNING` stage
-- ✅ Execution integrity guaranteed
-
-### 3.3 Final Test Suite Summary
-
-```
-=======================================================
-Smoke Test Execution Summary:
-  - E2E Happy Path (Real Predict)       [PASS] (Time: 3.59s, Artifacts: 1)
-  - Security Defense (Shell)            [PASS] (ErrorCode: SEC_ERR_001)
-  - Security Defense (Path Traversal)   [PASS] (ErrorCode: SEC_ERR_001)
-  - State Guard (COMPLETED->RUNNING)    [PASS] (Prevented illegal transition)
-  - State Guard (PENDING->COMPLETED)    [PASS] (Prevented skip to terminal)
-=======================================================
->>> ALL F1 SMOKE SCENARIOS PASSED SUCCESSFULLY! <<<
-```
-
-**Exit Code**: `0` (all tests passed)
-
----
-
-## 4. Security & Safety Declaration
-
-### 4.1 Enforced Security Policies
-
-The F1 Studio Platform implements the following mandatory security constraints:
-
-1. **No Arbitrary Shell Execution**:
-
-   - `allow_shell=false` enforced at dispatch layer
-   - Jobs requesting shell access immediately fail with `SEC_ERR_001`
-2. **Path Whitelisting**:
-
-   - The API discards client-supplied `allowed_paths` / `allowed_path_patterns` and replaces them
-     with the trusted roots configured by `F1_MODEL_ROOTS`, `F1_DATA_ROOTS`, and `F1_OUTPUT_ROOT`
-   - `model_path`, `data_source`, and `output.output_dir` are resolved independently and checked
-     against their corresponding server-owned root
-   - The handler layer remains fail-closed: an empty trusted whitelist rejects every path rather
-     than defaulting to permissive
-   - Path traversal (`../`) is neutralized by resolution before the containment check
-3. **Environment Variable Sanitization**:
-
-   - Sensitive variables (API keys, credentials) excluded from logs
-   - Runtime tracking logs redact `os.environ` contents
-4. **Resource Isolation**:
-
-   - Jobs execute with `timeout_seconds` limit (default: 300s)
-   - GPU memory leaks mitigated via PyTorch context managers
-   - Output directories use unique `job_id` to prevent collision
-
-### 4.2 Threat Model Coverage
-
-| Attack Vector       | Mitigation                                      | Validation                  |
-| ------------------- | ----------------------------------------------- | --------------------------- |
-| Shell execution     | `allow_shell=false` check                     | Case 2 smoke test           |
-| Path traversal      | `_is_path_safe()` resolve + containment check | Case 3 smoke test           |
-| Resource exhaustion | Backend-enforced `timeout_seconds` deadline   | Worker lifecycle tests      |
-| State corruption    | State machine transition guards                 | Case 4 / Case 5 smoke tests |
-
----
-
-## 5. Post-Entry Roadmap
-
-### 5.1 Phase 0 (P0): Foundation Stabilization
-
-**Target**: 2026-08-31
-**Deliverables**:
-
-- [X] Baseline entry validation & locked contract schema
-- [X] Preserve existing baseline inference functionality
-- [X] Add Jobs tab (submission, state monitoring, streaming logs, artifacts download)
-- [X] Integrate `predict` and `system doctor` Agent Skills
-- [X] Gradio UI layout optimization and state binding
-
-### 5.2 Phase 1 (P1): Multi-Task Unification
-
-**Target**: 2026-09-07
-**Deliverables**:
-
-- [X] Unify `train`, `val`, `predict`, `export` task contracts
-- [X] Implement job cancellation, watchdog timers, and timeout mechanisms
-- [X] Add batch image/video inference support
-- [X] Enhance path whitelisting with regex patterns
-
-### 5.3 Phase 2 (P2): Standalone FastAPI Engine & Decoupled Architecture
-
-**Target**: 2026-09-12**Deliverables**:
-
-- [X] Standalone FastAPI Service: Expose core task dispatcher endpoints (`/api/v1/jobs/*` for train, val, predict, export, and diagnose) alongside Gradio WebUI
-- [X] Schema & Contract Alignment: Native OpenAPI/Swagger documentation backed by `core/schema.py` (`JobRequest`, `JobStatus`, and error dictionaries)
-- [X] Non-blocking Lifecycle & Log Streaming: Asynchronous job lifecycle polling, real-time incremental log retrieval, and cooperative cancellation via REST API
-- [X] Artifact Delivery Endpoints: Direct file inspection, static mount, and artifact manifest download routes
-- [X] Decoupled Frontend Demo: Zero-build verification console (`frontend/index.html` + `app.js`, Tailwind CDN + vanilla ES6) served by the engine at `/` — job dispatch, lifecycle supervision, cursor-based log tailing and artifact inspection against the REST API, with `file://` standalone usage supported via the `null`-origin CORS entry
-
----
-
-## 6. Reproduction Guide
-
-### 6.1 Prerequisites
+Use the combined launcher:
 
 ```bash
-# Verify Python environment (Recommended 3.10 - 3.12, verified on 3.12.10)
-python --version
-
-# Verify CUDA availability
-python -c "import torch; print(torch.cuda.is_available())"   # Should print True
-
-# Verify Ultralytics installation
-python -c "from ultralytics import YOLO; print(YOLO.__version__)"
+python start_studio.py
 ```
 
-### 6.2 Execute Smoke Test
+It health-checks or starts `main_engine.py` as a child process when needed, then
+runs Gradio in the launcher process. Gradio and the API remain separate services.
+The default endpoints are:
+
+- Gradio: `http://127.0.0.1:7860`
+- FastAPI: `http://127.0.0.1:8000`
+- Health: `http://127.0.0.1:8000/health`
+- OpenAPI: `http://127.0.0.1:8000/docs`
+- Zero-build console: `http://127.0.0.1:8000/`
+
+For API-only operation:
 
 ```bash
-# Navigate to project root directory
-cd path/to/YOLO-Master
-
-# Execute multi-scenario smoke test suite
-python smoke/test_f1_smoke.py
-
-# Optional: Capture and update run log
-# Linux / macOS / Git Bash:
-# python smoke/test_f1_smoke.py > smoke/smoke_run.log 2>&1
-# Windows PowerShell:
-# python smoke/test_f1_smoke.py | Out-File -Encoding utf8 smoke/smoke_run.log
-```
-
-### 6.3 Run the Decoupled Verification Console (P2)
-
-```bash
-# Start the standalone FastAPI engine (no Gradio required)
 python main_engine.py
-
-# The zero-build verification console loads at the web root:
-#   http://127.0.0.1:8000/
-# API docs: http://127.0.0.1:8000/docs   ·   Health probe: http://127.0.0.1:8000/health
-
-# The console can also be opened directly from disk (frontend/index.html via
-# file://) — the engine's CORS allowlist includes the "null" origin such pages
-# send, and the API base defaults to http://localhost:8000. No npm install,
-# no Node.js server, no build step.
 ```
 
-### 6.4 Inspect Results
+`frontend/` is always mounted at `/`. The React/TypeScript/Vite source is under
+`web/`; `/console` is mounted only when a local `web/dist` build exists. Gradio is
+not mounted by FastAPI and communicates through REST.
 
-```bash
-# View execution log
-cat f1/smoke_run.log
+## 7. Configuration
 
-# Verify artifacts
-ls -lh runs/detect/runs/predict/job_20260824_f1_001/
+- `F1_JOBS_STATE_PATH`: local manager state file; default `runs/jobs_state.json`
+- `F1_ENGINE_HOST` / `F1_ENGINE_PORT`: API bind address; defaults `127.0.0.1:8000`
+- `F1_STUDIO_API_URL`: API origin used by Gradio; default `http://127.0.0.1:8000`
+- `F1_MODEL_ROOTS`: trusted model roots, separated by `os.pathsep`
+- `F1_DATA_ROOTS`: trusted data roots, separated by `os.pathsep`
+- `F1_OUTPUT_ROOT`: one trusted output root; default `<cwd>/runs`
+- `F1_NETWORK_INPUT_HOSTS`: comma-separated network input host allowlist
+- `F1_MAX_PENDING_JOBS`: pending capacity; default `100`
+- `F1_CPU_CONCURRENCY`: CPU slots; default `2`
+- `F1_GPU_CONCURRENCY`: accelerator slots; default `1`
+- `F1_STOP_GRACE_SECONDS`: worker stop grace, 0-30 seconds; default `2`
+- `F1_CORS_ORIGINS`: comma-separated CORS allowlist replacing dev defaults
 
-# Validate contract schema
-python -c "
-import json
-from core.schema import JobRequest
-with open('f1/job_request_draft.json') as f:
-    JobRequest(**json.load(f))
-print('Contract validation passed')
-"
+## 8. Verification record
+
+The following results were recorded on commit
+`0e7a8f83b53c97abc8eb3caedc532f5779fbb086`, reviewed against the official
+baseline `acce839c7e895d6b179de7f7093fa879e237cc7b` (2026-08-21 23:59:59 UTC+8).
+
+Windows verification used the repository `.venv` with Python 3.12 and a fresh
+repository-local pytest temp directory:
+
+```text
+pytest tests/f1/ tests/api/ --cov=f1 --cov=core
+412 passed, 11 skipped, 3 warnings
+TOTAL: 2369 statements, 518 missed, 78% coverage
 ```
 
+The 11 Windows skips require symlink privileges. Two warnings are ONNX exporter
+deprecations; the third was a host-specific pytest cache permission warning.
+
+The Ubuntu/Python 3.10 source-branch CI run at that commit completed successfully:
+
+```text
+422 passed, 1 skipped, 3 warnings
+TOTAL: 2369 statements, 516 missed, 78% coverage
+F1 smoke: 5/5 passed
+Ruff lint and format: passed
+```
+
+CI evidence:
+<https://github.com/9-71/YOLO-Master/actions/runs/34793607227>
+
+This is source-branch push CI evidence, not a Tencent repository required PR
+check. The F1 workflow covers Python Ruff, smoke, unit tests, and coverage. It
+does not currently run Node lint, TypeScript checking, or a Vite production build.
+
+Local checks at the same commit additionally passed `npm run lint` and TypeScript
+`--noEmit` checks for the React app and Node configuration. No claim is made here
+that a production React bundle is exercised by CI.
+
+## 9. Agent/F1 boundary
+
+The F1 production execution path is `f1/jobs_manager.py` ->
+`f1/worker_runtime.py` -> `f1/dispatcher.py` -> `f1/handlers/`. It does not route
+jobs through `agent/runtime/cli/async_jobs.py` or an Agent worker.
+
+`agent/` remains a separate skill/CLI integration layer. Agent documentation and
+validation belong to `agent/SKILL.md` and
+`agent/scripts/validate_yolo_master_skill.py`; those checks do not replace F1 API,
+lifecycle, handler, or security tests.
+
+## 10. Known limitations
+
+- One API service process and one local lifecycle owner only
+- Local best-effort JSON state; no database-backed durable queue
+- No distributed scheduling, priority execution, preemption, or automatic retry
+- Static CPU/GPU slot counts; no memory-aware or per-GPU placement
+- HTTP cursor polling only; no WebSocket/SSE stream
+- No authentication, RBAC, tenant isolation, or per-job OS sandbox
+- React build artifacts are deployment-provided and are not covered by F1 CI
+- Windows/Linux process containment is verified; other POSIX behavior is weaker
+- Some OBB/classification metric displays remain incomplete
+- Export tests currently emit legacy ONNX exporter deprecation warnings
+- Dependency versions are not fully upper-bounded or locked
+
+## References
+
+- User manual: `docs/f1_user_manual.md`
+- Handler framework: `f1/handlers/README.md`
+- Handler extension guide: `f1/handlers/USAGE.md`
+- Runtime lifecycle: `f1/RUNTIME_LIFECYCLE.md`
+- Agent skill boundary: `agent/SKILL.md`
+- Ultralytics documentation: <https://docs.ultralytics.com/>
+
 ---
 
-## 7. Known Limitations & Future Work
+**Document version**: 1.5.0
 
-### 7.1 Current Constraints
-
-- **Single-Task Execution**: No concurrent job execution
-- **Smoke Coverage Focus**: Entry smoke script (`smoke/test_f1_smoke.py`) exercises end-to-end inference (`predict`); all 5 task types are thoroughly covered in `tests/f1/`.
-- **Local-Only Storage**: Artifacts stored on local filesystem
-- **No Retry Mechanism**: Failed jobs require manual resubmission
-
-### 7.2 Planned Enhancements
-
-- Distributed task queue (Celery/Redis backend)
-- Multi-GPU job scheduling and load balancing
-- WebSocket-based real-time log streaming
-- Cloud object storage support (COS/OSS/S3-compatible)
-
----
-
-## 8. References
-
-- **Gradio Baseline Entry**: `app.py`
-- **Agent Skills Specification**: `agent/SKILL.md`
-- **Async Runtime & Handlers**: `agent/runtime/cli/async_jobs.py`, `agent/runtime/cli/job_handlers.py`
-- **Ultralytics YOLO Documentation**: https://docs.ultralytics.com/
-
----
-
-**Document Version**: 1.3.0
-**Last Updated**: 2026-09-08
-**Maintained By**: [@9-71](https://github.com/9-71) (`rhino-f1-dev` branch)
+**Last synchronized**: 2026-09-15

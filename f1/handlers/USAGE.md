@@ -1,321 +1,231 @@
-# F1 Task Handler Framework - Usage Guide
+# F1 Handler Extension Guide
 
-## Overview
+This guide targets developers extending the current handler implementation. For
+user-facing submission and REST examples, see `docs/f1_user_manual.md`.
 
-This is the decoupled task handler framework for the YOLO-Master F1 platform, providing decorator-based handler registration and factory method pattern.
+## 1. Understand the ownership boundary
 
-## Architecture
-
-```
-f1/handlers/
-├── __init__.py          # Module entry point, exports BaseTaskHandler and TaskHandlerRegistry
-├── base.py              # BaseTaskHandler abstract base class
-└── registry.py          # TaskHandlerRegistry and factory
+```text
+client -> FastAPI -> JobsManager -> ManagedWorker -> dispatcher -> handler
 ```
 
-## Core Components
+Handlers own task-specific validation and engine adaptation. They do not own:
 
-### 1. BaseTaskHandler (Abstract Base Class)
+- API admission or server-root normalization
+- CPU/GPU queueing and concurrency slots
+- process creation, timeout, or forced termination
+- public cancellation publication
+- state persistence, cursor logs, or artifact download authorization
 
-Defines the core contract for task handlers:
+Those responsibilities stay in `JobsManager`, `ManagedWorker`, and the API. A
+handler should never create another manager or mutate the shared state file.
+
+## 2. Implement the base contract
 
 ```python
-from f1.handlers import BaseTaskHandler
+from typing import Any
+
+from f1.handlers.base import BaseTaskHandler, PathWhitelistViolationError
+from f1.handlers.registry import TaskHandlerRegistry
 
 
-class YourTaskHandler(BaseTaskHandler):
-    def validate_params(self, params, security_constraints):
-        """Validate task parameters and security constraints"""
-        # Implement validation logic
-        return True, None  # (is_valid, error_message)
+@TaskHandlerRegistry.register("example")
+class ExampleHandler(BaseTaskHandler):
+    def validate_params(
+        self,
+        params: dict[str, Any],
+        security_constraints: dict[str, Any],
+    ) -> tuple[bool, str | None]:
+        if security_constraints.get("allow_shell", False):
+            return False, "Shell execution is not allowed"
+        if not security_constraints.get("path_whitelisted", False):
+            return False, "Path whitelisting must be enabled"
 
-    def execute(self, job_id, params, output_dir):
-        """Execute task and return result"""
-        # Implement task execution logic
-        return {"success": True, "artifacts": [...], "metadata": {...}, "error": None}
-```
-
-**Built-in Security Utilities**:
-
-- `_is_path_safe(target_path, allowed_roots)`: Path safety validation with relative path resolution and directory traversal defense
-
-### 2. TaskHandlerRegistry (Registry)
-
-Provides decorator registration and factory method retrieval:
-
-```python
-from f1.handlers import TaskHandlerRegistry, BaseTaskHandler
-
-
-@TaskHandlerRegistry.register("predict")
-class PredictHandler(BaseTaskHandler):
-    def validate_params(self, params, security_constraints):
-        # Validate shell execution permission
-        if security_constraints.get("allow_shell"):
-            return False, "Shell execution not permitted"
-
-        # Validate path whitelist
         allowed_paths = security_constraints.get("allowed_paths", [])
-        model_path = params.get("model_path", "")
-        if model_path and not self._is_path_safe(model_path, allowed_paths):
-            return False, f"Model path '{model_path}' not in whitelist"
+        allowed_patterns = security_constraints.get("allowed_path_patterns", [])
+        if not allowed_paths and not allowed_patterns:
+            return False, "Trusted path whitelist cannot be empty"
 
+        model_path = params.get("model_path")
+        if not model_path:
+            return False, "Required parameter 'model_path' is missing"
+        if not self._is_path_safe(model_path, allowed_paths, allowed_patterns):
+            raise PathWhitelistViolationError(f"model_path '{model_path}' is not within the trusted whitelist")
         return True, None
 
-    def execute(self, job_id, params, output_dir):
-        from ultralytics import YOLO
-
-        # Execute actual YOLO inference
-        model = YOLO(params["model_path"])
-        results = model.predict(
-            source=params["data_source"], device=params.get("device", "0"), project=output_dir, name=job_id
-        )
-
-        # Capture output artifacts
-        artifacts = [str(p) for p in Path(results[0].save_dir).glob("*.jpg")]
-
+    def execute(
+        self,
+        job_id: str,
+        params: dict[str, Any],
+        output_dir: str,
+    ) -> dict[str, Any]:
+        self._check_cancelled()
+        # Delegate to a Python API here; do not build a shell command.
+        self._check_cancelled()
         return {
             "success": True,
-            "artifacts": artifacts,
-            "metadata": {"detected_count": len(results[0].boxes)},
+            "artifacts": [],
+            "metadata": {},
             "error": None,
         }
 ```
 
-## Dispatcher Integration Pattern
+This example demonstrates the method shape only. Registering `example` does not
+make it a public API task until the canonical schema and all public surfaces are
+updated as described in section 6.
 
-Dispatcher usage example:
+## 3. Validation and error classification
 
-```python
-from f1.handlers import PathWhitelistViolationError, TaskHandlerRegistry
+Use these categories consistently:
 
+- Return `(False, message)` for missing fields, invalid types, unsupported values,
+  or out-of-range parameters. The dispatcher maps this to
+  `PARAM_VALIDATION_FAILED`.
+- Raise `PathWhitelistViolationError` for path containment failures. The
+  dispatcher maps it to `SEC_ERR_001`.
+- Return a structured `success=False` result for controlled engine failures.
+- Let `CooperativeCancellationError` from `_check_cancelled()` propagate. Do not
+  catch it in the handler's generic engine exception block.
 
-def dispatch_job(job_request):
-    """Dispatcher core logic"""
-    # 1. Retrieve handler class by task_type
-    handler_class = TaskHandlerRegistry.get(job_request.task_type)
-    handler = handler_class()
+The production API overwrites client security fields before dispatch. Handler
+validation is still fail-closed because handlers are also used directly by tests
+and compatibility callers.
 
-    # 2. Validate parameters and security constraints.
-    # A path whitelist violation raises PathWhitelistViolationError (a security
-    # event -> SEC_ERR_001); plain parameter problems return (False, message)
-    # and map to PARAM_VALIDATION_FAILED.
-    try:
-        is_valid, err_msg = handler.validate_params(job_request.params, job_request.security_constraints)
-    except PathWhitelistViolationError as exc:
-        job_request.status = "FAILED"
-        job_request.error = {"code": "SEC_ERR_001", "message": str(exc)}
-        return job_request
+`_is_path_safe()` resolves relative paths, rejects unsafe symlink components and
+traversal, requires containment in a trusted root, and supports full-match regex
+patterns for non-API compatibility callers. The production FastAPI path clears
+client regex patterns and uses server-owned roots.
 
-    if not is_valid:
-        job_request.status = "FAILED"
-        job_request.error = {"code": "PARAM_VALIDATION_FAILED", "message": err_msg}
-        return job_request
+## 4. Execution rules
 
-    # 3. Execute task
-    job_request.status = "RUNNING"
-    result = handler.execute(job_request.job_id, job_request.params, job_request.output.output_dir)
+1. Call `_check_cancelled()` before expensive engine work.
+2. For chunked work, call it between chunks. It cannot interrupt a single blocking
+   Ultralytics call; manager-owned process termination provides the hard stop.
+3. Use the Python API (`YOLO.train`, `YOLO.val`, `YOLO.predict`, `YOLO.export`) and
+   do not invoke a shell.
+4. Write only below `Path(output_dir) / job_id`.
+5. Return absolute paths for files that actually exist. Production handlers use a
+   sorted recursive scan of the job directory.
+6. Keep metadata JSON-serializable. Convert tensors, NumPy values, and engine
+   result objects to plain scalars, lists, and dictionaries.
+7. Do not publish public lifecycle states directly. The dispatcher produces its
+   worker result; `JobsManager` arbitrates the final public snapshot.
+8. Do not assume that printing to stdout enters the structured job log. Use the
+   controlled job logging path when working at dispatcher/manager level.
 
-    # 4. Update task status
-    if result["success"]:
-        job_request.status = "COMPLETED"
-        job_request.output.artifacts = result["artifacts"]
-    else:
-        job_request.status = "FAILED"
-        job_request.error = {"code": "EXEC_ERR_500", "message": result["error"]}
+## 5. Existing handler reference
 
-    return job_request
-```
+### Predict
 
-## Security Enforcement
+`f1/handlers/predict.py` accepts one source path, a non-recursive directory, or a
+list. Directory expansion is sorted and filtered to supported media extensions.
+Input chunks default to `batch_size=8`, with cancellation checks between chunks.
+Network sources require API-level host authorization.
 
-The framework enforces the following security policies:
+### Train and val
 
-### 1. Path Whitelisting
+`train.py` and `val.py` require a dataset `.yaml`/`.yml` and validate model/data
+paths. The API injects `epochs=1` and `imgsz=640` defaults for train, and
+`imgsz=640` for val when omitted. Both collect the complete job output tree.
 
-```python
-def validate_params(self, params, security_constraints):
-    allowed_paths = security_constraints.get("allowed_paths", [])
+### Export
 
-    # Validate all input paths
-    for key in ["model_path", "data_source"]:
-        path = params.get(key, "")
-        if path and not self._is_path_safe(path, allowed_paths):
-            return False, f"{key} path '{path}' not in whitelist"
+`export.py` validates format against `SUPPORTED_EXPORT_FORMATS`, copies the source
+model into the job directory, calls `YOLO.export()`, and scans that directory for
+artifacts. The copy prevents concurrent jobs from writing next to the original
+checkpoint.
 
-    return True, None
-```
+### Diagnose
 
-**Security Properties**:
-- Automatically resolves symlinks and relative paths (`../../`)
-- Empty whitelist defaults to deny-all (fail-closed)
-- Prevents path traversal attacks
+`diagnose.py` collects environment information and writes
+`system_diagnostics.json` and `system_diagnostics.txt`. It still follows the same
+result and artifact contract, but does not call a YOLO compute method.
 
-### 2. Shell Execution Prohibition
+## 6. Expose a new public task
 
-```python
-if security_constraints.get("allow_shell"):
-    return False, "Shell execution not permitted"
-```
+A new public task is a cross-layer contract change. Update all applicable areas:
 
-### 3. Resource Isolation
+1. Add the task to `core/schema.py::TaskType`.
+2. Add the concrete handler module and registration decorator.
+3. Import it from `f1/handlers/__init__.py` so registration occurs in workers.
+4. Update `core/task_catalog.py` and any Agent catalog only if the task is also an
+   Agent-facing capability.
+5. Update REST/Gradio/zero-build/React form validation and presets as needed.
+6. Add handler inventory, dispatcher, API contract, lifecycle, and UI tests.
+7. Update this documentation without claiming support before every public surface
+   accepts the new task.
 
-- Independent output directory per `job_id`
-- GPU memory management (using context managers)
-- Timeout control (specified by `runtime_tracking.timeout_seconds`)
+The dispatcher normally needs no task-specific branch because it uses the
+registry, but the schema and clients are closed over the current five task types.
 
-## Registry API Reference
-
-### Registration
-
-```python
-@TaskHandlerRegistry.register(task_type: str)
-```
-
-**Behavior**:
-- Registers at class definition time (module import phase)
-- Prevents duplicate registration (raises `ValueError`)
-- Type checking: must inherit from `BaseTaskHandler`
-
-### Factory Method
+## 7. Registry behavior
 
 ```python
-TaskHandlerRegistry.get(task_type: str) -> type[BaseTaskHandler]
+from f1.handlers import TaskHandlerRegistry
+
+handler_class = TaskHandlerRegistry.get("predict")
+handler = handler_class()
+available = TaskHandlerRegistry.list_registered()
 ```
 
-**Returns**: Handler class (not instance)<br>
-**Raises**: `ValueError` for unregistered `task_type` with list of available types
+- Registration occurs at module import time.
+- Duplicate task names raise `ValueError`.
+- Registered classes must inherit `BaseTaskHandler`.
+- The registry is not thread-safe; finish registration before dispatch begins.
+- `TaskHandlerRegistry.clear()` is for isolated tests only.
 
-### Utility Methods
+## 8. Verification
 
-```python
-TaskHandlerRegistry.list_registered() -> list[str]
-```
-
-Returns all registered task types (sorted)
-
-```python
-TaskHandlerRegistry.clear()
-```
-
-Clears the registry (testing isolation only)
-
-## Error Handling
-
-### Registration-Time Errors
-
-```python
-# Duplicate registration
-@TaskHandlerRegistry.register("predict")
-class DuplicateHandler(BaseTaskHandler):
-    pass
-
-
-# ValueError: Task type 'predict' is already registered
-
-
-# Non-BaseTaskHandler subclass
-@TaskHandlerRegistry.register("invalid")
-class InvalidHandler:
-    pass
-
-
-# TypeError: Handler class InvalidHandler must inherit from BaseTaskHandler
-```
-
-### Runtime Errors
-
-```python
-# Unregistered task type
-handler = TaskHandlerRegistry.get("unknown_task")
-# ValueError: Task type 'unknown_task' is not registered.
-#            Available types: ['diagnose', 'export', 'predict', 'train']
-```
-
-## Testing
-
-Run unit tests:
+From the repository root, run focused handler checks:
 
 ```bash
-cd f1
-python -m pytest test_handlers_framework.py -v
+python -m pytest \
+  tests/f1/test_handlers_framework.py \
+  tests/f1/test_handler_inventory.py \
+  tests/f1/test_phase1_handlers.py \
+  tests/f1/test_predict_diagnose.py \
+  tests/f1/test_val_batch_runtime.py \
+  tests/f1/test_dispatcher.py -v
 ```
 
-**Test Coverage**:
-- Abstract base class instantiation prevention
-- Decorator registration and retrieval
-- Path safety validation
-- Duplicate registration defense
-- End-to-end dispatcher integration
+For changes affecting admission, cancellation, timeout, or artifacts, also run:
 
-## Extension Example: Train Handler
-
-```python
-@TaskHandlerRegistry.register("train")
-class TrainHandler(BaseTaskHandler):
-    def validate_params(self, params, security_constraints):
-        # Validate training-specific parameters
-        if "data_yaml" not in params:
-            return False, "data_yaml is required for training"
-
-        # Path whitelist check
-        allowed = security_constraints.get("allowed_paths", [])
-        if not self._is_path_safe(params["data_yaml"], allowed):
-            return False, "data_yaml path not in whitelist"
-
-        return True, None
-
-    def execute(self, job_id, params, output_dir):
-        from ultralytics import YOLO
-
-        model = YOLO(params.get("model_path", "yolov8n.yaml"))
-        results = model.train(
-            data=params["data_yaml"],
-            epochs=params.get("epochs", 100),
-            project=output_dir,
-            name=job_id,
-            device=params.get("device", "0"),
-        )
-
-        # Capture training artifacts
-        artifacts = [f"{output_dir}/{job_id}/weights/best.pt", f"{output_dir}/{job_id}/results.csv"]
-
-        return {
-            "success": True,
-            "artifacts": artifacts,
-            "metadata": {
-                "final_map50": results.results_dict["metrics/mAP50(B)"],
-                "epochs_completed": params.get("epochs", 100),
-            },
-            "error": None,
-        }
+```bash
+python -m pytest \
+  tests/f1/test_worker_lifecycle.py \
+  tests/f1/test_jobs_queue_capacity.py \
+  tests/api/test_api_v1.py \
+  tests/api/test_security_boundaries.py \
+  tests/api/test_live_logs_ablation.py -v
 ```
 
-## Design Principles
+The CI-equivalent F1 scope is:
 
-1. **Separation of Concerns**: Dispatcher does not depend on concrete handler implementations
-2. **Open-Closed Principle**: Adding new task types requires no dispatcher modifications
-3. **Security-First**: Validation phase enforces security policies
-4. **Fail-Closed**: Empty whitelist defaults to deny, not allow
-5. **Type-Safe**: Complete type hints and runtime checking
+```bash
+python -m pytest tests/f1/ tests/api/ --cov=f1 --cov=core
+python -m smoke.test_f1_smoke
+ruff check f1/ tests/f1/ smoke/ core/ api/ main_engine.py tests/api/ app.py
+ruff format --check f1/ tests/f1/ smoke/ core/ api/ main_engine.py tests/api/ app.py
+```
 
-## Future Enhancements
+## 9. Agent/F1 boundary
 
-- [ ] Async execution support (`async def execute`)
-- [ ] Handler lifecycle hooks (`on_start`, `on_complete`, `on_error`)
-- [ ] Resource pool management (GPU allocation, concurrency limits)
-- [ ] Handler versioning (support for multiple versions)
-- [ ] Dynamic reloading (hot-swap handler implementations)
+F1 handlers are not Agent Skill handlers. Production F1 routing ends in
+`f1/handlers/`; Agent CLI dispatch and multimodal skill behavior live under
+`agent/`. Share canonical task names through `core/` only where the code already
+defines an explicit shared contract. Do not route F1 jobs through an Agent worker
+or treat Agent validation as evidence for F1 lifecycle behavior.
 
-## References
+## Current limitations
 
-- **F1 Smoke Test**: `f1/test_f1_smoke.py`
-- **JobRequest Contract**: `f1/README.md` (Section 2.2)
-- **Security Model**: `f1/README.md` (Section 4)
-- **Ultralytics YOLO**: https://docs.ultralytics.com/
+- Synchronous handler methods only
+- Cooperative checkpoints only between blocking engine calls
+- Static import-time registry; no hot reload or handler version negotiation
+- Resource scheduling is manager-level and static, not handler-selected
+- No per-handler retry policy or isolated security sandbox
 
 ---
 
-**Version**: 1.0.0<br>
-**Last Updated**: 2026-09-01<br>
-**Maintained By**: [@9-71](https://github.com/9-71)
+**Document version**: 1.2.0
+
+**Last synchronized**: 2026-09-15

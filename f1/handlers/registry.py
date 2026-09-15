@@ -60,12 +60,12 @@ class TaskHandlerRegistry:
         """Decorator to register a handler class for a specific task_type.
 
         This decorator associates a concrete handler implementation with a task_type
-        string (e.g., "predict", "train", "export", "diagnose"). The decorated class
+        string (e.g., "predict", "train", "val", "export", "diagnose"). The decorated class
         MUST inherit from BaseTaskHandler and implement all abstract methods.
 
         Args:
             task_type: Task type identifier (must match JobRequest.task_type enum values)
-                Valid values: "predict", "train", "export", "diagnose"
+                Valid values: "predict", "train", "val", "export", "diagnose"
 
         Returns:
             Callable: Decorator function that registers the handler and returns the class unchanged
@@ -183,7 +183,7 @@ class TaskHandlerRegistry:
 
         Example:
             >>> TaskHandlerRegistry.list_registered()
-            ['diagnose', 'export', 'predict', 'train']
+            ['diagnose', 'export', 'predict', 'train', 'val']
         """
         return sorted(cls._handlers.keys())
 
