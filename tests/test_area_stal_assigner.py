@@ -169,7 +169,8 @@ def test_a2_runner_reads_final_protocol_from_default_yaml():
     assert args.seed == A2_CONFIG["seed"] == 42
     assert args.model == A2_CONFIG["model"] == "v0.1-N"
     assert args.stal_area_threshold == A2_CONFIG["area_threshold"] == 16.0
-    assert args.stal_min_candidates == A2_CONFIG["min_candidates"] == 4
+    assert args.stal_min_candidates == 3  # general STAL default
+    assert A2_CONFIG["min_candidates"] == 4  # A2 final acceptance override
 
     for forbidden_args in (["--stal-area-threshold", "16"], ["--epochs", "1"]):
         with pytest.raises(SystemExit):

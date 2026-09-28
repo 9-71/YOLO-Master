@@ -44,7 +44,7 @@ def test_a2_acceptance_defaults_parse_with_expected_values():
     cfg = get_cfg()
 
     assert cfg.stal_area_threshold == 16.0
-    assert cfg.stal_min_candidates == 4
+    assert cfg.a2_min_candidates == 4
     assert cfg.a2_model == "v0.1-N"
     assert cfg.a2_epochs == 120
     assert cfg.a2_imgsz == 800

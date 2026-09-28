@@ -8,7 +8,7 @@ from ultralytics.utils import DEFAULT_CFG_PATH, YAML
 
 A2_CONFIG_KEYS = {
     "stal_area_threshold",
-    "stal_min_candidates",
+    "a2_min_candidates",
     "a2_model",
     "a2_epochs",
     "a2_imgsz",
@@ -27,7 +27,7 @@ def load_a2_config(path: str | Path = DEFAULT_CFG_PATH) -> dict[str, int | float
         raise KeyError(f"default.yaml is missing A2 settings: {', '.join(missing)}")
     values = {
         "area_threshold": float(config["stal_area_threshold"]),
-        "min_candidates": int(config["stal_min_candidates"]),
+        "min_candidates": int(config["a2_min_candidates"]),
         "model": str(config["a2_model"]),
         "epochs": int(config["a2_epochs"]),
         "imgsz": int(config["a2_imgsz"]),

@@ -205,7 +205,7 @@ cfg: # (str, optional) path to a config.yaml that overrides defaults
 # A2 final acceptance configuration -------------------------------------------------------------------------------
 # The A2 runner consumes these settings as its fixed final acceptance protocol.
 stal_area_threshold: 16.0 # (float) final A2 AT-STAL bbox-area threshold in transformed pixels^2
-stal_min_candidates: 4 # (int) final A2 minimum one-to-many candidates for eligible GTs
+a2_min_candidates: 4 # (int) final A2 minimum one-to-many candidates for eligible GTs
 a2_model: v0.1-N # (str) final A2 model variant
 a2_epochs: 120 # (int) final A2 training epochs
 a2_imgsz: 800 # (int) final A2 training and validation image size
