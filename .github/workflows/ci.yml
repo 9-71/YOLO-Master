@@ -208,7 +208,7 @@ jobs:
           if [ "${{ matrix.torch }}" != "latest" ]; then
               torch="torch==${{ matrix.torch }} torchvision==${{ matrix.torchvision }}"
           fi
-          uv pip install -e ".[export-base,solutions]" \
+          uv pip install -e ".[export-base,solutions,studio]" \
             $torch aiohttp pytest-cov pytest-xdist "git+https://github.com/ultralytics/CLIP.git" \
             --torch-backend cpu
       - name: Check environment
@@ -386,7 +386,7 @@ jobs:
           if [ "${{ matrix.torch }}" != "latest" ]; then
             torch="torch==${{ matrix.torch }} torchvision==${{ matrix.torchvision }}"
           fi
-          uv pip install -e ".[export-base,solutions${legacy_extra}]" $torch \
+          uv pip install -e ".[export-base,solutions,studio${legacy_extra}]" $torch \
             aiohttp faster-coco-eval mlflow pytest-cov pytest-xdist "git+https://github.com/ultralytics/CLIP.git" \
             --torch-backend cpu
       - name: Check environment
@@ -544,7 +544,7 @@ jobs:
           retry_delay_seconds: 20
           timeout_minutes: 20
           run: |
-            uv pip install -e ".[export]" pytest pytest-xdist mlflow faster-coco-eval --torch-backend cpu
+            uv pip install -e ".[export,studio]" pytest pytest-xdist mlflow faster-coco-eval --torch-backend cpu
       - name: Check environment
         run: |
           yolo checks

@@ -268,3 +268,7 @@ experiments/
 logs/
 *.tar.gz
 scripts/tmp_*.py
+
+# Studio local verification evidence and runtime logs
+/.omc/
+/studio/smoke_run.log
