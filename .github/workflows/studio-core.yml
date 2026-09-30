@@ -1,0 +1,31 @@
+name: Studio Core
+on:
+  pull_request:
+    paths: ["core/**", "studio/**", "tests/studio/**", "pyproject.toml", ".github/workflows/studio-core.yml"]
+  push:
+    branches: [main, "studio/**"]
+    paths: ["core/**", "studio/**", "tests/studio/**", "pyproject.toml", ".github/workflows/studio-core.yml"]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  offline-core:
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python: ["3.10"]
+    env:
+      YOLO_AUTOINSTALL: "false"
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ matrix.python }}
+      - run: python -m pip install -e ".[studio]" pytest ruff codespell
+      - run: python -m pytest tests/studio -q
+      - run: python -m pytest --doctest-modules core studio -q
+      - run: ruff check core studio tests/studio
+      - run: ruff format --check core studio tests/studio
+      - run: codespell core studio tests/studio

@@ -80,6 +80,7 @@ dependencies = [
 
 # Optional dependencies ------------------------------------------------------------------------------------------------
 [project.optional-dependencies]
+studio = ["pydantic>=2.0,<3"]
 clip = [
     "clip @ git+https://github.com/ultralytics/CLIP.git",
 ]
@@ -189,7 +190,7 @@ ultralytics = "ultralytics.cfg:entrypoint"
 
 # Tools settings -------------------------------------------------------------------------------------------------------
 [tool.setuptools]  # configuration specific to the `setuptools` build backend.
-packages = { find = { where = ["."], include = ["ultralytics", "ultralytics.*"] } }
+packages = { find = { where = ["."], include = ["ultralytics", "ultralytics.*", "core", "core.*", "studio", "studio.*"] } }
 # Tests included below for checking Conda builds in https://github.com/conda-forge/ultralytics-feedstock
 package-data = { "ultralytics" = ["**/*.yaml", "**/*.sh", "../tests/*.py"], "ultralytics.assets" = ["*.jpg"], "ultralytics.solutions.templates" = ["*.html"]}
 
@@ -200,6 +201,7 @@ version = { attr = "ultralytics.__version__" }
 addopts = "--doctest-modules --durations=30 --color=yes"
 markers = [
     "slow: skip slow tests unless --slow is set",
+    "studio_integration: real Studio engine tests requiring --slow, --studio-integration and STUDIO_TEST_MODEL",
 ]
 norecursedirs = [".git", "dist", "build"]
 
