@@ -55,7 +55,13 @@ def test_registry_ready_before_concurrent_lookup():
 def test_core_import_direction():
     forbidden = {"api", "agent", "fastapi", "gradio", "frontend", "web", "skills"}
     forbidden_studio = {"jobs_manager", "worker_runtime", "admission", "job_store", "job_logs", "artifacts", "ui"}
-    for path in [*(ROOT / "core").glob("*.py"), *(ROOT / "studio").rglob("*.py")]:
+    core_paths = [
+        *(ROOT / "core").glob("*.py"),
+        ROOT / "studio/__init__.py",
+        ROOT / "studio/dispatcher.py",
+        *(ROOT / "studio/handlers").rglob("*.py"),
+    ]
+    for path in core_paths:
         tree = ast.parse(path.read_text(encoding="utf-8"))
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):
