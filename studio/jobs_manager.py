@@ -462,6 +462,8 @@ class JobsManager:
             kind, payload = worker.receive()
             if kind == "log":
                 log_sink(payload)
+                # Keep draining a busy log queue before scanning the whole tree again.
+                continue
             elif kind == "shutdown_limit":
                 self._append_log(job_id, "[SHUTDOWN_LIMIT] DDP checkpoint cooperation unsupported")
             elif kind == "checkpoint":

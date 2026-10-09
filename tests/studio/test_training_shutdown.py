@@ -57,6 +57,8 @@ def cooperative_executor(job):
             time.sleep(0.02)
 
     def finish_child():
+        if job.params.get("wait_for_result"):
+            wait_for(lambda: (root / "result-received").exists())
         time.sleep(job.params.get("exit_delay", 0))
         child.terminate()
         child.wait(timeout=5)
@@ -352,14 +354,38 @@ def test_checkpoint_write_rejects_weights_escape_before_serializing(tmp_path):
     assert serialized == []
 
 
-def test_result_waits_for_natural_exit_and_drains_beyond_queue_capacity(tmp_path):
+@pytest.mark.parametrize("scan_delay", [0, 0.004])
+def test_result_waits_for_natural_exit_and_drains_beyond_queue_capacity(tmp_path, monkeypatch, scan_delay):
+    from studio.worker_runtime import ManagedWorker
+
     manager = new_manager(tmp_path, grace=5)
+    result_seen = threading.Event()
+    original_receive = ManagedWorker.receive
+    original_capture = ManagedWorker._capture_descendants
+
+    def slow_capture(worker):
+        time.sleep(scan_delay)
+        return original_capture(worker)
+
+    def receive(worker):
+        kind, payload = original_receive(worker)
+        if kind == "result":
+            assert not (tmp_path / "finalized").exists()
+            job = manager.get_job("shutdown-train")
+            assert job.status == JobStatus.RUNNING and job.metadata.completed_at is None
+            result_seen.set()
+            (tmp_path / "result-received").touch()
+        return kind, payload
+
+    monkeypatch.setattr(ManagedWorker, "_capture_descendants", slow_capture)
+    monkeypatch.setattr(ManagedWorker, "receive", receive)
     try:
-        submit(manager, tmp_path, exit_delay=1, log_count=700)
+        submit(manager, tmp_path, exit_delay=1, log_count=700, wait_for_result=True)
         wait_for(lambda: (tmp_path / "started").exists())
         start = time.monotonic()
         manager.shutdown()
         assert time.monotonic() - start >= 1
+        assert result_seen.is_set() and (tmp_path / "acknowledged").exists()
         assert (tmp_path / "finalized").exists()
         logs = manager.get_job_log_lines("shutdown-train")
         assert sum("shutdown-stream-" in line for line in logs) == 700
@@ -368,6 +394,29 @@ def test_result_waits_for_natural_exit_and_drains_beyond_queue_capacity(tmp_path
         assert_child_gone(tmp_path)
     finally:
         manager.shutdown()
+
+
+def test_busy_ipc_samples_descendants_but_exit_checks_capture_immediately(tmp_path, monkeypatch):
+    import studio.worker_runtime as runtime
+
+    worker = runtime.ManagedWorker(JobRequest(job_id="busy-logs", task_type="train"))
+    clock, captures = [100.0], []
+    monkeypatch.setattr(runtime, "time", SimpleNamespace(monotonic=lambda: clock[0]))
+    monkeypatch.setattr(worker, "_capture_descendants", lambda: captures.append(clock[0]))
+    monkeypatch.setattr(worker, "_descendants_alive", lambda: True)
+    try:
+        for index in range(700):
+            worker._messages.put(("log", {"seq": index}))
+            assert worker.receive() == ("log", {"seq": index})
+        assert captures == [100.0]
+        assert not worker.tree_exited()
+        assert captures == [100.0, 100.0]
+        clock[0] = 100.051
+        worker._messages.put(("log", {"seq": 700}))
+        assert worker.receive() == ("log", {"seq": 700})
+        assert captures == [100.0, 100.0, 100.051]
+    finally:
+        worker.close()
 
 
 def test_shutdown_cleanup_failure_retains_owner_until_retry(tmp_path, monkeypatch):

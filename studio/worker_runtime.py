@@ -304,6 +304,7 @@ class ManagedWorker:
         self.log_sink = None
         self._messages = queue.Queue(maxsize=256)
         self._reader = None
+        self._next_descendant_capture = 0
 
     def start(self):
         """Create the root, still blocked on the containment handshake."""
@@ -337,7 +338,11 @@ class ManagedWorker:
 
     def receive(self):
         """Read one queued event without blocking on a partial Pipe frame."""
-        self._capture_descendants()
+        # A full process scan per queued log can starve checkpoint ACKs.
+        # Exit/stop checks still capture immediately; busy IPC samples every poll interval.
+        if time.monotonic() >= self._next_descendant_capture:
+            self._capture_descendants()
+            self._next_descendant_capture = time.monotonic() + 0.05
         try:
             kind, payload = self._messages.get(timeout=0.05)
         except queue.Empty:
