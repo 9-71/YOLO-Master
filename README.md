@@ -193,6 +193,10 @@ results = model.train(
 model.prune_experts(threshold=0.15)
 ```
 
+> 💡 **Looking for a plug-and-play ES-MoE module for all YOLO versions?**
+> 
+> > If you are seeking a convenient, pluggable `ES-MoE` module integration for the full YOLO family, please refer to the community library: [Lfan-ke/ES-MoE](https://github.com/Lfan-ke/ES-MoE), [ES-MoE for PyPI](https://pypi.org/project/esmoe/).
+
 ---
 
 ### 2️⃣ LoRA Support - Parameter-Efficient Fine-Tuning
