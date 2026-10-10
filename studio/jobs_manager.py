@@ -42,6 +42,18 @@ class StatePersistenceError(RuntimeError):
     code = "PERSISTENCE_FAILED"
 
 
+class DuplicateJobError(ValueError):
+    """A job identifier was already admitted; transport adapters must use this type."""
+
+    code = "DUPLICATE_JOB"
+
+
+class ManagerClosingError(ValueError):
+    """The lifecycle owner has started closing and no longer accepts admissions."""
+
+    code = "SERVICE_SHUTDOWN"
+
+
 class CancelCode(str, Enum):
     """Stable decisions for transport adapters; messages are presentation only."""
 
@@ -167,9 +179,9 @@ class JobsManager:
         job = self._admission.prepare(request)
         with self.lock:
             if self._closing:
-                raise ValueError("Job manager is shutting down")
+                raise ManagerClosingError("Job manager is shutting down")
             if job.job_id in self._jobs:
-                raise ValueError(f"Duplicate job_id '{job.job_id}': a job with this identifier already exists")
+                raise DuplicateJobError(f"Duplicate job_id '{job.job_id}': a job with this identifier already exists")
             pending = sum(current.status == JobStatus.PENDING for current in self._jobs.values())
             if pending >= self.max_pending_jobs:
                 raise QueueFullError(f"Pending job capacity exhausted ({pending}/{self.max_pending_jobs})")
@@ -621,18 +633,43 @@ class JobsManager:
         """Compatibility text; adapters should consume request_cancel's typed decision."""
         return self.request_cancel(job_id).message
 
+    def get_service_snapshot(self):
+        """Return detached service facts; adapters never inspect owner internals."""
+        with self.lock:
+            return {
+                "closing": self._closing,
+                "persistence_error": self.persistence_error,
+                "shutdown_budget_seconds": self.shutdown_budget_seconds,
+            }
+
+    @staticmethod
+    def _job_summary(job, *, uppercase_status=False):
+        """Build detached summary fields while the caller holds the owner lock."""
+        return {
+            "job_id": job.job_id,
+            "task_type": job.task_type.value,
+            "status": job.status.value.upper() if uppercase_status else job.status.value,
+            "created_at": job.metadata.created_at,
+            "started_at": job.metadata.started_at,
+            "completed_at": job.metadata.completed_at,
+            "duration": compute_duration(job.metadata.started_at, job.metadata.completed_at),
+        }
+
+    def list_jobs_snapshot(self, limit=10, offset=0):
+        """Capture summaries and total under one lock for the existing REST listing."""
+        with self.lock:
+            ordered = sorted(self._jobs.values(), key=lambda job: job.metadata.created_at, reverse=True)
+            return {
+                "jobs": [self._job_summary(job) for job in ordered[offset : offset + limit]],
+                "total": len(ordered),
+                "limit": limit,
+                "offset": offset,
+            }
+
     def list_recent_jobs(self, limit=10):
         """Return detached summaries ordered by server acceptance timestamp."""
         with self.lock:
             return [
-                {
-                    "job_id": job.job_id,
-                    "task_type": job.task_type.value,
-                    "status": job.status.value.upper(),
-                    "created_at": job.metadata.created_at,
-                    "started_at": job.metadata.started_at,
-                    "completed_at": job.metadata.completed_at,
-                    "duration": compute_duration(job.metadata.started_at, job.metadata.completed_at),
-                }
+                self._job_summary(job, uppercase_status=True)
                 for job in sorted(self._jobs.values(), key=lambda job: job.metadata.created_at, reverse=True)[:limit]
             ]

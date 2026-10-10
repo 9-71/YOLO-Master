@@ -1,10 +1,10 @@
 name: Studio Core
 on:
   pull_request:
-    paths: ["core/**", "studio/**", "tests/studio/**", "pyproject.toml", ".github/workflows/studio-core.yml"]
+    paths: ["core/**", "studio/**", "api/**", "main_engine.py", "tests/studio/**", "pyproject.toml", ".github/workflows/studio-core.yml"]
   push:
     branches: [main, "studio/**"]
-    paths: ["core/**", "studio/**", "tests/studio/**", "pyproject.toml", ".github/workflows/studio-core.yml"]
+    paths: ["core/**", "studio/**", "api/**", "main_engine.py", "tests/studio/**", "pyproject.toml", ".github/workflows/studio-core.yml"]
   workflow_dispatch:
 permissions:
   contents: read
@@ -23,9 +23,9 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python }}
-      - run: python -m pip install -e ".[studio]" pytest ruff codespell
+      - run: python -m pip install -e ".[studio]" pytest httpx ruff codespell
       - run: python -m pytest tests/studio -q
-      - run: python -m pytest --doctest-modules core studio -q
-      - run: ruff check core studio tests/studio
-      - run: ruff format --check core studio tests/studio
-      - run: codespell core studio tests/studio
+      - run: python -m pytest --doctest-modules core studio api main_engine.py -q
+      - run: ruff check core studio api main_engine.py tests/studio
+      - run: ruff format --check core studio api main_engine.py tests/studio
+      - run: codespell core studio api main_engine.py tests/studio

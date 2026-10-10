@@ -80,7 +80,7 @@ dependencies = [
 
 # Optional dependencies ------------------------------------------------------------------------------------------------
 [project.optional-dependencies]
-studio = ["pydantic>=2.0,<3"]
+studio = ["pydantic>=2.0,<3", "fastapi>=0.115,<1", "uvicorn>=0.30,<1"]
 clip = [
     "clip @ git+https://github.com/ultralytics/CLIP.git",
 ]
@@ -190,7 +190,8 @@ ultralytics = "ultralytics.cfg:entrypoint"
 
 # Tools settings -------------------------------------------------------------------------------------------------------
 [tool.setuptools]  # configuration specific to the `setuptools` build backend.
-packages = { find = { where = ["."], include = ["ultralytics", "ultralytics.*", "core", "core.*", "studio", "studio.*"] } }
+py-modules = ["main_engine"]
+packages = { find = { where = ["."], include = ["ultralytics", "ultralytics.*", "core", "core.*", "studio", "studio.*", "api", "api.*"] } }
 # Tests included below for checking Conda builds in https://github.com/conda-forge/ultralytics-feedstock
 package-data = { "ultralytics" = ["**/*.yaml", "**/*.sh", "../tests/*.py"], "ultralytics.assets" = ["*.jpg"], "ultralytics.solutions.templates" = ["*.html"]}
 
