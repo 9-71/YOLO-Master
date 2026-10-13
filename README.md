@@ -210,7 +210,7 @@ Architecture-agnostic LoRA adaptation with **zero architectural overhead** — e
 
 **Key Advantages:**
 - 🎯 Using ~10% trainable parameters to achieve **95-98%** of full fine-tuning performance
-- ⚡ **40-60%** training speedup with **70%** memory reduction
+- ⚡ In the controlled YOLO11 audit reported by YOLO-PEFT, peak training memory decreased by **43.9%**, while training took **1.72×** as long as Full-SFT. Results depend on the model, adapter configuration, data, and hardware; training speedup is not guaranteed. See the [paper claim anchor](reports/yolo-peft-2608.07051-anchor.json) for reproduction entry points.
 - 📦 Ultra-compact adapters (e.g., YOLO11x: 14.1 MB adapter vs 114.6 MB full model)
 
 **Supported Models:**
