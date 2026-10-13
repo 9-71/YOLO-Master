@@ -1,5 +1,6 @@
 import copy
 from copy import deepcopy
+
 from pathlib import Path
 from unittest.mock import patch
 
@@ -224,6 +225,7 @@ def test_yolo26_latent_owns_ema_deepcopy_cleanup():
         ROOT / "ultralytics/cfg/models/26/yolo26-master-latent-n.yaml", ch=3, nc=80, verbose=False
     ).train()
     latent = next(module for module in model.modules() if isinstance(module, LatentMixture))
+    model(torch.randn(2, 3, 64, 64))
     original_logits = latent.routing_logits
 
     copied = deepcopy(model)
@@ -235,6 +237,18 @@ def test_yolo26_latent_owns_ema_deepcopy_cleanup():
     assert copied_latent.routing_probs is None
     assert copied_latent.routing_summary is None
     assert isinstance(ema.ema, DetectionModel)
+
+def test_yolo26_latent_model_deepcopy_after_stride_probe():
+    model = DetectionModel(
+        ROOT / "ultralytics/cfg/models/26/yolo26-master-latent-n.yaml", ch=3, nc=80, verbose=False
+    ).train()
+    latent_layers = [m for m in model.modules() if isinstance(m, LatentMixture)]
+    assert len(latent_layers) == 3
+    assert all(layer.routing_logits is None and layer.routing_probs is None for layer in latent_layers)
+    copy.deepcopy(model)
+    model(torch.zeros(2, 3, 64, 64))
+    assert any(layer.routing_logits is not None for layer in latent_layers)
+    ModelEMA(model)
 
 
 def test_latent_detection_model_load_skips_non_tensor_extra_state():

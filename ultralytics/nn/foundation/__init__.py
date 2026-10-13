@@ -1,5 +1,14 @@
 """Opt-in, training-only Foundation Teacher interfaces."""
 
+from .cache import (
+    CACHE_SCHEMA_VERSION,
+    DEFAULT_TARGET_SHARD_BYTES,
+    FeatureCacheReader,
+    FeatureCacheWriter,
+    build_cache_key,
+    compare_feature_caches,
+    verify_feature_cache,
+)
 from .projectors import P4AlignmentProjector
 from .protocol import FoundationFeatures, FoundationTeacher
 from .losses import RouterKDLoss, cosine_kd_loss, foreground_token_weights, hybrid_kd_loss, relational_kd_loss
@@ -48,6 +57,14 @@ from .response import (
 )
 
 __all__ = [
+    "CACHE_SCHEMA_VERSION",
+    "DEFAULT_TARGET_SHARD_BYTES",
+    "FeatureCacheReader",
+    "FeatureCacheWriter",
+    "build_cache_key",
+    "compare_feature_caches",
+    "verify_feature_cache",
+
     "DEFAULT_DINOV2_MODEL",
     "DINOv2Teacher",
     "DEFAULT_DINOV3_MODEL",
