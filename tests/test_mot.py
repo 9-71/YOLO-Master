@@ -7,6 +7,7 @@ import torch
 from ultralytics.engine.trainer import BaseTrainer
 from ultralytics.nn.modules.moa import C2fMoA, MoABlock
 from ultralytics.nn.modules.mot import C2fMoT, MoTBlock, anneal_mot_temperature, collect_mot_aux_loss
+from ultralytics.nn.modules.routing_protocol import begin_aux_step
 from ultralytics.nn.tasks import DetectionModel
 from ultralytics.nn.mixture_loss import _collect_mot_aux_loss
 
@@ -57,6 +58,12 @@ def test_c2fmot_collects_aux_loss_and_keeps_shape():
     aux = collect_mot_aux_loss(module)
     assert aux.requires_grad
     assert torch.isfinite(aux)
+    # Both entry points share one consumable record per canonical forward.
+    duplicate = _collect_mot_aux_loss(module, torch.device("cpu"))
+    assert not duplicate.requires_grad
+    assert duplicate.item() == 0.0
+    begin_aux_step()
+    module(torch.randn(2, 48, 8, 8))
     assert _collect_mot_aux_loss(module, torch.device("cpu")).requires_grad
 
 
