@@ -94,3 +94,38 @@ https://github.com/Tencent/YOLO-Master/releases/download/YOLO-Master-v26.02/YOLO
 ```
 
 迁移 A800 时将 device 改为 cuda:0，使用新的输出目录。正式效果结论需要替换为独立数据协议；以上命令本身仍是诊断工具。
+
+## 后续 MPS 校准与特征蒸馏验证（2026-10-13）
+
+新增 `scripts/calibrate_sparse_esmoe.py`。用户授权下载额外 COCO 图片后，从本地 LVIS 图片清单提供候选 ID，仅接受 COCO 官方 S3 `val2017` 路径成功返回的图片；最终使用按 ID 排序的 32 张。下载来源及内容哈希保存在 `runs/calibration/coco_val32/provenance.json`。校准图片与 coco128 按 COCO ID 和内容 SHA256 双重排重，零重叠。该小样本不是随机抽取，不代表完整 COCO 分布，且不能保证与模型预训练数据无重叠。
+
+首轮全模型 BN 重估作为负面证据保留：Top-2 + 全模型 BN 为 **21.1763 AP**，再做特征蒸馏为 **24.3279 AP**。不能将其下降归因于路由本身；全模型统计重置同时改变了上游特征分布。产物在 `runs/calibration/model12_top2_bn_kd_v2/`。此前相对路径错误导致的未完成启动目录保留在 `model12_top2_bn_kd/`，不计入完整实验。
+
+随后将 BN 校准范围限制为 model.12 输出归一化层，其余 BN 保持冻结；完成六个完整 coco128 条件：
+
+- 原生：**44.1963 AP**。
+- 直接后期 Top-2：**41.0714 AP**。
+- 仅目标输出 BN 校准：**40.9153 AP**。
+- Top-2 + 特征蒸馏（不校准 BN）：**42.3069 AP**。
+- Top-2 + 目标输出 BN 校准 + 特征蒸馏：**42.7580 AP**。
+- 原生复跑：**44.1963 AP**，所有报告指标最大差为 0。
+
+微调预算固定为 32 图 × 3 轮，batch=1，Adam lr=1e-4，torch seed=42，MPS FP32，320 输入。原生 teacher 冻结，仅目标 ES_MOE 块参数更新，所有 BN 统计在蒸馏中冻结。以 student 自身上游产生的输入拟合 teacher 原生层输出，损失为按 teacher 能量归一化的特征 MSE；没有使用 coco128 标签训练，也没有使用检测损失。目标层始终 eval 模式以实际走稀疏执行路径，同时允许参数梯度；其他层原生混合。验证中该层每图实际执行 2 个样本—专家组合，原生为 3。
+
+最佳本轮候选相对直接 Top-2 恢复 **1.6866 AP 点**，距原生仍差 **1.4383 点**，未达到 ≤0.3 点门槛。不能宣称恢复完成，也不能把目标层执行量减少直接解释为全模型加速。两个蒸馏条件仅各一个训练种子；组合优于单独蒸馏尚无统计显著性结论。
+
+coco128 继续作为已被观察过的固定回归集，因此这些分数不是独立测试泛化成绩。下一步应在独立带标注样本上开展固定预算的检测损失微调，并留出未用于模型/预算选择的验证集；保留本轮三轮蒸馏作为对照。达到精度门之后再安排 A800 无 hook 部署计时。
+
+复用命令：
+
+```bash
+.venv/bin/python scripts/calibrate_sparse_esmoe.py \
+  --weights runs/weights/YOLO-Master-EsMoE-N.pt \
+  --calibration runs/calibration/coco_val32 \
+  --layer model.12 --bn-scope target --epochs 3 --lr 0.0001 \
+  --device mps --output runs/calibration/new_target_experiment
+```
+
+六条件证据、数据哈希、运行源码快照和策略化 state_dict 在 `runs/calibration/model12_target_bn_kd/`；state_dict 文件不是可直接交付的 YOLO checkpoint，加载时必须使用原始结构并重放文件中的 layer/policy。原始发布权重未修改，未上传图片或模型产物。
+
+工具与相关路由回归 **74 passed**，覆盖内容/ID 排重、BN 参数与模式恢复、局部校准范围、真实稀疏反向更新、teacher 和 BN 冻结、hook 清理；Ruff lint/format 与 diff whitespace 通过。
