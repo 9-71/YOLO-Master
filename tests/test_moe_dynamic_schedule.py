@@ -5,15 +5,16 @@ from types import SimpleNamespace
 
 import pytest
 import torch
-import torch.nn as nn
+from torch import nn
 
+from scripts.moe_pruning_sweep import compare_expert_signatures
+from ultralytics.engine.extensions.mixture import MixtureRuntimeController
 from ultralytics.nn.modules.moe.gated import HybridAdaptiveGateMoE
 from ultralytics.nn.modules.moe.modules import ES_MOE, OptimizedMOE
 from ultralytics.nn.modules.moe.pruning import MoEPruner
 from ultralytics.nn.modules.moe.schedule import GiniBalanceScheduler, apply_balance_loss_coeff, usage_gini
+from ultralytics.nn.modules.routing_protocol import begin_aux_step
 from ultralytics.utils import DEFAULT_CFG_DICT
-from scripts.moe_pruning_sweep import compare_expert_signatures
-from ultralytics.engine.extensions.mixture import MixtureRuntimeController
 
 
 def test_usage_gini_uniform_and_collapsed():
@@ -136,10 +137,12 @@ def test_es_moe_balance_coefficient_scales_published_aux_loss():
     sample = torch.randn(2, 8, 4, 4)
 
     apply_balance_loss_coeff(module, 1.0)
+    begin_aux_step()
     module(sample)
     unscaled = module.aux_loss.detach().clone()
 
     apply_balance_loss_coeff(module, 0.25)
+    begin_aux_step()
     module(sample)
     scaled = module.aux_loss.detach().clone()
 
