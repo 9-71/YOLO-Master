@@ -94,9 +94,10 @@ def test_oracle_pairs_and_raw_router_gradient_reach_low_probability_expert():
     block = SimpleNamespace(training=False, num_experts=3, norm=torch.nn.Identity())
     experts = [torch.full((1, 1, 2, 2), x) for x in (0.0, 2.0, 10.0)]
     routing = torch.full((1, 3, 1, 1), 1 / 3)
-    target = torch.ones(1, 1, 2, 2)
-    labels = oracle_pair_targets(block, experts, routing, target)
-    assert labels.tolist() == [0]  # (0, 1) exactly reconstructs this target.
+    for expected, value in enumerate((1.0, 5.0, 6.0)):
+        target = torch.full((1, 1, 2, 2), value)
+        labels = oracle_pair_targets(block, experts, routing, target)
+        assert labels.tolist() == [expected]  # Each pair can win; no hard-coded first-pair fallback.
     logits = torch.tensor([[[[3.0]], [[2.0]], [[-3.0]]]], requires_grad=True)
     loss, _ = router_distillation(logits.softmax(1), torch.tensor([1]))  # Desired support (0, 2).
     loss.backward()
