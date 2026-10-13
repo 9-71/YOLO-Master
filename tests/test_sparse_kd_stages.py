@@ -135,3 +135,35 @@ def test_real_stages_update_only_target_keep_teacher_bn_frozen_and_remove_hooks(
     if "router" in mode:
         assert sum(history[0]["oracle_pair_counts"]) == 1
         assert history[0]["router_kd_loss"] > 0
+
+
+def test_refinement_isolates_foreground_and_small_regions():
+    data = batch()
+    data["bboxes"] = torch.tensor([[0.15, 0.15, 0.1, 0.1], [0.7, 0.7, 0.6, 0.6]])
+    data["batch_idx"] = torch.zeros(2)
+    foreground = region_weights(data, (10, 10), foreground=2, small_multiplier=1)
+    small = region_weights(data, (10, 10), foreground=1, small_multiplier=2)
+    assert foreground[0, 0, 1, 1] == foreground[0, 0, 7, 7] == 2
+    assert small[0, 0, 1, 1] == 2 and small[0, 0, 7, 7] == 1
+
+
+def test_pair_cost_diagnostic_reports_diversity_and_margins():
+    from scripts.diagnose_sparse_pair_costs import summarize_costs
+    from scripts.sparse_kd_losses import oracle_pair_costs
+
+    costs = torch.tensor([[1.0, 2.0, 4.0], [4.0, 2.0, 1.0]])
+    result = summarize_costs(costs)
+    assert result["best_pair_counts"] == [1, 0, 1]
+    assert result["best_to_second_margin_quantiles"] == [1.0] * 5
+    with pytest.raises(ValueError):
+        summarize_costs(torch.tensor([[float("nan"), 1.0]]))
+    block = SimpleNamespace(training=False, num_experts=3, norm=torch.nn.Identity())
+    experts = [torch.full((1, 1, 1, 1), x) for x in (0.0, 2.0, 10.0)]
+    raw = oracle_pair_costs(block, experts, torch.full((1, 3, 1, 1), 1 / 3), torch.ones(1, 1, 1, 1))
+    torch.testing.assert_close(raw, torch.tensor([[0.0, 16.0, 25.0]]))
+
+
+@pytest.mark.parametrize("value", [0.5, float("nan"), float("inf")])
+def test_invalid_refinement_weights_fail_before_model_mutation(value):
+    with pytest.raises(ValueError, match="weights must be finite"):
+        train_target(None, object(), "model.1", [], 1, 1e-3, 1, foreground_weight=value)

@@ -86,8 +86,8 @@ def expert_pairs(count):
 
 
 @torch.no_grad()
-def oracle_pair_targets(block, expert_outputs, routing, target):
-    """Choose teacher-expert pairs minimizing native layer-feature error, not detection AP."""
+def oracle_pair_costs(block, expert_outputs, routing, target):
+    """Return per-image feature errors for every pair before collapsing to hard labels."""
     if block.training:
         raise ValueError("teacher oracle requires eval mode with frozen normalization")
     pairs = expert_pairs(block.num_experts)
@@ -100,7 +100,12 @@ def oracle_pair_targets(block, expert_outputs, routing, target):
         mixture = (expert_outputs[left] * left_weight + expert_outputs[right] * right_weight) / normalizer
         output = block.norm(mixture)
         errors.append((output - target).square().flatten(1).mean(1))
-    return torch.stack(errors, dim=1).argmin(dim=1)
+    return torch.stack(errors, dim=1)
+
+
+def oracle_pair_targets(block, expert_outputs, routing, target):
+    """Choose teacher-expert pairs minimizing native layer-feature error, not detection AP."""
+    return oracle_pair_costs(block, expert_outputs, routing, target).argmin(dim=1)
 
 
 def router_distillation(routing, targets):

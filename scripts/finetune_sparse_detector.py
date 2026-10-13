@@ -40,6 +40,13 @@ STAGE_MODES = {
     "sparse_fg_loc_route_kd": "foreground_localization_router",
 }
 
+REFINEMENT_ARMS = {
+    "sparse_kd": ("plain", 1, 1.0, 1.0),
+    "sparse_kd_long": ("plain", 2, 1.0, 1.0),
+    "sparse_fg_only": ("foreground", 1, 2.0, 1.0),
+    "sparse_small_only": ("foreground", 1, 1.0, 2.0),
+}
+
 
 def verify_manifest(manifest):
     """Verify every frozen image and label before allowing training or selection."""
@@ -73,7 +80,19 @@ def choose_candidate(cases, candidate_names=None):
     return max(eligible, key=lambda case: case["dev_ap"])["name"]
 
 
-def train_target(model, teacher, layer, loader, epochs, lr, kd_weight, detection_weight=1.0, kd_mode="plain"):
+def train_target(
+    model,
+    teacher,
+    layer,
+    loader,
+    epochs,
+    lr,
+    kd_weight,
+    detection_weight=1.0,
+    kd_mode="plain",
+    foreground_weight=4.0,
+    small_multiplier=2.0,
+):
     """Optimize one eval-mode block using detection loss and optional native-feature KD."""
     if min(detection_weight, kd_weight) < 0 or detection_weight + kd_weight <= 0:
         raise ValueError("loss weights must be nonnegative with at least one positive term")
@@ -81,6 +100,8 @@ def train_target(model, teacher, layer, loader, epochs, lr, kd_weight, detection
         raise ValueError("advanced KD modes require positive KD weight and a declared mode")
     if kd_weight and teacher is None:
         raise ValueError("KD requires a frozen teacher")
+    if not all(math.isfinite(v) and v >= 1 for v in (foreground_weight, small_multiplier)):
+        raise ValueError("foreground and small weights must be finite and at least one")
     model.eval().requires_grad_(False)
     block = supported_layers(model)[layer]
     block.requires_grad_(True)
@@ -154,7 +175,11 @@ def train_target(model, teacher, layer, loader, epochs, lr, kd_weight, detection
                 kd = detection.new_zeros(())
                 if kd_weight:
                     target = captured["teacher"]
-                    weights = region_weights(batch, target.shape[-2:]) if kd_mode != "plain" else None
+                    weights = (
+                        region_weights(batch, target.shape[-2:], foreground_weight, small_multiplier)
+                        if kd_mode != "plain"
+                        else None
+                    )
                     kd = feature_distillation(captured["student"], target, weights)
                 localization, route_loss = kd.new_zeros(()), kd.new_zeros(())
                 if kd_mode in {"foreground_localization", "foreground_localization_router"}:
@@ -228,6 +253,9 @@ def main():
     parser.add_argument("--epochs", type=int, default=3)
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--kd-stages", action="store_true", help="compare plain/foreground/localization/router KD")
+    parser.add_argument(
+        "--kd-refinement", action="store_true", help="isolate doubled KD budget and mild region weights"
+    )
     parser.add_argument("--include-kd-only", action="store_true", help="add a matched pure-KD arm to selection")
     parser.add_argument("--kd-weight", type=float, default=1.0)
     parser.add_argument("--seed", type=int, default=42)
@@ -235,8 +263,8 @@ def main():
     parser.add_argument("--device", default="mps")
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
-    if args.kd_stages and args.include_kd_only:
-        parser.error("choose either kd-stages or the legacy include-kd-only ablation")
+    if sum((args.kd_stages, args.kd_refinement, args.include_kd_only)) > 1:
+        parser.error("choose only one KD ablation protocol")
     args.output, args.dataset = args.output.resolve(), args.dataset.resolve()
     if args.output.exists() or not args.weights.is_file() or min(args.epochs, args.imgsz, args.lr, args.batch) <= 0:
         parser.error("fresh output, local weights and positive budget required")
@@ -258,7 +286,10 @@ def main():
         "manifest_sha256": hashlib.sha256(manifest_file.read_bytes()).hexdigest(),
         "script_sha256": hashlib.sha256(source).hexdigest(),
         "loss_script_sha256": hashlib.sha256(loss_source).hexdigest(),
+        "refinement_arms": REFINEMENT_ARMS if args.kd_refinement else None,
+        "training_order_contract": "identical shared epoch prefix; longer budget continues its own loader",
         "kd_protocol": {
+            "region_weights_source": "per-case training_budget" if args.kd_refinement else "kd_protocol defaults",
             "foreground_weight": 4.0,
             "small_multiplier": 2.0,
             "small_area_transformed_pixels": 1024,
@@ -318,7 +349,10 @@ def main():
     )
     if args.kd_stages:
         sparse_names = tuple(STAGE_MODES)
-    arm_names = ("native", "top2", *sparse_names) if args.kd_stages else ("native", "top2", "dense_det", *sparse_names)
+    if args.kd_refinement:
+        sparse_names = tuple(REFINEMENT_ARMS)
+    kd_only = args.kd_stages or args.kd_refinement
+    arm_names = ("native", "top2", *sparse_names) if kd_only else ("native", "top2", "dense_det", *sparse_names)
     report["declared_sparse_candidates"] = sparse_names
     for name in arm_names:
         torch.manual_seed(args.seed)
@@ -332,6 +366,10 @@ def main():
         policy = "native" if name in {"native", "dense_det"} else "native_top2"
         history, counts = [], None
         kd_mode = STAGE_MODES.get(name, "plain")
+        multiplier, foreground_weight, small_multiplier = 1, 4.0, 2.0
+        if args.kd_refinement:
+            kd_mode, multiplier, foreground_weight, small_multiplier = REFINEMENT_ARMS.get(name, ("plain", 1, 1.0, 1.0))
+        epochs = args.epochs * multiplier
         if name in {"dense_det", *sparse_names}:
             cfg = get_cfg(overrides={"imgsz": args.imgsz, "task": "detect", "rect": False})
             dataset = build_yolo_dataset(cfg, str(args.dataset / "train.txt"), args.batch, data, mode="val", rect=False)
@@ -348,7 +386,7 @@ def main():
             )
             teacher = (
                 YOLO(str(args.weights)).model.to(args.device).float().eval()
-                if name in {"sparse_kd", "sparse_det_kd", *STAGE_MODES}
+                if name in {"sparse_kd", "sparse_det_kd", *STAGE_MODES, *REFINEMENT_ARMS}
                 else None
             )
             with RouterChoice(block, policy) as routing:
@@ -358,14 +396,16 @@ def main():
                     teacher,
                     args.layer,
                     loader,
-                    args.epochs,
+                    epochs,
                     args.lr,
                     args.kd_weight if teacher is not None else 0.0,
-                    detection_weight=0.0 if args.kd_stages or name == "sparse_kd" else 1.0,
-                    kd_mode=kd_mode if args.kd_stages else "plain",
+                    detection_weight=0.0 if kd_only or name == "sparse_kd" else 1.0,
+                    kd_mode=kd_mode if kd_only else "plain",
+                    foreground_weight=foreground_weight,
+                    small_multiplier=small_multiplier,
                 )
                 counts = routing.summary()
-                if counts["router_samples"] != args.epochs * len(dataset):
+                if counts["router_samples"] != epochs * len(dataset):
                     raise RuntimeError("training sample count mismatch")
                 expected_experts = block.num_experts if policy == "native" else 2
                 if abs(counts["executed_experts_per_sample"] - expected_experts) > 1e-6:
@@ -380,7 +420,12 @@ def main():
             dev_ap=case["metrics"]["metrics/mAP50-95(B)"],
             history=history,
             training_routing=counts,
-            kd_mode=kd_mode if args.kd_stages else "plain",
+            kd_mode=kd_mode if kd_only else "plain",
+            training_budget={
+                "epochs": epochs,
+                "foreground_weight": foreground_weight,
+                "small_multiplier": small_multiplier,
+            },
         )
         report["dev"].append(case)
         save()
@@ -388,7 +433,7 @@ def main():
     orders = [
         tuple(epoch["image_order_sha256"] for epoch in case["history"]) for case in report["dev"] if case["history"]
     ]
-    if any(order != orders[0] for order in orders[1:]):
+    if any(order[: len(orders[0])] != orders[0] for order in orders[1:]):
         raise RuntimeError("training methods observed different image orders")
     report["matched_training_orders"] = True
     selected = choose_candidate(report["dev"], sparse_names)
@@ -396,7 +441,7 @@ def main():
     save()  # Candidate is frozen before any test metrics are obtained.
     final_cases = (
         ("native", "top2", "sparse_kd", selected, "native_repeat")
-        if args.kd_stages
+        if kd_only
         else ("native", "top2", "dense_det", selected, "native_repeat")
     )
     for name in dict.fromkeys(final_cases):
