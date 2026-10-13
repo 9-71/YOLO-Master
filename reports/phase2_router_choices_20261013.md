@@ -129,3 +129,45 @@ coco128 继续作为已被观察过的固定回归集，因此这些分数不是
 六条件证据、数据哈希、运行源码快照和策略化 state_dict 在 `runs/calibration/model12_target_bn_kd/`；state_dict 文件不是可直接交付的 YOLO checkpoint，加载时必须使用原始结构并重放文件中的 layer/policy。原始发布权重未修改，未上传图片或模型产物。
 
 工具与相关路由回归 **74 passed**，覆盖内容/ID 排重、BN 参数与模式恢复、局部校准范围、真实稀疏反向更新、teacher 和 BN 冻结、hook 清理；Ruff lint/format 与 diff whitespace 通过。
+
+## 带标注检测损失微调与独立划分试验（2026-10-13）
+
+新增 `scripts/prepare_sparse_supervised_data.py` 与 `scripts/finetune_sparse_detector.py`，完成两种子、固定预算的 MPS 检测损失微调试验。数据从 COCO val2017 下载，标签来自项目 COCO 配置所引用的 Ultralytics `coco2017labels.zip`；共 160 张，按固定 seed=42 划分训练 64、开发 32、最终评估 64。排除上一轮 32 张校准图和 coco128，所有划分按 COCO ID、图片内容 SHA256 双重排重，标签也冻结哈希。它们在本轮训练/选型中互不重叠，**不保证与发布模型预训练数据无重叠**。
+
+每个种子各跑五个开发集条件：原生、直接 Top-2、同预算原生稠密微调、Top-2 检测损失微调、Top-2 检测损失加原生特征蒸馏。仅在两个稀疏微调候选间按开发 AP 选型，并在首次最终评估前将候选写入报告。两个种子均选出检测损失加蒸馏。第二种子 43 在首轮最终成绩被读取前固定；两种子共享数据划分，不是两次独立数据抽样。
+
+训练预算：各 64 图 × 3 轮，batch=1，320 输入，MPS FP32；Adam lr=1e-4，梯度范数上限 10，KD 系数 1，无额外 BN 重估、数据增强或优化器调参。仅 model.12 的参数可训练，其他参数和所有 BN 统计逐项验证不变。模型保持 eval 模式以走实际稀疏路径，检测头输出送入原生检测损失；本轮没有训练模式的 MoE 辅助损失。每个训练条件实际 192 个样本，稠密每图执行 3 个专家，两个稀疏条件均执行 2 个。
+
+开发集（32 图）AP50-95×100：
+
+- 原生：35.8162；直接 Top-2：33.8352。
+- seed 42：稠密微调 36.2345；稀疏检测微调 34.3671；稀疏检测加 KD 34.8893。
+- seed 43：稠密微调 36.5096；稀疏检测微调 34.5630；稀疏检测加 KD 35.2787。
+
+最终评估（64 图，417 个实例）AP50-95×100：
+
+- 原生：**49.0832**；直接 Top-2：**49.0186**，差 **−0.0646 AP 点**。
+- seed 42：同预算稠密微调 **44.9681**；开发集选出的稀疏检测加 KD **47.9117**，相对原生 **−1.1715 点**。
+- seed 43：同预算稠密微调 **47.8592**；开发集选出的稀疏检测加 KD **48.2986**，相对原生 **−0.7846 点**。
+- 两个种子的原生前后复跑均一致。
+
+本轮没有复现“微调恢复即可改善独立评估”的预期。两个稀疏候选都优于各自同预算稠密微调，但都低于未经微调的直接 Top-2；稠密微调也下降，因此不能把下降全部归因于稀疏路由。这里与 coco128 上 Top-2 损失 3.12 点的差异，说明效果对数据分布敏感；64 图上的 0.06 点差距不足以证明完整 COCO 或业务数据达到精度门。
+
+决策：暂停扩大当前 64 图三轮微调预算，保留未经微调的 Top-2 作为下一步候选。优先在更大、冻结且不参与训练/预算选择的 COCO/业务评估集上复核原生与 Top-2；不同数据分布应分别报告。取得可信精度结论后再安排 A800 无 hook 部署计时。本轮没有修改默认模型配置或交付裁剪 checkpoint。
+
+复现入口：
+
+```bash
+.venv/bin/python scripts/prepare_sparse_supervised_data.py \
+  --archive runs/supervised_sparse/coco2017labels.zip \
+  --exclude-report runs/calibration/model12_target_bn_kd/report.json \
+  --counts 64 32 64 --seed 42 --output runs/supervised_sparse/new_coco160
+.venv/bin/python scripts/finetune_sparse_detector.py \
+  --weights runs/weights/YOLO-Master-EsMoE-N.pt \
+  --dataset runs/supervised_sparse/new_coco160 --epochs 3 --seed 42 \
+  --output runs/supervised_sparse/new_seed42
+```
+
+将训练 seed 改为 43，使用新输出目录复现第二种子。运行源码、完整报告、策略化 state_dict 保存在 `runs/supervised_sparse/mps_seed42/` 与 `mps_seed43/`。最终脚本在运行快照基础上补充了逐图评估身份和训练专家数的显式断言，训练行为与预算未变。可提交证据见 `reports/evidence/sparse_supervised_20261013/pilot.json`，含图片 ID/哈希、标签哈希、环境、训练轨迹、执行计数和开发/最终指标；图片和权重未上传。
+
+新增 5 项测试覆盖分组排除、标签篡改、交叉内容重叠、只按开发集选型，以及真实 DetectionModel 检测损失的稀疏反向更新和 teacher/BN 冻结；相关测试合计 **87 passed**。最终防护更新后新增 5 项测试再次通过；Ruff lint/format 与 diff whitespace 通过。
