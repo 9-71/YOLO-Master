@@ -10,7 +10,7 @@
 
 - **代码风格**：Ruff（line-length=120、Google docstring），变更后务必运行 `ruff check` 和 `ruff format --check`
 - **测试选择**：按变更区域选择测试，不要每次跑全量。参见 AGENTS.md 的"任务路由"表
-- **Doctest**：`pytest --doctest-modules` 默认启用，新增公共函数需附带可运行 doctest
+- **Doctest**：普通 pytest 默认不跑 doctest，需显式加 `--doctest-modules` 启用；新增公共函数需附带可运行 doctest
 - **配置驱动**：模型架构通过 YAML 定义（`ultralytics/cfg/models/`），不硬编码架构参数
 - **MoE 路由安全**：修改 `ultralytics/nn/modules/moe/routers.py` 前必须理解 4-D NCHW 约束和通道校验逻辑
 - **PEFT 零修改**：LoRA 微调纯配置驱动，不改架构代码；通过 V-PEFT 编译器注入
