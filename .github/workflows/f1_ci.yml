@@ -1,0 +1,71 @@
+name: F1 CI (Lightweight)
+
+on:
+  push:
+    branches:
+      - main
+      - rhino-f1-dev
+      - feat/p2-fastapi-engine
+  pull_request:
+    branches:
+      - main
+      - rhino-f1-dev
+      - feat/p2-fastapi-engine
+
+permissions:
+  contents: read
+
+jobs:
+  f1-lint-and-test:
+    name: Lint & Test (f1 + core)
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.10
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+          cache: "pip"
+
+      - name: Install toolchain and runtime dependencies
+        run: |
+          python -m pip install --upgrade pip
+          # CPU-only PyTorch wheels: small and fast to download on CI, sufficient for smoke tests
+          pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+          # Lightweight tooling, UI/schema deps and ONNX export deps required by f1, core and the API engine
+          pip install ruff pytest pytest-cov pydantic gradio fastapi httpx pyyaml onnx onnxslim onnxruntime
+          # Install the local package structure without deps; full runtime deps come from requirements.txt below
+          pip install -e . --no-deps
+          # Install the remaining runtime deps (opencv, numpy, pandas, etc.); failures must fail CI
+          pip install -r requirements.txt
+
+      - name: Fetch F1 checkpoint
+        run: |
+          # tests/f1/yolov8n.pt is gitignored (*.pt); fetch it so the export E2E tests can run
+          mkdir -p tests/f1
+          curl -fL https://github.com/ultralytics/assets/releases/download/v8.4.0/yolov8n.pt \
+            -o tests/f1/yolov8n.pt
+
+      - name: Ruff lint (restricted scope)
+        run: ruff check f1/ tests/f1/ smoke/test_f1_smoke.py core/ api/ main_engine.py tests/api/ app.py
+
+      - name: Ruff format check (restricted scope)
+        run: ruff format --check f1/ tests/f1/ smoke/test_f1_smoke.py core/ api/ main_engine.py tests/api/ app.py
+
+      - name: Run F1 smoke suite
+        env:
+          F1_SMOKE_DEVICE: cpu
+          F1_SMOKE_MODEL_PATH: tests/f1/yolov8n.pt
+          YOLO_OFFLINE: "true"
+        run: python -m smoke.test_f1_smoke
+
+      - name: Run F1 unit tests with coverage
+        run: |
+          pytest tests/f1/ tests/api/ \
+            --cov=f1 \
+            --cov=core \
+            --cov-report=term-missing \
+            --cov-report=xml

@@ -45,7 +45,8 @@ def test_webui_preserves_task_results(task, count):
         load_model=lambda *args: model, current_model_path="fixture.pt", get_current_model_info=lambda: "cpu"
     )
     _, table, summary = scope["inference"](
-        SimpleNamespace(model_manager=manager), task, image, "fixture.pt", "", 0.25, 0.7, "cpu", 100, 2, True, []
+        SimpleNamespace(model_manager=manager, resolve_checkpoint_path=lambda name, task: name),
+        task, image, "fixture.pt", "", 0.25, 0.7, "cpu", 100, 2, True, []
     )
     assert len(table) == count
     assert f"{'Classes shown' if task == 'cls' else 'Objects'}:** {count}" in summary
