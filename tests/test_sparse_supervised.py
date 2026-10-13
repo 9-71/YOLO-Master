@@ -63,8 +63,12 @@ def test_manifest_rejects_label_mutation_and_cross_split_content_overlap(tmp_pat
         verify_manifest({"splits": splits})
 
 
-@pytest.mark.parametrize("kd_weight", [0.0, 1.0])
-def test_real_detection_loss_updates_only_sparse_target_and_keeps_bn_frozen(kd_weight):
+@pytest.mark.parametrize(
+    "kd_weight, detection_weight, batch_size", [(0.0, 1.0, 1), (1.0, 1.0, 1), (1.0, 0.0, 1), (1.0, 1.0, 4)]
+)
+def test_real_detection_loss_updates_only_sparse_target_and_keeps_bn_frozen(
+    kd_weight, detection_weight, batch_size, monkeypatch
+):
     torch.manual_seed(42)
     cfg = {
         "nc": 2,
@@ -75,20 +79,52 @@ def test_real_detection_loss_updates_only_sparse_target_and_keeps_bn_frozen(kd_w
     model.args = get_cfg()
     teacher = copy.deepcopy(model).eval().requires_grad_(False)
     before = {name: p.clone() for name, p in model.named_parameters()}
+    if not detection_weight:
+
+        def reject_detection_loss(*args):
+            raise AssertionError("pure KD must not consume detection labels")
+
+        monkeypatch.setattr(model, "loss", reject_detection_loss)
     batch = {
-        "img": torch.randint(0, 256, (1, 3, 64, 64), dtype=torch.uint8),
-        "batch_idx": torch.tensor([0.0]),
-        "cls": torch.tensor([[0.0]]),
-        "bboxes": torch.tensor([[0.5, 0.5, 0.3, 0.3]]),
+        "img": torch.randint(0, 256, (batch_size, 3, 64, 64), dtype=torch.uint8),
+        "batch_idx": torch.arange(batch_size).float(),
+        "cls": torch.zeros(batch_size, 1),
+        "bboxes": torch.tensor([[0.5, 0.5, 0.3, 0.3]]).repeat(batch_size, 1),
     }
     with RouterChoice(model.model[1], "native_top2") as routing:
         routing.active = True
-        history = train_target(model, teacher if kd_weight else None, "model.1", [batch], 1, 1e-3, kd_weight)
+        history = train_target(
+            model,
+            teacher if kd_weight else None,
+            "model.1",
+            [batch],
+            1,
+            1e-3,
+            kd_weight,
+            detection_weight=detection_weight,
+        )
         assert routing.summary()["executed_experts_per_sample"] == 2
-    assert history[0]["detection_loss"] > 0
+    if detection_weight:
+        assert history[0]["detection_loss"] > 0
+    else:
+        assert history[0]["detection_loss"] == 0
     changed = [name for name, p in model.named_parameters() if not torch.equal(p, before[name])]
     assert changed and all(name.startswith("model.1.") for name in changed)
     for name, p in teacher.named_parameters():
         torch.testing.assert_close(p, before[name])
     assert not model.model[1]._forward_hooks
     assert not teacher.model[1]._forward_hooks
+
+
+def test_three_arm_selection_requires_every_declared_development_score():
+    names = ("sparse_det", "sparse_kd", "sparse_det_kd")
+    cases = [{"name": name, "dev_ap": score} for name, score in zip(names, (0.4, 0.6, 0.5))]
+    assert choose_candidate(cases, names) == "sparse_kd"
+    with pytest.raises(ValueError, match="present and finite"):
+        choose_candidate(cases[:2], names)
+
+
+@pytest.mark.parametrize("det_weight, kd_weight", [(0, 0), (-1, 1), (1, -1)])
+def test_invalid_loss_weights_fail_before_mutating_model(det_weight, kd_weight):
+    with pytest.raises(ValueError, match="loss weights"):
+        train_target(None, None, "model.1", [], 1, 1e-3, kd_weight, detection_weight=det_weight)

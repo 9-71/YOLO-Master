@@ -45,16 +45,23 @@ def verify_manifest(manifest):
     assert_disjoint(splits["dev"], splits["test"])
 
 
-def choose_candidate(cases):
+def choose_candidate(cases, candidate_names=None):
     """Use only development AP, with a stable tie break; never inspect test metrics."""
-    eligible = [case for case in cases if case["name"] in {"sparse_det", "sparse_det_kd"}]
-    if len(eligible) != 2 or any(not math.isfinite(case["dev_ap"]) for case in eligible):
-        raise ValueError("two finite sparse development scores required")
+    expected = set(candidate_names or ("sparse_det", "sparse_det_kd"))
+    eligible = [case for case in cases if case["name"] in expected]
+    if (
+        len(eligible) != len(expected)
+        or {case["name"] for case in eligible} != expected
+        or any(not math.isfinite(case["dev_ap"]) for case in eligible)
+    ):
+        raise ValueError("all declared sparse development scores must be present and finite")
     return max(eligible, key=lambda case: case["dev_ap"])["name"]
 
 
-def train_target(model, teacher, layer, loader, epochs, lr, kd_weight):
+def train_target(model, teacher, layer, loader, epochs, lr, kd_weight, detection_weight=1.0):
     """Optimize one eval-mode block using detection loss and optional native-feature KD."""
+    if min(detection_weight, kd_weight) < 0 or detection_weight + kd_weight <= 0:
+        raise ValueError("loss weights must be nonnegative with at least one positive term")
     model.eval().requires_grad_(False)
     block = supported_layers(model)[layer]
     block.requires_grad_(True)
@@ -85,7 +92,13 @@ def train_target(model, teacher, layer, loader, epochs, lr, kd_weight):
     try:
         for epoch in range(epochs):
             values = []
+            image_order = hashlib.sha256()
+            ordered_images, examples = 0, 0
             for raw_batch in loader:
+                for path in raw_batch.get("im_file", ()):
+                    image_order.update((Path(path).name + "\n").encode())
+                    ordered_images += 1
+                examples += int(raw_batch["img"].shape[0])
                 device = next(model.parameters()).device
                 batch = {
                     key: value.to(device) if isinstance(value, torch.Tensor) else value
@@ -97,12 +110,16 @@ def train_target(model, teacher, layer, loader, epochs, lr, kd_weight):
                         teacher(batch["img"])
                 optimizer.zero_grad(set_to_none=True)
                 predictions = model(batch["img"])
-                detection = model.loss(batch, predictions)[0].sum()
+                detection = (
+                    model.loss(batch, predictions)[0].sum() / batch["img"].shape[0]
+                    if detection_weight
+                    else batch["img"].new_zeros(())
+                )
                 kd = detection.new_zeros(())
                 if kd_weight:
                     target = captured["teacher"]
                     kd = (captured["student"] - target).square().mean() / target.square().mean().clamp_min(1e-8)
-                loss = detection + kd_weight * kd
+                loss = detection_weight * detection + kd_weight * kd
                 if not torch.isfinite(loss):
                     raise RuntimeError("non-finite training loss")
                 loss.backward()
@@ -113,7 +130,16 @@ def train_target(model, teacher, layer, loader, epochs, lr, kd_weight):
                 values.append((float(detection.detach()), float(kd.detach())))
                 captured.clear()
             means = np.asarray(values).mean(axis=0).tolist()
-            history.append({"epoch": epoch + 1, "detection_loss": means[0], "feature_kd_loss": means[1]})
+            epoch_record = {
+                "epoch": epoch + 1,
+                "detection_loss": means[0],
+                "feature_kd_loss": means[1],
+                "optimizer_steps": len(values),
+                "examples": examples,
+            }
+            if ordered_images:
+                epoch_record["image_order_sha256"] = image_order.hexdigest()
+            history.append(epoch_record)
             print(history[-1], flush=True)
     finally:
         for handle in handles:
@@ -133,8 +159,10 @@ def main():
     parser.add_argument("--weights", type=Path, required=True)
     parser.add_argument("--dataset", type=Path, required=True)
     parser.add_argument("--layer", default="model.12")
+    parser.add_argument("--batch", type=int, default=1, help="training batch; evaluation remains batch=1")
     parser.add_argument("--epochs", type=int, default=3)
     parser.add_argument("--lr", type=float, default=1e-4)
+    parser.add_argument("--include-kd-only", action="store_true", help="add a matched pure-KD arm to selection")
     parser.add_argument("--kd-weight", type=float, default=1.0)
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--imgsz", type=int, default=320)
@@ -142,7 +170,7 @@ def main():
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     args.output, args.dataset = args.output.resolve(), args.dataset.resolve()
-    if args.output.exists() or not args.weights.is_file() or min(args.epochs, args.imgsz, args.lr) <= 0:
+    if args.output.exists() or not args.weights.is_file() or min(args.epochs, args.imgsz, args.lr, args.batch) <= 0:
         parser.error("fresh output, local weights and positive budget required")
     if args.kd_weight <= 0:
         parser.error("KD arm requires positive kd-weight")
@@ -203,7 +231,12 @@ def main():
                 raise RuntimeError("non-finite evaluation metrics")
             return {"name": name, "metrics": metrics.results_dict, "routing": routing.summary()}
 
-    for name in ("native", "top2", "dense_det", "sparse_det", "sparse_det_kd"):
+    sparse_names = (
+        ("sparse_det", "sparse_kd", "sparse_det_kd") if args.include_kd_only else ("sparse_det", "sparse_det_kd")
+    )
+    arm_names = ("native", "top2", "dense_det", *sparse_names)
+    report["declared_sparse_candidates"] = sparse_names
+    for name in arm_names:
         torch.manual_seed(args.seed)
         np.random.seed(args.seed)
         random.seed(args.seed)
@@ -214,21 +247,25 @@ def main():
         model.args = get_cfg(overrides={"imgsz": args.imgsz, "task": "detect", "rect": False})
         policy = "native" if name in {"native", "dense_det"} else "native_top2"
         history, counts = [], None
-        if name.endswith(("det", "det_kd")):
+        if name in {"dense_det", *sparse_names}:
             cfg = get_cfg(overrides={"imgsz": args.imgsz, "task": "detect", "rect": False})
-            dataset = build_yolo_dataset(cfg, str(args.dataset / "train.txt"), 1, data, mode="val", rect=False)
+            dataset = build_yolo_dataset(cfg, str(args.dataset / "train.txt"), args.batch, data, mode="val", rect=False)
             expected = {row["image"] for row in manifest["splits"]["train"]}
             if set(dataset.im_files) != expected:
                 raise RuntimeError("training loader does not match frozen split")
             loader = torch.utils.data.DataLoader(
                 dataset,
-                batch_size=1,
+                batch_size=args.batch,
                 shuffle=True,
                 num_workers=0,
                 collate_fn=dataset.collate_fn,
                 generator=torch.Generator().manual_seed(args.seed),
             )
-            teacher = YOLO(str(args.weights)).model.to(args.device).float().eval() if name == "sparse_det_kd" else None
+            teacher = (
+                YOLO(str(args.weights)).model.to(args.device).float().eval()
+                if name in {"sparse_kd", "sparse_det_kd"}
+                else None
+            )
             with RouterChoice(block, policy) as routing:
                 routing.active = True
                 history = train_target(
@@ -239,6 +276,7 @@ def main():
                     args.epochs,
                     args.lr,
                     args.kd_weight if teacher is not None else 0.0,
+                    detection_weight=0.0 if name == "sparse_kd" else 1.0,
                 )
                 counts = routing.summary()
                 if counts["router_samples"] != args.epochs * len(dataset):
@@ -256,7 +294,13 @@ def main():
         report["dev"].append(case)
         save()
         del model
-    selected = choose_candidate(report["dev"])
+    orders = [
+        tuple(epoch["image_order_sha256"] for epoch in case["history"]) for case in report["dev"] if case["history"]
+    ]
+    if any(order != orders[0] for order in orders[1:]):
+        raise RuntimeError("training methods observed different image orders")
+    report["matched_training_orders"] = True
+    selected = choose_candidate(report["dev"], sparse_names)
     report["selected_from_dev"] = selected
     save()  # Candidate is frozen before any test metrics are obtained.
     for name in ("native", "top2", "dense_det", selected, "native_repeat"):
