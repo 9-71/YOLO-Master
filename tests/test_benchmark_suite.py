@@ -76,6 +76,23 @@ def test_load_suite_merges_defaults_and_resolves_paths(tmp_path):
     assert suite.cases[0].settings.seed == 7
 
 
+def test_hardware_catalog_keeps_local_and_cuda_preflights_distinct():
+    root = Path(__file__).resolve().parents[1]
+    catalog = root / "benchmarks/hardware_baselines.yaml"
+    local = load_suite(catalog, "mps_preflight", root=root)
+    cuda = load_suite(catalog, "a800_forward_preflight", root=root)
+    assert [case.case_id for case in local.cases] == [case.case_id for case in cuda.cases]
+    for case in local.cases:
+        assert case.settings.device == "mps"
+        assert case.settings.image_size == 160
+        assert case.settings.iterations == 30
+    for case in cuda.cases:
+        assert case.settings.device == "cuda:0"
+        assert case.settings.image_size == 640
+        assert case.settings.warmup == 50
+        assert case.settings.iterations == 300
+
+
 @pytest.mark.parametrize(
     ("replacement", "message"),
     [

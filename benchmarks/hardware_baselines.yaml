@@ -1,0 +1,47 @@
+schema_version: 1
+
+# Synthetic eager forward only. These YAML models are randomly initialized.
+# These suites do not measure AP, preprocessing, NMS, export or end-to-end service latency.
+defaults:
+  task: inference
+  device: mps
+  dtype: fp32
+  batch_size: 1
+  image_size: 160
+  warmup: 5
+  iterations: 30
+  seed: 0
+  collect_flops: false
+  collect_routing: true
+
+suites:
+  mps_preflight:
+    description: Local MPS structural preflight; random weights, no accuracy or deployment claim.
+    cases:
+      - id: v10_no_moe
+        label: v0.10 dense control
+        model: ultralytics/cfg/models/master/v0_10/det/yolo-master-n-no-moe.yaml
+      - id: v10_moe
+        label: v0.10 MoE candidate
+        model: ultralytics/cfg/models/master/v0_10/det/yolo-master-n.yaml
+      - id: v10_mot
+        label: v0.10 MoT experimental
+        model: ultralytics/cfg/models/master/v0_10/det/yolo-master-mot-n.yaml
+
+  a800_forward_preflight:
+    description: CUDA forward preflight at 640; replace YAML with matched checkpoints before performance conclusions.
+    settings:
+      device: cuda:0
+      image_size: 640
+      warmup: 50
+      iterations: 300
+    cases:
+      - id: v10_no_moe
+        label: v0.10 dense control
+        model: ultralytics/cfg/models/master/v0_10/det/yolo-master-n-no-moe.yaml
+      - id: v10_moe
+        label: v0.10 MoE candidate
+        model: ultralytics/cfg/models/master/v0_10/det/yolo-master-n.yaml
+      - id: v10_mot
+        label: v0.10 MoT experimental
+        model: ultralytics/cfg/models/master/v0_10/det/yolo-master-mot-n.yaml
