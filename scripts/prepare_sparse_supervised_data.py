@@ -34,12 +34,31 @@ def select_splits(names, excluded, counts, seed):
     return result
 
 
+def select_trainval_splits(train_names, val_names, excluded, counts, seed):
+    """Keep official training images out of the two validation subsets."""
+    train_pool = sorted(set(train_names) - set(excluded))
+    val_pool = sorted(set(val_names) - set(excluded))
+    if set(train_pool) & set(val_pool):
+        raise ValueError("official train/val pools overlap")
+    if min(counts) < 1 or counts[0] > len(train_pool) or sum(counts[1:]) > len(val_pool):
+        raise ValueError("split sizes exceed official source pools")
+    rng = random.Random(seed)
+    rng.shuffle(train_pool)
+    rng.shuffle(val_pool)
+    return {
+        "train": train_pool[: counts[0]],
+        "dev": val_pool[: counts[1]],
+        "test": val_pool[counts[1] : counts[1] + counts[2]],
+    }
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--archive", type=Path, required=True)
     parser.add_argument("--exclude-report", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--counts", nargs=3, type=int, default=(64, 32, 64))
+    parser.add_argument("--train-source", choices=("val2017", "train2017"), default="val2017")
     parser.add_argument("--seed", type=int, default=42)
     args = parser.parse_args()
     output = args.output.resolve()
@@ -50,20 +69,28 @@ def main():
     excluded = {Path(row["image"]).name for row in excluded_rows}
     with zipfile.ZipFile(args.archive) as archive:
         ids = [Path(line.strip()).name for line in archive.read("coco/val2017.txt").decode().splitlines()]
-        splits = select_splits(ids, excluded, args.counts, args.seed)
+        if args.train_source == "train2017":
+            train_ids = [Path(line.strip()).name for line in archive.read("coco/train2017.txt").decode().splitlines()]
+            splits = select_trainval_splits(train_ids, ids, excluded, args.counts, args.seed)
+        else:
+            splits = select_splits(ids, excluded, args.counts, args.seed)
+        sources = {"train": args.train_source, "dev": "val2017", "test": "val2017"}
         output.mkdir(parents=True)
         (output / "preparation.py").write_bytes(Path(__file__).read_bytes())
-        (output / "images/val2017").mkdir(parents=True)
-        (output / "labels/val2017").mkdir(parents=True)
-        for name in [name for split_names in splits.values() for name in split_names]:
-            label = f"coco/labels/val2017/{Path(name).stem}.txt"
-            # The published split includes background images with no label file.
-            content = archive.read(label) if label in archive.namelist() else b""
-            (output / "labels/val2017" / Path(name).with_suffix(".txt")).write_bytes(content)
+        archive_names = set(archive.namelist())
+        for split, names in splits.items():
+            source = sources[split]
+            (output / "images" / source).mkdir(parents=True, exist_ok=True)
+            (output / "labels" / source).mkdir(parents=True, exist_ok=True)
+            for name in names:
+                label = f"coco/labels/{source}/{Path(name).stem}.txt"
+                content = archive.read(label) if label in archive_names else b""
+                (output / "labels" / source / Path(name).with_suffix(".txt")).write_bytes(content)
 
-    def download(name):
-        url = f"https://s3.amazonaws.com/images.cocodataset.org/val2017/{name}"
-        path = output / "images/val2017" / name
+    def download(item):
+        name, source = item
+        url = f"https://s3.amazonaws.com/images.cocodataset.org/{source}/{name}"
+        path = output / "images" / source / name
         error = None
         for _ in range(3):
             try:
@@ -75,15 +102,15 @@ def main():
                 error = exc
         raise RuntimeError(f"download failed: {name}") from error
 
-    names = [name for split_names in splits.values() for name in split_names]
+    items = [(name, sources[split]) for split, split_names in splits.items() for name in split_names]
     with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:
-        urls = dict(zip(names, pool.map(download, names)))
+        urls = dict(zip([name for name, _ in items], pool.map(download, items)))
     identities = {}
     for split, names in splits.items():
         rows = []
         for name in names:
-            image = output / "images/val2017" / name
-            label = output / "labels/val2017" / Path(name).with_suffix(".txt")
+            image = output / "images" / sources[split] / name
+            label = output / "labels" / sources[split] / Path(name).with_suffix(".txt")
             rows.append(
                 {
                     "image": str(image),
@@ -91,6 +118,7 @@ def main():
                     "label": str(label),
                     "label_sha256": hashlib.sha256(label.read_bytes()).hexdigest(),
                     "url": urls[name],
+                    "source": sources[split],
                 }
             )
         assert_disjoint(rows, excluded_rows)
@@ -112,6 +140,7 @@ def main():
         )
     manifest = {
         "seed": args.seed,
+        "sources": sources,
         "preparation_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
         "splits": identities,
         "label_archive_sha256": hashlib.sha256(args.archive.read_bytes()).hexdigest(),
