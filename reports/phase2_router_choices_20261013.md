@@ -171,3 +171,42 @@ coco128 继续作为已被观察过的固定回归集，因此这些分数不是
 将训练 seed 改为 43，使用新输出目录复现第二种子。运行源码、完整报告、策略化 state_dict 保存在 `runs/supervised_sparse/mps_seed42/` 与 `mps_seed43/`。最终脚本在运行快照基础上补充了逐图评估身份和训练专家数的显式断言，训练行为与预算未变。可提交证据见 `reports/evidence/sparse_supervised_20261013/pilot.json`，含图片 ID/哈希、标签哈希、环境、训练轨迹、执行计数和开发/最终指标；图片和权重未上传。
 
 新增 5 项测试覆盖分组排除、标签篡改、交叉内容重叠、只按开发集选型，以及真实 DetectionModel 检测损失的稀疏反向更新和 teacher/BN 冻结；相关测试合计 **87 passed**。最终防护更新后新增 5 项测试再次通过；Ruff lint/format 与 diff whitespace 通过。
+
+## 256 张新增样本与冻结候选验证（2026-10-13）
+
+继续下载额外 COCO val2017 图片，排除此前 32 张校准图、coco128 的 128 张图以及监督试验 160 张图，排除清单共 320 张。固定 seed=20261013，从剩余图片抽取 258 张，其中 256 张只用于本轮验证，另外 2 张因数据准备入口的 train/dev 正数约束而保留未使用；本轮没有训练或调参。图片/标签哈希冻结，按 COCO ID 和内容双重确认不重叠。256 图共 **1,921 个实例、77 个有标注类别**，仍不能保证与发布模型预训练数据无重叠。
+
+先完成原生、直接后期 Top-2、原生复跑三个条件；随后对此前四份已保存稀疏权重做冻结验证，重复原生/Top-2/原生复跑控制。所有条件都是相同的 256 图、320 输入、MPS FP32、batch=1、conf=0.001、NMS IoU=0.7、max_det=300。新增 `scripts/evaluate_sparse_checkpoints.py` 校验基础权重来源、目标层/策略、张量 state_dict、逐图身份以及实际专家执行数；禁止静默换 checkpoint 或把 state_dict 当完整 YOLO 模型加载。
+
+完整 AP50-95×100 结果：
+
+- 原生：**36.7680**。
+- 未微调 Top-2：**34.8181**，相对原生 **−1.9498 点**。
+- 32 图特征蒸馏、不重估 BN：**35.9141**，相对原生 **−0.8539 点**。
+- 32 图目标输出 BN 校准加特征蒸馏：**35.8919**，相对原生 **−0.8761 点**。
+- 64 图监督检测损失加 KD，seed 42：**34.1299**，相对原生 **−2.6381 点**。
+- 64 图监督检测损失加 KD，seed 43：**34.5928**，相对原生 **−2.1752 点**。
+- 两组实验的原生复跑一致，最大指标绝对差为 0；两组原生/直接 Top-2 的结果也完全一致。
+
+所有稀疏候选在验证中均每图执行 2 个目标层专家，原生为 3。特征蒸馏相对直接 Top-2 恢复约 1.07–1.10 点，但没有候选达到 ≤0.3 点参考精度门。32 图特征蒸馏与 64 图监督微调的数据、损失和训练预算不同，因此这里不能当作严格的训练方法优劣消融；本轮也不依据这批分数重新选定交付模型。
+
+与之前 64 图上直接 Top-2 仅下降 0.0646 点相比，更大新增子集再次观察到明显损失。不同子集的绝对 AP 与有标注类别构成不同，不能直接横比绝对 AP；各自相对原生的降幅可以作为分布敏感性的证据，但尚无完整 COCO 或业务泛化保证。
+
+当前结论：保持原生发布模型；继续研究特征蒸馏能否在更多训练样本上稳定恢复精度，暂停扩大现有 64 图监督微调预算及 A800 加速交付。下一阶段应把纯检测、纯 KD、检测加 KD 放在**同一更大训练集与固定预算**下比较，并另留未参与路线/预算选择的新验证集。已经观察过的 64 图和本轮 256 图今后只能作回归或开发数据，不能再次宣称为全新的最终测试。
+
+复用入口：
+
+```bash
+.venv/bin/python scripts/evaluate_sparse_checkpoints.py \
+  --weights runs/weights/YOLO-Master-EsMoE-N.pt \
+  --data runs/supervised_sparse/verification256/test.yaml \
+  --candidates runs/calibration/model12_target_bn_kd/top2_kd.state.pt \
+    runs/calibration/model12_target_bn_kd/top2_bn_kd.state.pt \
+    runs/supervised_sparse/mps_seed42/sparse_det_kd.state.pt \
+    runs/supervised_sparse/mps_seed43/sparse_det_kd.state.pt \
+  --output runs/supervised_sparse/new_frozen_candidate_verification
+```
+
+原始证据位于 `runs/router_choices/mps_model12_verification256/` 和 `runs/supervised_sparse/verification256_candidates/`。可提交证据在 `reports/evidence/sparse_verification256_20261013/results.json`，含 256 张图片 ID/哈希、标签哈希、候选权重和来源报告哈希、控制与全部候选指标、执行计数、环境和实际运行源码哈希。运行快照保留；最终入口另补充了 state_dict 非有限值/非法载荷拒绝检查，未改变合法候选的评估行为。
+
+新增 6 项候选来源和状态契约测试；与此前路由、训练和模型配置验证合计 **93 passed**。Ruff lint/format、证据身份与运行快照哈希核对、diff whitespace 通过。没有上传图片或权重，也没有将带遥测的验证耗时作为部署性能结果。
