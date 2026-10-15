@@ -15,10 +15,10 @@ from fastapi.testclient import TestClient
 
 from api.v1.jobs import get_jobs_manager
 from core.schema import JobStatus
-from f1.jobs_manager import JobsManager
 from f1.ui.jobs_tab import POLL_FAST_SECONDS, create_jobs_tab
 from f1.ui.studio_jobs_client import StudioBackendUnavailableError, StudioJobsApiClient
 from main_engine import create_app
+from studio.jobs_manager import JobsManager
 
 
 class _Response:
@@ -86,7 +86,7 @@ def test_submission_reaches_fastapi_manager_when_backend_is_running() -> None:
     app = create_app()
     app.dependency_overrides[get_jobs_manager] = lambda: manager
 
-    with TestClient(app) as api:
+    with TestClient(app, base_url="http://localhost", client=("127.0.0.1", 40000)) as api:
         client = StudioJobsApiClient("http://studio.test", session=_TestClientSession(api))
         job_id, _message = client.submit_job(
             "predict",
@@ -97,7 +97,7 @@ def test_submission_reaches_fastapi_manager_when_backend_is_running() -> None:
             "cpu",
             ["."],
         )
-        assert job_id in manager.jobs
+        assert job_id in manager._jobs
         assert manager.get_job_status(job_id)["status"] == "PENDING"
         assert not hasattr(client, "jobs")
 
@@ -114,7 +114,7 @@ def test_api_backed_ui_transitions_to_completed_with_artifacts(task_type, data_n
     app = create_app()
     app.dependency_overrides[get_jobs_manager] = lambda: manager
 
-    with TestClient(app) as api:
+    with TestClient(app, base_url="http://localhost", client=("127.0.0.1", 40000)) as api:
         client = StudioJobsApiClient("http://studio.test", session=_TestClientSession(api))
         job_id, _message = client.submit_job(
             task_type,
@@ -131,7 +131,7 @@ def test_api_backed_ui_transitions_to_completed_with_artifacts(task_type, data_n
         )
         poll_fn = next(bf.fn for bf in tab.fns.values() if bf.fn and (poll_timer._id, "tick") in bf.targets)
 
-        manager.jobs[job_id].status = JobStatus.RUNNING
+        manager._jobs[job_id].status = JobStatus.RUNNING
         running = poll_fn(job_id, "en")
 
         artifact_dir = output_dir / job_id
@@ -149,8 +149,8 @@ def test_api_backed_ui_transitions_to_completed_with_artifacts(task_type, data_n
                 )
             else:
                 artifact.write_text("artifact\n", encoding="utf-8")
-        manager.jobs[job_id].output.artifacts = artifact_names
-        manager.jobs[job_id].status = JobStatus.COMPLETED
+        manager._jobs[job_id].output.artifacts = artifact_names
+        manager._jobs[job_id].status = JobStatus.COMPLETED
         completed = poll_fn(job_id, "en")
 
         assert running[0]["status"] == "RUNNING"

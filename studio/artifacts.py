@@ -45,7 +45,7 @@ class ArtifactResolver:
 
     def resolve(self, job, identifier):
         """Require an exact manifest ID and recheck all symlinks on every read."""
-        if not isinstance(identifier, str) or identifier not in job.output.artifacts:
+        if not isinstance(identifier, str) or identifier not in self.normalize(job, job.output.artifacts):
             return None
         parts = PurePosixPath(identifier)
         if (
@@ -70,6 +70,6 @@ class ArtifactResolver:
         """List only manifest entries that still pass read-time authorization."""
         return [
             (identifier, str(path))
-            for identifier in sorted(set(job.output.artifacts))
+            for identifier in self.normalize(job, job.output.artifacts)
             if (path := self.resolve(job, identifier)) is not None
         ]
