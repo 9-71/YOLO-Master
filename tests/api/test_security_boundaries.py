@@ -16,6 +16,7 @@ from core.schema import JobRequest, JobStatus, TaskType
 from f1.handlers.predict import PredictHandler
 from f1.jobs_manager import JobsManager
 from main_engine import create_app
+from studio.jobs_manager import JobsManager as StudioJobsManager
 
 
 def _request(job_id: str, model: Path, data: Path, output: Path, **extra: object) -> JobRequest:
@@ -230,14 +231,14 @@ def test_artifacts_are_job_contained_and_api_exposes_only_safe_ids(tmp_path: Pat
     job = JobRequest(job_id=job_id, task_type=TaskType.PREDICT, status=JobStatus.COMPLETED)
     job.output.output_dir = str(output_root / "predict")
     job.output.artifacts = [str(first), str(second), str(outside)]
-    manager = JobsManager(output_root=output_root)
-    manager._normalize_job_artifacts(job)
-    manager.jobs[job_id] = job
-    manager.job_logs[job_id] = []
+    manager = StudioJobsManager(output_root=output_root)
+    job.output.artifacts = manager._artifacts.normalize(job, job.output.artifacts)
+    manager._jobs[job_id] = job
+    manager._logs.entries[job_id] = []
     app = create_app()
     app.dependency_overrides[get_jobs_manager] = lambda: manager
 
-    with TestClient(app) as client:
+    with TestClient(app, base_url="http://localhost", client=("127.0.0.1", 40000)) as client:
         response = client.get(f"/api/v1/jobs/{job_id}/artifacts")
         assert response.status_code == 200
         body = response.json()

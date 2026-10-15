@@ -8,26 +8,26 @@ from fastapi.testclient import TestClient
 
 from api.v1.jobs import get_jobs_manager
 from core.schema import JobRequest, JobStatus, TaskType
-from f1.jobs_manager import JobsManager
 from main_engine import create_app
+from studio.jobs_manager import JobsManager
 
 
 def _api_for(manager: JobsManager) -> TestClient:
     """Build an API client whose sole lifecycle owner is ``manager``."""
     app = create_app()
     app.dependency_overrides[get_jobs_manager] = lambda: manager
-    return TestClient(app)
+    return TestClient(app, base_url="http://localhost", client=("127.0.0.1", 40000))
 
 
 def test_running_log_polls_observe_each_new_append_exactly_once(monkeypatch, tmp_path) -> None:
     """A tail reached while RUNNING is not final: later polls see later child events in order."""
-    import f1.jobs_manager as jobs_manager_module
+    import studio.jobs_manager as jobs_manager_module
 
     manager = JobsManager(output_root=tmp_path, model_roots=[tmp_path], data_roots=[tmp_path])
     job_id = "incremental-live-logs"
     job = JobRequest(job_id=job_id, task_type=TaskType.PREDICT, output={"output_dir": str(tmp_path)})
-    manager.jobs[job_id] = job
-    manager.job_logs[job_id] = ["submitted"]
+    manager._jobs[job_id] = job
+    manager._logs.entries[job_id] = ["submitted"]
 
     result = job.model_copy(deep=True)
     result.status = JobStatus.COMPLETED
@@ -45,7 +45,7 @@ def test_running_log_polls_observe_each_new_append_exactly_once(monkeypatch, tmp
     receive_index = 0
 
     def observe_log_publication() -> None:
-        published = manager.job_logs[job_id]
+        published = manager._logs.entries[job_id]
         if published[-1:] == ["first"]:
             first_published.set()
         elif published[-1:] == ["second"]:
@@ -138,8 +138,8 @@ def test_cancelled_job_keeps_existing_logs_and_accepts_late_log_tail(tmp_path) -
     """Late log writes remain readable after cancellation without reviving the job."""
     manager = JobsManager(output_root=tmp_path, model_roots=[tmp_path], data_roots=[tmp_path])
     job_id = "cancel-late-logs"
-    manager.jobs[job_id] = JobRequest(job_id=job_id, task_type=TaskType.PREDICT)
-    manager.job_logs[job_id] = ["before cancellation"]
+    manager._jobs[job_id] = JobRequest(job_id=job_id, task_type=TaskType.PREDICT)
+    manager._logs.entries[job_id] = ["before cancellation"]
 
     try:
         assert "Cancellation requested" in manager.cancel_job(job_id)

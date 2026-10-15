@@ -22,6 +22,7 @@ from core.schema import TERMINAL_STATUSES, ErrorInfo, JobRequest, JobStatus, Tas
 from f1.jobs_manager import JobsManager
 from f1.worker_runtime import ManagedWorker, execute_job
 from main_engine import create_app
+from studio.jobs_manager import JobsManager as StudioJobsManager
 
 # WSL imports dependencies from a Windows mount; leave time for both spawn
 # bootstraps before exercising an in-flight timeout rather than a startup timeout.
@@ -120,6 +121,24 @@ def manager(tmp_path):
     instance.shutdown()
 
 
+@pytest.fixture
+def studio_manager(tmp_path):
+    """Use the production owner for HTTP tests; legacy F1 unit tests keep their manager."""
+    instance = StudioJobsManager(
+        storage_path=str(tmp_path / "state.json"),
+        output_root=tmp_path,
+        model_roots=[tmp_path],
+        data_roots=[tmp_path],
+        cpu_concurrency=2,
+        gpu_concurrency=1,
+        stop_grace_seconds=0.2,
+        shutdown_grace_seconds=0,
+    )
+    instance._worker_executor = dummy_executor
+    yield instance
+    instance.shutdown()
+
+
 def submit(manager, root, job_id, device="cpu", timeout=30, **params):
     return manager.submit_job_request(
         JobRequest(
@@ -158,8 +177,9 @@ def test_normal_completion_cleans_leftover_children(manager, tmp_path):
     assert not any(live(pid) for pid in owned)
 
 
-def test_running_logs_stream_through_api_in_order_without_terminal_duplicates(manager, tmp_path):
+def test_running_logs_stream_through_api_in_order_without_terminal_duplicates(studio_manager, tmp_path):
     """Structured child logs are visible while RUNNING; terminal tail waits for cleanup."""
+    manager = studio_manager
     submit(
         manager,
         tmp_path,
@@ -175,7 +195,7 @@ def test_running_logs_stream_through_api_in_order_without_terminal_duplicates(ma
 
     app = create_app()
     app.dependency_overrides[get_jobs_manager] = lambda: manager
-    with TestClient(app) as client:
+    with TestClient(app, base_url="http://localhost", client=("127.0.0.1", 40000)) as client:
         assert client.get("/api/v1/jobs/live-api").json()["status"] == "running"
         running = client.get("/api/v1/jobs/live-api/logs", params={"offset": 1, "limit": 500})
         assert running.status_code == 200
@@ -452,10 +472,11 @@ def test_parent_exit_cleans_tree_and_restart_is_honest(tmp_path, exit_mode):
                 pass
 
 
-def test_api_cancel_ack_precedes_confirmed_tree_exit(manager, tmp_path):
+def test_api_cancel_ack_precedes_confirmed_tree_exit(studio_manager, tmp_path):
+    manager = studio_manager
     app = create_app()
     app.dependency_overrides[get_jobs_manager] = lambda: manager
-    with TestClient(app) as client:
+    with TestClient(app, base_url="http://localhost", client=("127.0.0.1", 40000)) as client:
         payload = JobRequest(
             job_id="api-cancel",
             task_type=TaskType.PREDICT,
@@ -472,11 +493,12 @@ def test_api_cancel_ack_precedes_confirmed_tree_exit(manager, tmp_path):
         assert not any(live(pid) for pid in owned)
 
 
-def test_api_lifespan_shutdown_stops_manager_worker_and_supervisors(manager, tmp_path):
+def test_api_lifespan_shutdown_stops_manager_worker_and_supervisors(studio_manager, tmp_path):
     """Leaving the API lifespan closes its manager and all manager-owned background execution."""
+    manager = studio_manager
     app = create_app()
     app.dependency_overrides[get_jobs_manager] = lambda: manager
-    with TestClient(app) as client:
+    with TestClient(app, base_url="http://localhost", client=("127.0.0.1", 40000)) as client:
         payload = JobRequest(
             job_id="api-shutdown",
             task_type=TaskType.PREDICT,
@@ -613,13 +635,13 @@ def test_timeout_wins_without_consuming_late_worker_completion(monkeypatch, tmp_
 @pytest.mark.parametrize("natural_status", [JobStatus.COMPLETED, JobStatus.FAILED])
 def test_natural_terminal_publication_wins_cancel_api_race(monkeypatch, tmp_path, natural_status):
     """A cancel request with a stale RUNNING read cannot overwrite a published terminal result."""
-    import f1.jobs_manager as jobs_manager_module
+    import studio.jobs_manager as jobs_manager_module
 
-    manager = JobsManager(output_root=tmp_path, model_roots=[tmp_path], data_roots=[tmp_path])
+    manager = StudioJobsManager(output_root=tmp_path, model_roots=[tmp_path], data_roots=[tmp_path])
     job_id = f"natural-{natural_status.value}"
     job = JobRequest(job_id=job_id, task_type=TaskType.PREDICT, output={"output_dir": str(tmp_path)})
-    manager.jobs[job_id] = job
-    manager.job_logs[job_id] = []
+    manager._jobs[job_id] = job
+    manager._logs.entries[job_id] = []
 
     worker_started = threading.Event()
     release_result = threading.Event()
@@ -664,17 +686,17 @@ def test_natural_terminal_publication_wins_cancel_api_race(monkeypatch, tmp_path
 
     def observe_terminal_save():
         original_save()
-        if manager.jobs[job_id].status in TERMINAL_STATUSES:
+        if manager._jobs[job_id].status in TERMINAL_STATUSES:
             terminal_published.set()
 
     monkeypatch.setattr(manager, "_save", observe_terminal_save)
-    original_get_job = manager.get_job
+    original_request_cancel = manager.request_cancel
     gate_lock = threading.Lock()
     gate_used = False
 
     def gate_cancel_after_running_read(requested_job_id):
         nonlocal gate_used
-        current = original_get_job(requested_job_id)
+        current = manager.get_job(requested_job_id)
         with gate_lock:
             should_gate = not gate_used and current is not None and current.status == JobStatus.RUNNING
             if should_gate:
@@ -682,9 +704,9 @@ def test_natural_terminal_publication_wins_cancel_api_race(monkeypatch, tmp_path
         if should_gate:
             cancel_observed_running.set()
             assert allow_cancel_recheck.wait(timeout=5)
-        return current
+        return original_request_cancel(requested_job_id)
 
-    monkeypatch.setattr(manager, "get_job", gate_cancel_after_running_read)
+    monkeypatch.setattr(manager, "request_cancel", gate_cancel_after_running_read)
     execution = threading.Thread(target=manager._execute_job, args=(job_id,), daemon=True)
     execution.start()
     assert worker_started.wait(timeout=5)
@@ -692,12 +714,14 @@ def test_natural_terminal_publication_wins_cancel_api_race(monkeypatch, tmp_path
 
     app = create_app()
     app.dependency_overrides[get_jobs_manager] = lambda: manager
-    with TestClient(app) as client, ThreadPoolExecutor(max_workers=1) as pool:
+    with TestClient(app, base_url="http://localhost", client=("127.0.0.1", 40000)) as client, ThreadPoolExecutor(
+        max_workers=1
+    ) as pool:
         cancel_response = pool.submit(client.post, f"/api/v1/jobs/{job_id}/cancel")
         assert cancel_observed_running.wait(timeout=5)
         release_result.set()
         assert terminal_published.wait(timeout=5)
-        published_snapshot = manager.jobs[job_id].model_dump(mode="json")
+        published_snapshot = manager._jobs[job_id].model_dump(mode="json")
         allow_cancel_recheck.set()
         response = cancel_response.result(timeout=5)
 
@@ -706,12 +730,12 @@ def test_natural_terminal_publication_wins_cancel_api_race(monkeypatch, tmp_path
     assert response.status_code == 200
     assert response.json()["status"] == natural_status.value
     assert "Cancellation requested" not in response.json()["message"]
-    assert manager.jobs[job_id].model_dump(mode="json") == published_snapshot
-    assert manager.jobs[job_id].runtime_tracking.cancel_requested is False
-    assert manager.jobs[job_id].metadata.started_at is not None
-    assert manager.jobs[job_id].metadata.completed_at is not None
+    assert manager._jobs[job_id].model_dump(mode="json") == published_snapshot
+    assert manager._jobs[job_id].runtime_tracking.cancel_requested is False
+    assert manager._jobs[job_id].metadata.started_at is not None
+    assert manager._jobs[job_id].metadata.completed_at is not None
     assert manager.get_job_status(job_id)["duration"] >= 0
-    assert manager.job_logs[job_id] == ["natural live log", "natural terminal log"]
+    assert manager._logs.entries[job_id] == ["natural live log", "natural terminal log"]
 
 
 def test_restart_reconciles_and_persists_structured_failure(tmp_path):
@@ -722,10 +746,10 @@ def test_restart_reconciles_and_persists_structured_failure(tmp_path):
     jobs["running"]["metadata"]["started_at"] = jobs["running"]["metadata"]["created_at"]
     path = tmp_path / "state.json"
     path.write_text(json.dumps({"jobs": jobs, "job_logs": {}}))
-    instance = JobsManager(storage_path=str(path))
+    instance = StudioJobsManager(storage_path=str(path))
     app = create_app()
     app.dependency_overrides[get_jobs_manager] = lambda: instance
-    with TestClient(app) as client:
+    with TestClient(app, base_url="http://localhost", client=("127.0.0.1", 40000)) as client:
         for job_id in ("pending", "running"):
             body = client.get(f"/api/v1/jobs/{job_id}").json()
             assert body["status"] == "failed" and body["error_code"] == "SERVICE_RESTARTED"

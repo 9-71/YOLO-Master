@@ -6,7 +6,7 @@ API, health and docs routes declared before the static mount keep precedence,
 unknown paths 404, and the ``null`` origin used by ``file://`` pages as well
 as both engine origin spellings (``localhost``/``127.0.0.1``) pass the CORS
 middleware. All tests are CPU-only: submissions run against an
-in-memory :class:`f1.jobs_manager.JobsManager` whose dispatcher is stubbed,
+in-memory :class:`studio.jobs_manager.JobsManager` whose scheduler is parked,
 so no model is loaded and no accelerator is touched.
 
 Run:
@@ -18,10 +18,8 @@ from __future__ import annotations
 import pytest
 from fastapi.testclient import TestClient
 
-from api.v1.jobs import get_jobs_manager
-from core.schema import JobRequest
-from f1.jobs_manager import JobsManager
 from main_engine import CORS_ORIGINS_ENV, create_app
+from studio.jobs_manager import JobsManager
 
 
 def _job_payload(job_id: str, task_type: str = "predict") -> dict[str, object]:
@@ -43,16 +41,11 @@ def _job_payload(job_id: str, task_type: str = "predict") -> dict[str, object]:
     }
 
 
-def _noop_execute(job: JobRequest) -> JobRequest:
-    """Dispatcher stub parking a job in PENDING: no engine work, no hardware."""
-    return job
-
-
 @pytest.fixture
 def api_manager() -> JobsManager:
-    """Return a fresh in-memory JobsManager with a no-engine dispatcher stub."""
+    """Return a fresh in-memory JobsManager with no engine workers."""
     manager = JobsManager()
-    manager.dispatcher.execute = _noop_execute  # type: ignore[method-assign]
+    manager._start_supervisors = lambda: None  # Park submissions without starting engine workers.
     return manager
 
 
@@ -60,9 +53,8 @@ def api_manager() -> JobsManager:
 def client(api_manager: JobsManager, monkeypatch: pytest.MonkeyPatch):
     """Yield a TestClient over a fresh app wired to the stubbed manager."""
     monkeypatch.delenv(CORS_ORIGINS_ENV, raising=False)
-    app = create_app()
-    app.dependency_overrides[get_jobs_manager] = lambda: api_manager
-    with TestClient(app) as test_client:
+    app = create_app(manager_factory=lambda: api_manager)
+    with TestClient(app, base_url="http://localhost", client=("127.0.0.1", 40000)) as test_client:
         yield test_client
 
 
