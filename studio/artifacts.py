@@ -43,9 +43,22 @@ class ArtifactResolver:
                 continue
         return sorted(identifiers)
 
+    def _manifest_ids(self, job):
+        """Keep committed relative IDs exact while adapting legacy absolute paths."""
+        identifiers = set()
+        absolute_candidates = []
+        for entry in job.output.artifacts:
+            if Path(entry).is_absolute():
+                absolute_candidates.append(entry)
+            else:
+                identifiers.add(entry)
+        if absolute_candidates:
+            identifiers.update(self.normalize(job, absolute_candidates))
+        return sorted(identifiers)
+
     def resolve(self, job, identifier):
         """Require an exact manifest ID and recheck all symlinks on every read."""
-        if not isinstance(identifier, str) or identifier not in self.normalize(job, job.output.artifacts):
+        if not isinstance(identifier, str) or identifier not in self._manifest_ids(job):
             return None
         parts = PurePosixPath(identifier)
         if (
@@ -53,6 +66,7 @@ class ArtifactResolver:
             or "\\" in identifier
             or ":" in identifier
             or parts.is_absolute()
+            or parts.as_posix() != identifier
             or any(part in {".", ".."} for part in identifier.split("/"))
         ):
             return None
@@ -70,6 +84,6 @@ class ArtifactResolver:
         """List only manifest entries that still pass read-time authorization."""
         return [
             (identifier, str(path))
-            for identifier in self.normalize(job, job.output.artifacts)
+            for identifier in self._manifest_ids(job)
             if (path := self.resolve(job, identifier)) is not None
         ]
