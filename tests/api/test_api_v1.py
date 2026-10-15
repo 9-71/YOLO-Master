@@ -28,8 +28,8 @@ from fastapi.testclient import TestClient
 
 from api.v1.jobs import get_jobs_manager
 from core.schema import ErrorInfo, JobRequest, JobStatus, TaskType
-from f1.jobs_manager import JobsManager
 from main_engine import CORS_ORIGINS_ENV, create_app
+from studio.jobs_manager import JobsManager
 
 #: ISO 8601 timestamp shape stamped server-side by ``submit_job_request``.
 _ISO_8601 = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(\+\d{2}:\d{2}|Z)?")
@@ -95,7 +95,7 @@ def client(api_manager: JobsManager, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.delenv(CORS_ORIGINS_ENV, raising=False)
     app = create_app()
     app.dependency_overrides[get_jobs_manager] = lambda: api_manager
-    with TestClient(app) as test_client:
+    with TestClient(app, base_url="http://localhost", client=("127.0.0.1", 40000)) as test_client:
         yield test_client
 
 
@@ -247,27 +247,27 @@ def test_job_cancellation(client: TestClient, api_manager: JobsManager) -> None:
             job.metadata.started_at = "2026-09-11T01:00:00+00:00"
             job.metadata.completed_at = "2026-09-11T01:00:05+00:00"
             job.output.artifacts = ["existing-result.json"]
-        api_manager.jobs[job.job_id] = job
-        api_manager.job_logs[job.job_id] = ["existing terminal log"] if job.status != JobStatus.PENDING else []
+        api_manager._jobs[job.job_id] = job
+        api_manager._logs.entries[job.job_id] = ["existing terminal log"] if job.status != JobStatus.PENDING else []
         if job.status != JobStatus.PENDING:
-            terminal_snapshots[job.job_id] = (job.model_dump(mode="json"), list(api_manager.job_logs[job.job_id]))
+            terminal_snapshots[job.job_id] = (job.model_dump(mode="json"), list(api_manager._logs.entries[job.job_id]))
     accepted = client.post("/api/v1/jobs/cancel-pending/cancel")
     assert accepted.status_code == 202
     assert accepted.json()["status"] == "cancel_requested"
-    assert api_manager.jobs["cancel-pending"].runtime_tracking.cancel_requested is True
+    assert api_manager._jobs["cancel-pending"].runtime_tracking.cancel_requested is True
     cancelled = client.get("/api/v1/jobs/cancel-pending").json()
     assert cancelled["status"] == "cancelled"
     assert cancelled["started_at"] is None
     assert cancelled["completed_at"] is not None
     assert cancelled["duration"] is None
-    pending_terminal_snapshot = api_manager.jobs["cancel-pending"].model_dump(mode="json")
-    pending_log_snapshot = list(api_manager.job_logs["cancel-pending"])
+    pending_terminal_snapshot = api_manager._jobs["cancel-pending"].model_dump(mode="json")
+    pending_log_snapshot = list(api_manager._logs.entries["cancel-pending"])
     replay = client.post("/api/v1/jobs/cancel-pending/cancel")
     assert replay.status_code == 200
     assert replay.json()["status"] == "cancelled"
     assert "Cancellation requested" not in replay.json()["message"]
-    assert api_manager.jobs["cancel-pending"].model_dump(mode="json") == pending_terminal_snapshot
-    assert api_manager.job_logs["cancel-pending"] == pending_log_snapshot
+    assert api_manager._jobs["cancel-pending"].model_dump(mode="json") == pending_terminal_snapshot
+    assert api_manager._logs.entries["cancel-pending"] == pending_log_snapshot
     for job_id, expected_status in (
         ("cancel-done", "completed"),
         ("cancel-failed", "failed"),
@@ -277,16 +277,16 @@ def test_job_cancellation(client: TestClient, api_manager: JobsManager) -> None:
         assert response.status_code == 200
         assert response.json()["status"] == expected_status
         assert "Cancellation requested" not in response.json()["message"]
-        assert api_manager.jobs[job_id].model_dump(mode="json") == terminal_snapshots[job_id][0]
-        assert api_manager.job_logs[job_id] == terminal_snapshots[job_id][1]
+        assert api_manager._jobs[job_id].model_dump(mode="json") == terminal_snapshots[job_id][0]
+        assert api_manager._logs.entries[job_id] == terminal_snapshots[job_id][1]
     assert client.post("/api/v1/jobs/unknown/cancel").status_code == 404
 
 
 def test_log_streaming_and_sanitization(client: TestClient, api_manager: JobsManager) -> None:
     """Log windows paginate by cursor and redact credential fragments in every line."""
     job_id = "log-001"
-    api_manager.jobs[job_id] = JobRequest(job_id=job_id, task_type=TaskType.PREDICT)
-    api_manager.job_logs[job_id] = [
+    api_manager._jobs[job_id] = JobRequest(job_id=job_id, task_type=TaskType.PREDICT)
+    api_manager._logs.entries[job_id] = [
         "[t0] Job log-001 submitted",
         "[t1] Exporting API_KEY=secret_key_12345678",
         "[t2] trace line A\nconnecting with Bearer abcdefghijklmnop1234\ntrace line C",
@@ -321,10 +321,10 @@ def test_artifacts_manifest_and_static_delivery(client: TestClient, api_manager:
     job = JobRequest(job_id=job_id, task_type=TaskType.PREDICT, status=JobStatus.COMPLETED)
     job.output.output_dir = str(out_dir)
     job.output.artifacts = [str(results), str(preview)]
-    api_manager._output_root = tmp_path.resolve()
-    api_manager._normalize_job_artifacts(job)
-    api_manager.jobs[job_id] = job
-    api_manager.job_logs[job_id] = []
+    api_manager._artifacts.output_root = tmp_path.resolve()
+    job.output.artifacts = api_manager._artifacts.normalize(job, job.output.artifacts)
+    api_manager._jobs[job_id] = job
+    api_manager._logs.entries[job_id] = []
     manifest = client.get(f"/api/v1/jobs/{job_id}/artifacts")
     assert manifest.status_code == 200
     body = manifest.json()

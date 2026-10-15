@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 import threading
+from contextlib import closing
 
 import pytest
+from fastapi.testclient import TestClient
 
 import api.v1.jobs as jobs_api
 import f1.jobs_manager as jobs_manager_module
+import main_engine
+import studio.jobs_manager as studio_manager_module
 from app import YOLO_Master_WebUI
 from core.schema import ErrorInfo, JobRequest, JobStatus, TaskType
 from f1.jobs_manager import JobsManager
@@ -120,15 +124,25 @@ def test_ui_and_compat_export_do_not_create_a_second_lifecycle_owner(monkeypatch
             super().__init__(*args, **kwargs)
 
     monkeypatch.setattr(jobs_manager_module, "JobsManager", GuardedJobsManager)
-    monkeypatch.setattr(jobs_api, "JobsManager", GuardedJobsManager)
-    monkeypatch.setattr(jobs_api, "_manager", None)
+
+    class GuardedStudioJobsManager(studio_manager_module.JobsManager):
+        def __init__(self, *args, **kwargs) -> None:
+            constructions.append((args, kwargs))
+            super().__init__(*args, **kwargs)
+
+    monkeypatch.setattr(studio_manager_module, "JobsManager", GuardedStudioJobsManager)
+    monkeypatch.setattr(main_engine, "JobsManager", GuardedStudioJobsManager)
+    monkeypatch.setattr(jobs_api, "JobsManager", GuardedStudioJobsManager)
+    application = main_engine.create_app()
 
     ui = YOLO_Master_WebUI(str(tmp_path / "checkpoints"))
     assert "JobsManager" in jobs_tab.__all__
     assert jobs_tab.JobsManager is GuardedJobsManager
     assert isinstance(ui.jobs_client, StudioJobsApiClient)
     assert constructions == []
-    assert jobs_api._manager is None
+    assert not hasattr(jobs_api, "_manager")
+    assert application.state.jobs_manager is None
+    assert application.state.ready is False
     assert not hasattr(ui.jobs_client, "_workers")
     assert not hasattr(ui.jobs_client, "_supervisors")
 
@@ -137,6 +151,8 @@ def test_client_activity_after_api_shutdown_does_not_recreate_manager(monkeypatc
     """A UI client request after owner shutdown cannot construct a second in-process manager."""
 
     class ExistingOwner:
+        shutdown_budget_seconds = 0
+
         def __init__(self) -> None:
             self.shutdown_calls = 0
 
@@ -164,10 +180,20 @@ def test_client_activity_after_api_shutdown_does_not_recreate_manager(monkeypatc
             return Response()
 
     owner = ExistingOwner()
-    monkeypatch.setattr(jobs_api, "_manager", owner)
-    jobs_api.shutdown_jobs_manager()
+    factory_calls = []
+
+    def existing_owner():
+        factory_calls.append(owner)
+        return owner
+
+    application = main_engine.create_app(manager_factory=existing_owner)
+    with TestClient(application, base_url="http://localhost", client=("127.0.0.1", 40000)) as api_client:
+        assert application.state.jobs_manager is owner
+        assert application.state.ready is True
+        assert api_client.get("/health").status_code == 200
     assert owner.shutdown_calls == 1
-    assert jobs_api._manager is None
+    assert application.state.jobs_manager is None
+    assert application.state.ready is False
 
     constructions = []
 
@@ -175,9 +201,20 @@ def test_client_activity_after_api_shutdown_does_not_recreate_manager(monkeypatc
         constructions.append((args, kwargs))
         raise AssertionError("UI/client recreated an in-process JobsManager")
 
-    monkeypatch.setattr(jobs_api, "JobsManager", forbidden_manager)
+    monkeypatch.setattr(main_engine, "JobsManager", forbidden_manager)
+    monkeypatch.setattr(studio_manager_module, "JobsManager", forbidden_manager)
+    monkeypatch.setattr(jobs_manager_module, "JobsManager", forbidden_manager)
+    # Requests outside a lifespan must fail closed without lazily reopening an owner.
+    with closing(TestClient(application, base_url="http://localhost", client=("127.0.0.1", 40000))) as api_client:
+        response = api_client.get("/api/v1/jobs")
+        assert response.status_code == 503
+        assert response.json()["detail"]["code"] == "SERVICE_UNAVAILABLE"
     client = StudioJobsApiClient("http://studio.test", session=Session())
 
     assert client.get_job_status("job-1")["status"] == "CANCELLED"
+    assert factory_calls == [owner]
+    assert owner.shutdown_calls == 1
     assert constructions == []
-    assert jobs_api._manager is None
+    assert not hasattr(jobs_api, "_manager")
+    assert application.state.jobs_manager is None
+    assert application.state.ready is False

@@ -8,6 +8,8 @@ the parent has stopped the entire tree. Only server code supplies the executor.
 from __future__ import annotations
 
 import ctypes
+import io
+import logging
 import multiprocessing
 import os
 import queue
@@ -16,12 +18,13 @@ import sys
 import threading
 import time
 import traceback
+from contextlib import nullcontext, redirect_stderr, redirect_stdout
 from ctypes import wintypes
 
 import psutil
 
 from core.schema import ErrorInfo, JobRequest, JobStatus
-from core.security import sanitize_log_text
+from core.security import REDACTED, _known_secret_values, sanitize_log_text
 from studio.training_shutdown import CURRENT_SHUTDOWN, TrainingShutdown
 
 
@@ -30,6 +33,89 @@ def execute_job(job: JobRequest) -> JobRequest:
     from studio.dispatcher import JobDispatcherStateMachine
 
     return JobDispatcherStateMachine().execute(job, managed=True)
+
+
+class _JobLogStream(io.TextIOBase):
+    """Keep detached Windows Python output on the sanitized job-log IPC channel."""
+
+    encoding = "utf-8"
+
+    def __init__(self, job, lock=None):
+        self.job = job
+        self._pending = ""
+        self._lock = lock if lock is not None else threading.RLock()
+
+    def writable(self):
+        return True
+
+    def _append(self, text, secrets, final=False):
+        # Find whole values and final cross-line prefixes on the original text.
+        # Replacing one shared prefix must not hide another secret's context.
+        ranges = []
+        for secret in secrets:
+            if len(secret) < 4:
+                continue
+            start = text.find(secret)
+            while start >= 0:
+                ranges.append((start, start + len(secret)))
+                start = text.find(secret, start + 1)
+            if final:
+                for size in range(min(len(secret) - 1, len(text)), 3, -1):
+                    prefix = secret[:size]
+                    if "\n" in prefix and text.endswith(prefix):
+                        ranges.append((len(text) - size, len(text)))
+                        break
+        merged = []
+        for start, end in sorted(ranges):
+            if merged and start <= merged[-1][1]:
+                merged[-1] = (merged[-1][0], max(end, merged[-1][1]))
+            else:
+                merged.append((start, end))
+        parts, cursor = [], 0
+        for start, end in merged:
+            parts.extend((text[cursor:start], REDACTED))
+            cursor = end
+        parts.append(text[cursor:])
+        self.job.append_log("".join(parts))
+
+    def write(self, text):
+        with self._lock:
+            self._pending += text
+            secrets = [secret for secret in _known_secret_values() if "\n" in secret]
+            safe_end = len(self._pending)
+            # Hold a still-incomplete known value across writes and newlines.
+            for secret in secrets:
+                for size in range(min(len(secret) - 1, len(self._pending)), 0, -1):
+                    if self._pending.endswith(secret[:size]):
+                        safe_end = min(safe_end, len(self._pending) - size)
+                        break
+            end = self._pending.rfind("\n", 0, safe_end) + 1
+            # A repeated/overlapping prefix must not cut a complete value.
+            while end:
+                previous = end
+                for secret in secrets:
+                    start = self._pending.find(secret)
+                    while 0 <= start < end:
+                        if start + len(secret) > end:
+                            end = self._pending.rfind("\n", 0, start) + 1
+                            break
+                        start = self._pending.find(secret, start + 1)
+                if end == previous:
+                    break
+            if end:
+                complete, self._pending = self._pending[:end], self._pending[end:]
+                self._append(complete, secrets)
+        return len(text)
+
+    # TextIOBase.flush keeps an incomplete logical line buffered so a credential
+    # split across writes cannot lose its sanitization context.
+    def finish(self):
+        """Publish the final unterminated text before the result/traceback."""
+        with self._lock:
+            if self._pending:
+                secrets = [secret for secret in _known_secret_values() if "\n" in secret]
+                self._append(self._pending, secrets, final=True)
+                self._pending = ""
 
 
 def _compute_job(connection, stop, raw_job, executor):
@@ -76,13 +162,44 @@ def _compute_job(connection, stop, raw_job, executor):
                 return
 
     threading.Thread(target=watch_stop, daemon=True).start()
-    try:
-        result = executor(job)
-    except BaseException as exc:  # noqa: BLE001 - report even SystemExit at the process boundary
-        job.status = JobStatus.FAILED
-        job.error = ErrorInfo(code="EXECUTION_FAILED", message=sanitize_log_text(str(exc)))
-        job.append_log(traceback.format_exc())
-        result = job
+    # FreeConsole invalidates console-backed Python streams. Preserve output via
+    # the existing sanitized IPC sink before importing/executing task libraries;
+    # do not reattach the worker to Service's CTRL_BREAK broadcast domain.
+    output = _JobLogStream(job) if os.name == "nt" else None
+    error_output = _JobLogStream(job, output._lock) if output is not None else None
+    if output is not None:
+        # Spawn may import an executor that binds logging to the old console.
+        # setStream() flushes that invalid handle; retarget only console streams
+        # under the handler lock, leaving file and other explicit sinks intact.
+        loggers = [logging.getLogger(), *list(logging.Logger.manager.loggerDict.values())]
+        for logger in loggers:
+            if isinstance(logger, logging.Logger):
+                for handler in logger.handlers:
+                    if isinstance(handler, logging.StreamHandler) and (
+                        handler.stream is sys.stdout or handler.stream is sys.stderr
+                    ):
+                        handler.acquire()
+                        try:
+                            handler.stream = output if handler.stream is sys.stdout else error_output
+                        finally:
+                            handler.release()
+    stdout_context = redirect_stdout(output) if output is not None else nullcontext()
+    stderr_context = redirect_stderr(error_output) if error_output is not None else nullcontext()
+    with stdout_context, stderr_context:
+        try:
+            result = executor(job)
+        except BaseException as exc:  # noqa: BLE001 - report even SystemExit at the process boundary
+            if output is not None:
+                output.finish()
+                error_output.finish()
+            job.status = JobStatus.FAILED
+            job.error = ErrorInfo(code="EXECUTION_FAILED", message=sanitize_log_text(str(exc)))
+            job.append_log(traceback.format_exc())
+            result = job
+        finally:
+            if output is not None:
+                output.finish()
+                error_output.finish()
     job._set_log_event_sink(None)
     CURRENT_SHUTDOWN.reset(context_token)
     emit("result", result.model_dump(mode="json"))
@@ -129,7 +246,15 @@ def _kill_descendants(pid):
 
 def _worker_main(connection, stop, raw_job, executor, parent_pid):
     """Gate computation behind containment; Linux root remains a subreaper guardian."""
-    if os.name != "nt":
+    if os.name == "nt":
+        # Console CTRL_C/CTRL_BREAK must reach the Service, then Runtime's stop
+        # IPC. Detach before executing/importing native task libraries so a
+        # broadcast cannot abort training before its safe checkpoint boundary.
+        # Job Object containment and pipe handles are independent of the console.
+        kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        if not kernel32.FreeConsole():
+            raise OSError(ctypes.get_last_error(), "Cannot detach worker console")
+    else:
         os.setsid()
     linux = sys.platform == "linux"
     if linux:

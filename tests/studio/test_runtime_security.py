@@ -54,7 +54,7 @@ def test_even_persisted_manifest_cannot_authorize_unsafe_ids(tmp_path, identifie
     assert manager.get_job_artifacts("job") == []
 
 
-@pytest.mark.parametrize("kind", ["escape", "broken", "retarget"])
+@pytest.mark.parametrize("kind", ["escape", "broken", "broken-internal", "loop", "retarget", "retarget-internal"])
 def test_manifest_symlinks_are_rechecked_on_every_read(tmp_path, kind):
     manager, job, root = owner(tmp_path)
     outside = tmp_path / "outside.txt"
@@ -62,13 +62,49 @@ def test_manifest_symlinks_are_rechecked_on_every_read(tmp_path, kind):
     inside = root / "inside.txt"
     inside.write_text("allowed")
     candidate = root / "link.txt"
-    link(candidate, inside if kind == "retarget" else outside if kind == "escape" else tmp_path / "missing.txt")
+    targets = {
+        "escape": outside,
+        "broken": tmp_path / "missing.txt",
+        "broken-internal": root / "missing.txt",
+        "loop": candidate,
+        "retarget": inside,
+        "retarget-internal": inside,
+    }
+    link(candidate, targets[kind])
     job.output.artifacts = ["link.txt"]
-    if kind == "retarget":
+    if kind.startswith("retarget"):
         assert manager.resolve_artifact("job", "link.txt") == inside
+        assert manager.resolve_artifact("job", "inside.txt") is None
+        assert manager.get_job_artifacts("job") == [("link.txt", str(inside))]
+        alias = root / "alias.txt"
+        link(alias, inside)
+        assert manager.resolve_artifact("job", "alias.txt") is None
         candidate.unlink()
+        if kind == "retarget-internal":
+            retarget = root / "other.txt"
+            retarget.write_text("still allowed")
+            candidate.symlink_to(retarget)
+            assert manager.resolve_artifact("job", "link.txt") == retarget
+            assert manager.resolve_artifact("job", "other.txt") is None
+            assert manager.get_job_artifacts("job") == [("link.txt", str(retarget))]
+            return
         candidate.symlink_to(outside)
     assert manager.resolve_artifact("job", "link.txt") is None
+    assert manager.get_job_artifacts("job") == []
+
+
+@pytest.mark.parametrize(
+    "identifier", ["./nested/result.txt", "nested/../nested/result.txt", "nested//result.txt", "nested/result.txt/"]
+)
+def test_malformed_manifest_ids_cannot_authorize_existing_files(tmp_path, identifier):
+    manager, job, root = owner(tmp_path)
+    (root / "nested").mkdir()
+    target = root / "nested" / "result.txt"
+    target.write_text("not authorized")
+    job.output.artifacts = [identifier]
+    assert manager.resolve_artifact("job", identifier) is None
+    assert manager.resolve_artifact("job", "nested/result.txt") is None
+    assert manager.get_job_artifacts("job") == []
 
 
 @pytest.mark.parametrize("kind", ["escape", "broken"])

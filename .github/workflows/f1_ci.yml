@@ -1,4 +1,4 @@
-name: F1 CI (Lightweight)
+name: Studio Compatibility CI
 
 on:
   push:
@@ -17,7 +17,7 @@ permissions:
 
 jobs:
   f1-lint-and-test:
-    name: Lint & Test (f1 + core)
+    name: Studio Compatibility (Lint & Test)
     runs-on: ubuntu-latest
 
     steps:
