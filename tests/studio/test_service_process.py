@@ -129,7 +129,9 @@ def test_real_service_signal_budget_and_cleanup(tmp_path, mode):
                     assert not job["runtime_tracking"]["cancel_requested"]
                     if mode == "cooperative":
                         assert "weights/shutdown.pt" in job["output"]["artifacts"]
-                        assert not any("SHUTDOWN_FORCED" in line for line in measured["logs"])
+                        assert not any("SHUTDOWN_FORCED" in line for line in measured["logs"]), json.dumps(
+                            facts, sort_keys=True
+                        )
                         assert (tmp_path / "acknowledged").exists() and (tmp_path / "finalized").exists()
                     elif mode == "fallback":
                         assert any("SHUTDOWN_FORCED" in line for line in measured["logs"])

@@ -40,6 +40,24 @@ def main():
                     {"event": "manager.shutdown.return", "monotonic": time.monotonic(), "owners": len(self._workers)}
                 )
 
+        def _cooperate_training_shutdown(self, job_id, worker, log_sink):
+            """Observe IPC timing without changing the Runtime deadline or decisions."""
+            receive = worker.receive
+
+            def observed_receive():
+                message = receive()
+                if message[0] in {"checkpoint", "result", "lost"}:
+                    events.append({"event": f"worker.{message[0]}", "monotonic": time.monotonic()})
+                return message
+
+            events.append({"event": "cooperation.enter", "monotonic": time.monotonic()})
+            worker.receive = observed_receive
+            try:
+                return super()._cooperate_training_shutdown(job_id, worker, log_sink)
+            finally:
+                worker.receive = receive
+                events.append({"event": "cooperation.return", "monotonic": time.monotonic()})
+
     def factory():
         grace = 120 if mode == "real" else 1
         manager = ObservedManager(
@@ -91,6 +109,9 @@ def main():
             "service_failure": application.state.service_failure,
             "owner_retained": application.state.jobs_manager is not None,
             "runtime_budget": manager.shutdown_budget_seconds if manager else None,
+            "shutdown_grace_seconds": manager._shutdown_grace if manager else None,
+            "shutdown_deadline": manager._shutdown_deadline if manager else None,
+            "markers": {name: (root / name).exists() for name in ("started", "acknowledged", "finalized")},
             "http_drain_budget": application.state.settings.http_drain_seconds,
             "events": events,
             "monotonic": time.monotonic(),
