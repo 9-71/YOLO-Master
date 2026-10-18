@@ -56,7 +56,7 @@ type Action =
   | { type: "base"; value: string }
   | { type: "jobs"; value: JobSummary[]; rev: number }
   | { type: "connection"; value: ConnectionState; rev: number }
-  | { type: "banner"; value: BannerState | null; rev?: number }
+  | { type: "banner"; value: BannerState | null; rev?: number; watchSeq?: number; jobId?: string }
   | { type: "select"; jobId: string | null }
   | { type: "detail"; value: JobDetail; rev: number; watchSeq: number; jobId: string }
   | { type: "detailMissing"; rev: number; watchSeq: number; jobId: string }
@@ -115,7 +115,9 @@ function reducer(state: State, action: Action): State {
     case "connection":
       return action.rev === state.baseRev ? { ...state, connection: action.value } : state;
     case "banner":
-      return action.rev === undefined || action.rev === state.baseRev ? { ...state, banner: action.value } : state;
+      return (action.rev === undefined || action.rev === state.baseRev) &&
+        (action.watchSeq === undefined || watchCurrent(state, { ...action, rev: action.rev ?? state.baseRev, watchSeq: action.watchSeq }))
+        ? { ...state, banner: action.value } : state;
     case "select":
       if (action.jobId === state.selectedJobId) return state;
       return {
@@ -180,7 +182,7 @@ interface JobContextValue extends State {
   applyBaseUrl(value: string): void;
   refreshJobs(showError?: boolean): Promise<JobSummary[]>;
   selectJob(jobId: string | null): void;
-  submitJob(payload: JobRequest): Promise<string>;
+  submitJob(payload: JobRequest): Promise<string | null>;
   cancelJob(jobId: string): Promise<void>;
   refreshArtifacts(showError?: boolean): Promise<void>;
   clearLogs(): void;
@@ -198,6 +200,8 @@ export function JobProvider({ children }: { children: ReactNode }) {
   const logController = useRef<AbortController | null>(null);
   const jobsInFlight = useRef<{ seq: number; rev: number; controller: AbortController } | null>(null);
   const jobsSeq = useRef(0);
+  const detailSequence = useRef({ started: 0, settled: 0 });
+  const artifactsSeq = useRef(0);
   const cancelOpSeq = useRef(0);
   const cancelLock = useRef<{ rev: number; jobId: string; opId: number } | null>(null);
 
@@ -208,11 +212,12 @@ export function JobProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
-  const showError = useCallback((error: unknown, rev?: number) => {
+  const showError = useCallback((error: unknown, rev?: number, guard?: { watchSeq: number; jobId: string }) => {
     const message = error instanceof Error ? error.message : String(error);
     dispatch({
       type: "banner",
       rev,
+      ...guard,
       value: { kind: message.includes("SEC_ERR_001") ? "security" : "error", message },
     });
   }, []);
@@ -261,34 +266,56 @@ export function JobProvider({ children }: { children: ReactNode }) {
   // Stable identity: route-driven pages call this in effects/cleanups.
   const selectJob = useCallback((jobId: string | null) => {
     logController.current?.abort();
+    stateRef.current = reducer(stateRef.current, { type: "select", jobId });
     dispatch({ type: "select", jobId });
   }, []);
 
   const fetchDetail = useCallback(
-    async (jobId: string, rev: number, watchSeq: number): Promise<JobDetail> => {
-      const detail = await api<JobDetail>(stateRef.current.baseUrl, `${JOBS_PATH}/${encodeURIComponent(jobId)}`);
+    async (jobId: string, rev: number, watchSeq: number, loud = false): Promise<JobDetail | null> => {
+      const seq = ++detailSequence.current.started;
+      let detail: JobDetail;
+      try {
+        detail = await api<JobDetail>(stateRef.current.baseUrl, `${JOBS_PATH}/${encodeURIComponent(jobId)}`);
+      } catch (error) {
+        if (seq < detailSequence.current.settled || !watchCurrent(stateRef.current, { rev, watchSeq, jobId })) return null;
+        detailSequence.current.settled = seq;
+        if (error instanceof ApiError && error.status === 404) {
+          dispatch({ type: "detailMissing", rev, watchSeq, jobId });
+        } else if (loud) {
+          showError(error, rev, { watchSeq, jobId });
+        }
+        return null;
+      }
+      // Starting another poll does not invalidate a slow response. Only a
+      // newer settled response (or a different watch identity) supersedes it.
+      if (seq < detailSequence.current.settled || !watchCurrent(stateRef.current, { rev, watchSeq, jobId })) return null;
+      detailSequence.current.settled = seq;
       dispatch({ type: "detail", value: detail, rev, watchSeq, jobId });
       if (detail.error_code === "SEC_ERR_001") {
         dispatch({
           type: "banner",
-          rev,
+          rev, watchSeq, jobId,
           value: { kind: "security", message: `Security violation: ${detail.error_message || detail.error_code}` },
         });
       }
       return detail;
     },
-    [],
+    [showError],
   );
 
   const fetchArtifacts = useCallback(
     async (jobId: string, rev: number, watchSeq: number, loud = false) => {
+      const seq = ++artifactsSeq.current;
       try {
         const body = await api<ArtifactsResponse>(
           stateRef.current.baseUrl,
           `${JOBS_PATH}/${encodeURIComponent(jobId)}/artifacts`,
         );
+        if (seq !== artifactsSeq.current || !watchCurrent(stateRef.current, { rev, watchSeq, jobId })) return false;
         dispatch({ type: "artifacts", value: body, rev, watchSeq, jobId });
+        return true;
       } catch (error) {
+        if (seq !== artifactsSeq.current || !watchCurrent(stateRef.current, { rev, watchSeq, jobId })) return false;
         dispatch({
           type: "artifacts",
           value: { ...EMPTY_ARTIFACTS, job_id: jobId },
@@ -296,7 +323,8 @@ export function JobProvider({ children }: { children: ReactNode }) {
           watchSeq,
           jobId,
         });
-        if (loud) showError(error, rev);
+        if (loud) showError(error, rev, { watchSeq, jobId });
+        return false;
       }
     },
     [showError],
@@ -308,17 +336,22 @@ export function JobProvider({ children }: { children: ReactNode }) {
       if (drain) logController.current?.abort();
       const controller = new AbortController();
       logController.current = controller;
+      const baseUrl = stateRef.current.baseUrl;
       const lines: string[] = [];
       let cursor = startOffset;
       try {
         do {
           const body = await api<LogsResponse>(
-            stateRef.current.baseUrl,
+            baseUrl,
             `${JOBS_PATH}/${encodeURIComponent(jobId)}/logs?offset=${cursor}&limit=500`,
             { signal: controller.signal },
           );
+          if (!watchCurrent(stateRef.current, { rev, watchSeq, jobId })) return;
           lines.push(...body.logs);
-          cursor = body.next_offset ?? body.offset + body.logs.length;
+          if (lines.length > 1000) lines.splice(0, lines.length - 1000);
+          const next = body.next_offset ?? body.offset + body.logs.length;
+          if (body.next_offset !== null && next <= cursor) throw new Error("Log cursor did not advance");
+          cursor = next;
           if (body.next_offset === null) break;
         } while (drain);
         dispatch({ type: "logs", lines, offset: cursor, expectedOffset: startOffset, rev, watchSeq, jobId });
@@ -409,16 +442,14 @@ export function JobProvider({ children }: { children: ReactNode }) {
     const jobId = state.selectedJobId;
     if (!jobId) return;
     const { baseRev: rev, watchSeq, logOffset } = state;
-    void fetchDetail(jobId, rev, watchSeq).catch((error) => {
-      if (error instanceof ApiError && error.status === 404) {
-        dispatch({ type: "detailMissing", rev, watchSeq, jobId });
-      } else {
-        showError(error, rev);
-      }
-    });
-    void pullLogs(jobId, rev, watchSeq, logOffset, false).catch((error) => showError(error, rev));
+    const detailRequests = detailSequence.current;
+    void fetchDetail(jobId, rev, watchSeq, true);
+    void pullLogs(jobId, rev, watchSeq, logOffset, false).catch((error) => showError(error, rev, { watchSeq, jobId }));
     void fetchArtifacts(jobId, rev, watchSeq);
     return () => {
+      // Fence pending detail responses on identity cleanup / unmount, including
+      // StrictMode cleanup followed by a fresh snapshot of the same identity.
+      detailRequests.settled = ++detailRequests.started;
       logController.current?.abort();
       logController.current = null;
     };
@@ -426,18 +457,18 @@ export function JobProvider({ children }: { children: ReactNode }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state.baseRev, state.watchSeq, state.selectedJobId]);
 
-  // ---- Detail status monitoring while active (also after a 202 cancel) ----
+  // ---- Detail status monitoring until terminal (including initial fetch retries) ----
   useEffect(() => {
-    if (!state.selectedJobId || !state.detail || !ACTIVE_STATUSES.has(state.detail.status)) return;
+    if (!state.selectedJobId || state.detailMissing || (state.detail && !ACTIVE_STATUSES.has(state.detail.status))) return;
     const jobId = state.selectedJobId;
     const rev = state.baseRev;
     const watchSeq = state.watchSeq;
     const timer = window.setInterval(
-      () => void fetchDetail(jobId, rev, watchSeq).catch(() => undefined),
+      () => void fetchDetail(jobId, rev, watchSeq),
       DETAIL_INTERVAL_MS,
     );
     return () => window.clearInterval(timer);
-  }, [fetchDetail, state.detail, state.baseRev, state.watchSeq, state.selectedJobId]);
+  }, [fetchDetail, state.detail, state.detailMissing, state.baseRev, state.watchSeq, state.selectedJobId]);
 
   // ---- Live log tailing while active ----
   useEffect(() => {
@@ -458,9 +489,26 @@ export function JobProvider({ children }: { children: ReactNode }) {
   // ---- Terminal transition: drain every remaining log page + refresh artifacts ----
   useEffect(() => {
     if (!state.selectedJobId || !state.detail || ACTIVE_STATUSES.has(state.detail.status)) return;
-    const { selectedJobId: jobId, baseRev: rev, watchSeq, logOffset } = state;
-    void pullLogs(jobId, rev, watchSeq, logOffset, true).catch((error) => showError(error, rev));
-    void fetchArtifacts(jobId, rev, watchSeq);
+    const { selectedJobId: jobId, baseRev: rev, watchSeq } = state;
+    let alive = true;
+    let timer = 0;
+    const drain = async () => {
+      try {
+        await pullLogs(jobId, rev, watchSeq, stateRef.current.logOffset, true);
+        if (!alive || !watchCurrent(stateRef.current, { rev, watchSeq, jobId })) return;
+        const artifactsReady = await fetchArtifacts(jobId, rev, watchSeq, true);
+        if (!artifactsReady && alive && watchCurrent(stateRef.current, { rev, watchSeq, jobId })) {
+          timer = window.setTimeout(drain, DETAIL_INTERVAL_MS);
+        }
+      } catch (error) {
+        if (alive && watchCurrent(stateRef.current, { rev, watchSeq, jobId })) {
+          showError(error, rev, { watchSeq, jobId });
+          timer = window.setTimeout(drain, DETAIL_INTERVAL_MS);
+        }
+      }
+    };
+    void drain();
+    return () => { alive = false; window.clearTimeout(timer); };
     // logOffset changes after draining and must not retrigger the terminal drain.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [state.detail?.status, state.baseRev, state.watchSeq, state.selectedJobId]);
@@ -481,6 +529,7 @@ export function JobProvider({ children }: { children: ReactNode }) {
         if (lock) releaseCancelLock(lock.rev, lock.jobId, lock.opId);
         const normalized = (value.trim() || DEFAULT_BASE_URL).replace(/\/+$/, "");
         localStorage.setItem(STORAGE_KEY, normalized);
+        stateRef.current = reducer(stateRef.current, { type: "base", value: normalized });
         dispatch({ type: "base", value: normalized });
       },
       refreshJobs: (loud = false) => refreshJobs(loud),
@@ -492,14 +541,16 @@ export function JobProvider({ children }: { children: ReactNode }) {
             method: "POST",
             body: JSON.stringify(payload),
           });
+          if (rev !== stateRef.current.baseRev) return null;
           dispatch({
             type: "banner",
             rev,
             value: { kind: "success", message: `Job ${result.job_id} dispatched successfully — monitoring now.` },
           });
           await syncJobs(false);
-          return result.job_id;
+          return rev === stateRef.current.baseRev ? result.job_id : null;
         } catch (error) {
+          if (rev !== stateRef.current.baseRev) return null;
           showError(error, rev);
           throw error;
         }

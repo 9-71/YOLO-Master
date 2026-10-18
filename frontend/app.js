@@ -71,6 +71,7 @@ const STATUS_BADGE = {
   running: "border-sky-500/40 bg-sky-500/15 text-sky-300",
   completed: "border-emerald-500/40 bg-emerald-500/15 text-emerald-300",
   failed: "border-rose-500/40 bg-rose-500/15 text-rose-300",
+  cancelled: "border-slate-500/40 bg-slate-500/15 text-slate-300",
 };
 
 /** Friendly prefixes for the error banners requested by the P2 console spec. */
@@ -82,19 +83,46 @@ const HTTP_FRIENDLY = { 400: "Bad request", 404: "Not found", 409: "Conflict", 4
 
 const state = {
   baseUrl: (localStorage.getItem(BASE_URL_STORAGE_KEY) || DEFAULT_BASE_URL).replace(/\/+$/, ""),
+  baseRev: 0,
+  watchSeq: 0,
+  jobsRequest: 0,
+  jobsSettledRequest: 0,
+  detailRequest: 0,
+  artifactsRequest: 0,
+  logFlight: null,
+  tickFlight: null,
+  cancellation: null,
+  cancelTimer: null,
   jobs: [],
   selectedJobId: null,
   detail: null, // latest GET /api/v1/jobs/{id} payload
   logOffset: 0, // next log cursor passed as ?offset=
-  wasTerminal: false, // selected job observed in a terminal state
-  terminalPolls: 0, // consecutive terminal polls before log tailing stops
-  frozenDurations: new Map(), // job_id -> seconds elapsed when it left the active states
   jobsTimer: null,
   logsTimer: null,
 };
 
 /** Shorthand for document.getElementById. */
 const $ = (id) => document.getElementById(id);
+
+function engineIdentity() {
+  return { baseUrl: state.baseUrl, rev: state.baseRev };
+}
+
+function engineCurrent(identity) {
+  return identity.rev === state.baseRev && identity.baseUrl === state.baseUrl;
+}
+
+function watchIdentity() {
+  return { ...engineIdentity(), jobId: state.selectedJobId, watchSeq: state.watchSeq };
+}
+
+function watchCurrent(identity) {
+  return engineCurrent(identity) && identity.jobId === state.selectedJobId && identity.watchSeq === state.watchSeq;
+}
+
+function jobPath(jobId) {
+  return `${JOBS_PATH}/${encodeURIComponent(jobId)}`;
+}
 
 // ---------------------------------------------------------------------------
 // HTTP helpers (strict 400 / 404 / 409 / 422 handling)
@@ -129,6 +157,9 @@ function extractDetail(body) {
       })
       .join("; ");
   }
+  if (detail && typeof detail === "object" && typeof detail.message === "string") {
+    return `${detail.code ? `${detail.code}: ` : ""}${detail.message}`;
+  }
   return JSON.stringify(body || {});
 }
 
@@ -139,14 +170,13 @@ function extractDetail(body) {
  * @param {object} [options] - fetch options (method, body...).
  * @returns {Promise<object>} Parsed JSON response body.
  */
-async function api(path, options = {}) {
-  const url = state.baseUrl + path;
+async function api(path, options = {}, baseUrl = state.baseUrl) {
+  const url = baseUrl + path;
   let response;
   try {
     response = await fetch(url, { headers: { "Content-Type": "application/json" }, ...options });
   } catch (error) {
-    setConnState("offline");
-    throw new ApiError(0, `Cannot reach engine at ${state.baseUrl} — ${error.message}`);
+    throw new ApiError(0, `Cannot reach engine at ${baseUrl} — ${error.message}`);
   }
   if (!response.ok) {
     let body = null;
@@ -209,12 +239,12 @@ function setConnState(mode) {
 
 /** Ping GET /health and update the connection pill. Never raises banners. */
 async function checkHealth() {
-  setConnState("checking");
+  const identity = engineIdentity();
   try {
-    await api("/health");
-    setConnState("online");
+    await api("/health", {}, identity.baseUrl);
+    if (engineCurrent(identity)) setConnState("online");
   } catch {
-    setConnState("offline");
+    if (engineCurrent(identity)) setConnState("offline");
   }
 }
 
@@ -222,6 +252,11 @@ async function checkHealth() {
  * Apply the base URL input: persist it, reset console state and re-probe.
  */
 function applyBaseUrl() {
+  state.baseRev += 1;
+  state.watchSeq += 1;
+  window.clearInterval(state.cancelTimer);
+  state.cancelTimer = null;
+  state.cancellation = null;
   state.baseUrl = $("base-url").value.trim().replace(/\/+$/, "") || DEFAULT_BASE_URL;
   $("base-url").value = state.baseUrl;
   localStorage.setItem(BASE_URL_STORAGE_KEY, state.baseUrl);
@@ -230,10 +265,11 @@ function applyBaseUrl() {
   state.selectedJobId = null;
   state.detail = null;
   state.logOffset = 0;
-  state.wasTerminal = false;
-  state.terminalPolls = 0;
   state.jobs = [];
-  state.frozenDurations.clear();
+  closeLightbox();
+  $("dispatch-submit").disabled = false;
+  $("dispatch-submit").textContent = "Dispatch Job";
+  $("dispatch-feedback").textContent = "";
   stopLogsTimer();
   $("terminal-body").textContent = "";
   $("terminal-job").textContent = "no job selected";
@@ -241,6 +277,7 @@ function applyBaseUrl() {
   $("job-detail").classList.add("hidden");
   renderJobs();
   renderArtifacts({ artifacts: [], image_artifacts: [] });
+  setConnState("checking");
   checkHealth();
   refreshJobs();
 }
@@ -347,11 +384,12 @@ async function onDispatchSubmit(event) {
   // model_path + data_source + conf + device; export carries model_path +
   // format; diagnose takes none. Extra JSON keys merge in first and the
   // form's explicit fields win.
-  const params = { ...extraParams };
+  const params = taskType === "diagnose" ? {} : { ...extraParams };
   if (["predict", "train", "val"].includes(taskType)) {
     params.model_path = modelPath;
     params.data_source = dataSource;
-    params.conf = parseFloat($("conf").value);
+    if (taskType !== "train") params.conf = parseFloat($("conf").value);
+    if (taskType === "train" && params.epochs === undefined) params.epochs = 10;
     params.device = device;
   } else if (taskType === "export") {
     params.model_path = modelPath;
@@ -363,6 +401,7 @@ async function onDispatchSubmit(event) {
     task_type: taskType,
     params,
     output: { output_dir: outputDir },
+    runtime_tracking: { timeout_seconds: 300, cancellable: true },
     security_constraints: {
       allow_shell: false, // server forces these fail-closed anyway
       path_whitelisted: true,
@@ -370,22 +409,27 @@ async function onDispatchSubmit(event) {
     },
   };
 
+  const identity = engineIdentity();
   submitBtn.disabled = true;
   submitBtn.textContent = "Dispatching…";
   try {
-    const job = await api(JOBS_PATH, { method: "POST", body: JSON.stringify(payload) });
+    const job = await api(JOBS_PATH, { method: "POST", body: JSON.stringify(payload) }, identity.baseUrl);
+    if (!engineCurrent(identity)) return;
     feedback.textContent = `✅ Job ${job.job_id} submitted (201) — selected in console`;
     feedback.className = "text-xs font-semibold text-emerald-400";
     showBanner("success", `Job ${job.job_id} dispatched successfully — monitoring now.`);
     await refreshJobs();
-    await selectJob(job.job_id);
+    if (engineCurrent(identity)) await selectJob(job.job_id);
   } catch (error) {
+    if (!engineCurrent(identity)) return;
     feedback.textContent = `❌ ${error.message}`;
     feedback.className = "text-xs font-semibold text-rose-400";
     showBanner("error", error.message);
   } finally {
-    submitBtn.disabled = false;
-    submitBtn.textContent = "Dispatch Job";
+    if (engineCurrent(identity)) {
+      submitBtn.disabled = false;
+      submitBtn.textContent = "Dispatch Job";
+    }
   }
 }
 
@@ -405,25 +449,18 @@ function elapsedSeconds(iso) {
 }
 
 /**
- * Render the Duration cell: live ticking for PENDING/RUNNING rows, frozen at
- * the first observation of a terminal state (matches the backend's freeze
- * semantics in JobsManager.get_job_status).
+ * Render execution time from the Runtime contract, excluding queue wait.
+ * Active execution ticks from started_at; terminal durations come from the API.
  *
  * @param {{job_id: string, status: string, created_at: string}} job - Summary row.
  * @returns {string} Duration string like "12.3s", or "N/A".
  */
 function jobDuration(job) {
-  let seconds;
-  if (ACTIVE_STATUSES.has(job.status)) {
-    seconds = elapsedSeconds(job.created_at);
-  } else {
-    seconds = state.frozenDurations.get(job.job_id);
-    if (seconds === undefined) {
-      seconds = elapsedSeconds(job.created_at);
-      if (seconds !== null) state.frozenDurations.set(job.job_id, seconds);
-    }
+  if (ACTIVE_STATUSES.has(job.status) && job.started_at) {
+    const seconds = elapsedSeconds(job.started_at);
+    return seconds === null ? "N/A" : `${seconds.toFixed(2)}s`;
   }
-  return seconds === null ? "N/A" : `${seconds.toFixed(1)}s`;
+  return typeof job.duration === "number" ? `${job.duration.toFixed(2)}s` : "N/A";
 }
 
 /** Format an ISO timestamp as local HH:MM:SS. */
@@ -481,11 +518,11 @@ function renderJobs() {
     });
     const cancelBtn = document.createElement("button");
     cancelBtn.type = "button";
-    cancelBtn.textContent = "Cancel Job";
+    cancelBtn.textContent = state.cancellation?.jobId === job.job_id ? "Cancelling…" : "Cancel Job";
     cancelBtn.className = active
       ? "ml-1.5 rounded-md border border-rose-500/40 bg-rose-500/10 px-2 py-1 text-[11px] font-semibold text-rose-300 hover:bg-rose-500/20"
       : "ml-1.5 rounded-md border border-slate-800 px-2 py-1 text-[11px] font-semibold text-slate-600 cursor-not-allowed";
-    cancelBtn.disabled = !active;
+    cancelBtn.disabled = !active || state.cancellation !== null;
     cancelBtn.title = active ? `POST /api/v1/jobs/${job.job_id}/cancel` : "Only PENDING/RUNNING jobs can be cancelled";
     if (active) {
       cancelBtn.addEventListener("click", (event) => {
@@ -503,26 +540,66 @@ function renderJobs() {
 
 /** Fetch the recent-jobs listing and re-render the table. */
 async function refreshJobs() {
+  const identity = engineIdentity();
+  const request = ++state.jobsRequest;
   try {
-    const body = await api(`${JOBS_PATH}?limit=${JOBS_LIST_LIMIT}`);
+    const body = await api(`${JOBS_PATH}?limit=${JOBS_LIST_LIMIT}`, {}, identity.baseUrl);
+    // A pending poll must not invalidate a slow response from this engine.
+    if (!engineCurrent(identity) || request < state.jobsSettledRequest) return;
+    state.jobsSettledRequest = request;
     state.jobs = body.jobs;
     renderJobs();
     setConnState("online");
   } catch {
-    setConnState("offline"); // silent: the pill is the live-feedback surface here
+    if (!engineCurrent(identity) || request < state.jobsSettledRequest) return;
+    state.jobsSettledRequest = request;
+    setConnState("offline");
   }
 }
 
-/** POST /api/v1/jobs/{id}/cancel for an active job. */
-async function cancelJob(jobId) {
-  if (!window.confirm(`Request cooperative cancellation of job ${jobId}?`)) return;
+/** Observe cancellation separately from the selected job and Live toggles. */
+async function observeCancellation(operation) {
+  if (state.cancellation !== operation || !engineCurrent(operation) || operation.inFlight) return;
+  operation.inFlight = true;
   try {
-    const body = await api(`/api/v1/jobs/${jobId}/cancel`, { method: "POST" });
-    showBanner("success", body.message || `Cancellation requested for ${jobId} (202).`);
+    const detail = await api(jobPath(operation.jobId), {}, operation.baseUrl);
+    if (state.cancellation !== operation || !engineCurrent(operation)) return;
+    if (ACTIVE_STATUSES.has(detail.status)) return;
+    window.clearInterval(state.cancelTimer);
+    state.cancelTimer = null;
+    state.cancellation = null;
+    const cancelled = detail.status === "cancelled" && detail.error_code === "USER_CANCELLED";
+    showBanner(cancelled ? "success" : "error", cancelled
+      ? `Job ${operation.jobId} reached cancelled / USER_CANCELLED. Cancellation completed.`
+      : `Cancellation race for ${operation.jobId}: job reached ${detail.status}${detail.error_code ? ` / ${detail.error_code}` : ""}.`);
+    renderJobs();
+    await refreshJobs();
+    if (engineCurrent(operation) && state.selectedJobId === operation.jobId) await logsTick();
   } catch (error) {
-    showBanner("error", error.message);
+    if (state.cancellation === operation && engineCurrent(operation)) showBanner("error", error.message);
   } finally {
-    refreshJobs();
+    operation.inFlight = false;
+  }
+}
+
+/** A 202 is an acknowledgement; only observed terminal state completes cancellation. */
+async function cancelJob(jobId) {
+  if (state.cancellation) return;
+  if (!window.confirm(`Request cooperative cancellation of job ${jobId}?`)) return;
+  const operation = { ...engineIdentity(), jobId, inFlight: false };
+  state.cancellation = operation;
+  renderJobs();
+  try {
+    const body = await api(`${jobPath(jobId)}/cancel`, { method: "POST" }, operation.baseUrl);
+    if (state.cancellation !== operation || !engineCurrent(operation)) return;
+    showBanner("success", `${body.message || "Cancellation acknowledged"} Waiting for terminal cancellation state…`);
+    state.cancelTimer = window.setInterval(() => void observeCancellation(operation), POLL_MS.logs);
+    await observeCancellation(operation);
+  } catch (error) {
+    if (state.cancellation !== operation || !engineCurrent(operation)) return;
+    state.cancellation = null;
+    renderJobs();
+    showBanner("error", error.message);
   }
 }
 
@@ -538,42 +615,47 @@ async function cancelJob(jobId) {
  */
 async function selectJob(jobId) {
   const sameJob = jobId === state.selectedJobId;
-  state.selectedJobId = jobId;
-  $("terminal-job").textContent = jobId;
   if (!sameJob) {
+    state.watchSeq += 1;
     state.logOffset = 0;
-    state.wasTerminal = false;
-    state.terminalPolls = 0;
+    state.detail = null;
     $("terminal-body").textContent = "";
+    renderArtifacts({ artifacts: [], image_artifacts: [] });
+    closeLightbox();
   }
+  state.selectedJobId = jobId;
+  const identity = watchIdentity();
+  stopLogsTimer();
+  $("terminal-job").textContent = jobId;
+  $("terminal-status").className = "hidden";
   renderJobs();
   $("job-detail").classList.remove("hidden");
-
+  $("job-detail-body").textContent = "Loading…";
   try {
     const detail = await refreshDetail();
-    await pollLogs(); // one-time snapshot on selection, independent of the tailing toggle
-    await loadArtifacts();
-    if (detail && !ACTIVE_STATUSES.has(detail.status)) stopLogsTimer();
-    else if ($("live-logs").checked) startLogsTimer();
+    if (!watchCurrent(identity) || !detail) return;
+    const terminal = !ACTIVE_STATUSES.has(detail.status);
+    await pollLogs(terminal);
+    if (!watchCurrent(identity)) return;
+    const artifactsReady = await loadArtifacts();
+    if (watchCurrent(identity) && (!terminal || !artifactsReady)) startLogsTimer();
   } catch (error) {
+    if (!watchCurrent(identity)) return;
     showBanner("error", error.message);
-    stopLogsTimer();
+    startLogsTimer(); // retry status / final cursor after a transient failure
   }
 }
 
-/** GET /api/v1/jobs/{id} and render the detail card. */
+/** GET /api/v1/jobs/{id}; discard superseded selections and requests. */
 async function refreshDetail() {
-  const jobId = state.selectedJobId;
-  if (!jobId) return null;
-  try {
-    const detail = await api(`/api/v1/jobs/${jobId}`);
-    state.detail = detail;
-    renderDetail(detail);
-    return detail;
-  } catch {
-    state.detail = null;
-    return null;
-  }
+  const identity = watchIdentity();
+  if (!identity.jobId) return null;
+  const request = ++state.detailRequest;
+  const detail = await api(jobPath(identity.jobId), {}, identity.baseUrl);
+  if (!watchCurrent(identity) || request !== state.detailRequest) return null;
+  state.detail = detail;
+  renderDetail(detail);
+  return detail;
 }
 
 /** Render the selected job's status card (and the terminal status chip). */
@@ -591,7 +673,7 @@ function renderDetail(detail) {
 
   const facts = [
     ["Task Type", detail.task_type.toUpperCase()],
-    ["Duration", detail.duration || "N/A"],
+    ["Duration", jobDuration(detail)],
     ["Created At", detail.created_at ? new Date(detail.created_at).toLocaleString() : "—"],
     ["Artifacts", String(detail.artifact_count)],
     ["Created By", (detail.metadata && detail.metadata.created_by) || "—"],
@@ -631,18 +713,35 @@ function renderDetail(detail) {
 }
 
 /** GET /api/v1/jobs/{id}/logs and advance the cursor. */
-async function pollLogs() {
-  const jobId = state.selectedJobId;
-  if (!jobId) return null;
-  const body = await api(`/api/v1/jobs/${jobId}/logs?offset=${state.logOffset}&limit=${LOG_WINDOW_LIMIT}`);
-  appendLogLines(body.logs);
-  // next_offset is the cursor for the following page; null means the tail was
-  // reached, so the next poll resumes at the last known line count and picks
-  // up any lines appended since.
-  state.logOffset = body.next_offset !== null && body.next_offset !== undefined
-    ? body.next_offset
-    : body.offset + body.logs.length;
-  return body;
+async function pollLogs(drain = false) {
+  const identity = watchIdentity();
+  if (!identity.jobId) return null;
+  const prior = state.logFlight;
+  if (prior && watchCurrent(prior.identity)) {
+    await prior.promise;
+    return drain && watchCurrent(identity) ? pollLogs(true) : null;
+  }
+  const flight = { identity, promise: null };
+  const pull = async () => {
+    let body;
+    do {
+      const offset = state.logOffset;
+      body = await api(`${jobPath(identity.jobId)}/logs?offset=${offset}&limit=${LOG_WINDOW_LIMIT}`, {}, identity.baseUrl);
+      if (!watchCurrent(identity)) return null;
+      const next = body.next_offset ?? body.offset + body.logs.length;
+      if (body.next_offset !== null && next <= offset) throw new Error("Log cursor did not advance");
+      appendLogLines(body.logs);
+      state.logOffset = next;
+    } while (drain && body.next_offset !== null);
+    return body;
+  };
+  state.logFlight = flight;
+  flight.promise = pull();
+  try {
+    return await flight.promise;
+  } finally {
+    if (state.logFlight === flight) state.logFlight = null;
+  }
 }
 
 /**
@@ -666,21 +765,23 @@ function appendLogLines(lines) {
  * GET /api/v1/jobs/{id}/artifacts and render the gallery + file list.
  */
 async function loadArtifacts() {
-  const jobId = state.selectedJobId;
-  if (!jobId) return;
+  const identity = watchIdentity();
+  if (!identity.jobId) return false;
+  const request = ++state.artifactsRequest;
   try {
-    const body = await api(`/api/v1/jobs/${jobId}/artifacts`);
+    const body = await api(`${jobPath(identity.jobId)}/artifacts`, {}, identity.baseUrl);
+    if (!watchCurrent(identity) || request !== state.artifactsRequest) return false;
     renderArtifacts(body);
-  } catch {
-    renderArtifacts({ artifacts: [], image_artifacts: [] });
+    return true;
+  } catch (error) {
+    if (watchCurrent(identity) && request === state.artifactsRequest) throw error;
+    return false;
   }
 }
 
 /**
- * Render the artifact inspector: an image preview gallery for entries marked
- * is_image plus the validated image_artifacts scan (served by basename
- * through the fail-closed /static/artifacts route), and view/download links
- * for non-image files.
+ * Render manifest-authorized artifacts. Nested IDs retain every path segment
+ * when constructing preview/download URLs for image_artifacts.
  *
  * @param {{artifacts: Array<{filename: string, is_image: boolean, download_url: string}>, image_artifacts: string[]}} body - Artifacts payload.
  */
@@ -694,10 +795,11 @@ function renderArtifacts(body) {
   for (const entry of body.artifacts || []) {
     if (entry.is_image) images.push({ filename: entry.filename, url: absUrl(entry.download_url) });
   }
-  for (const path of body.image_artifacts || []) {
-    const filename = path.split(/[\\/]/).pop();
+  for (const artifactId of body.image_artifacts || []) {
+    const filename = artifactId.split("/").pop();
+    const encodedId = artifactId.split("/").map(encodeURIComponent).join("/");
     if (filename) {
-      images.push({ filename, url: absUrl(`/static/artifacts/${state.selectedJobId}/${encodeURIComponent(filename)}`) });
+      images.push({ filename, url: absUrl(`/static/artifacts/${encodeURIComponent(state.selectedJobId)}/${encodedId}`) });
     }
   }
 
@@ -758,7 +860,7 @@ function renderArtifacts(body) {
     files.appendChild(row);
   }
 
-  const total = images.length + (body.artifacts || []).filter((entry) => !entry.is_image).length;
+  const total = seenUrls.size + (body.artifacts || []).filter((entry) => !entry.is_image).length;
   $("artifact-count").textContent = total ? `${total} file(s)` : "";
   $("artifacts-empty").classList.toggle("hidden", total > 0);
 }
@@ -805,32 +907,25 @@ function stopLogsTimer() {
   }
 }
 
-/**
- * One log-tailing tick: pull the next cursor window, then refresh the job
- * detail. Terminal jobs get one extra tick (so the final log lines land)
- * before tailing stops, and the artifact manifest is re-fetched exactly once
- * on the transition into a terminal state.
- */
+/** Status monitoring continues with Live off; terminal logs drain to the tail. */
 async function logsTick() {
-  if (!$("live-logs").checked) {
-    stopLogsTimer(); // toggle flipped off between ticks: cease tailing
-    return;
-  }
+  const identity = watchIdentity();
+  if (!identity.jobId || (state.tickFlight && watchCurrent(state.tickFlight))) return;
+  state.tickFlight = identity;
   try {
-    await pollLogs();
     const detail = await refreshDetail();
-    if (!detail) return;
+    if (!detail || !watchCurrent(identity)) return;
     const terminal = !ACTIVE_STATUSES.has(detail.status);
+    if (terminal || $("live-logs").checked) await pollLogs(terminal);
+    if (!watchCurrent(identity)) return;
     if (terminal) {
-      if (!state.wasTerminal) loadArtifacts();
-      state.terminalPolls += 1;
-      if (state.terminalPolls >= 2) stopLogsTimer();
-    } else {
-      state.terminalPolls = 0;
+      const artifactsReady = await loadArtifacts();
+      if (watchCurrent(identity) && artifactsReady) stopLogsTimer();
     }
-    state.wasTerminal = terminal;
   } catch {
-    stopLogsTimer(); // engine unreachable / job vanished: stop silently
+    if (watchCurrent(identity)) setConnState("offline"); // retain the timer for retry
+  } finally {
+    if (state.tickFlight === identity) state.tickFlight = null;
   }
 }
 
@@ -861,8 +956,7 @@ function bindEvents() {
     else stopJobsTimer();
   });
   $("live-logs").addEventListener("change", () => {
-    if ($("live-logs").checked && state.selectedJobId) startLogsTimer();
-    else stopLogsTimer();
+    if (state.selectedJobId) startLogsTimer();
   });
 
   $("lightbox").addEventListener("click", closeLightbox);

@@ -1,7 +1,7 @@
 """YOLO-Master Gradio WebUI entrypoint.
 
 Launches the interactive Studio in which the classic inference playground runs
-synchronously and the F1 Jobs tab routes background work through the Studio Job API.
+synchronously and the Studio Jobs tab routes background work through the Studio Job API.
 
 Localization:
     A top-level language selector lifts the language state above the tab container;
@@ -28,9 +28,9 @@ import numpy as np
 import pandas as pd
 import torch
 
-from f1.ui.i18n import DEFAULT_LANGUAGE, LANGUAGE_CHOICES, get_columns, get_text
-from f1.ui.jobs_tab import create_jobs_tab, jobs_tab_language_updates
-from f1.ui.studio_jobs_client import StudioJobsApiClient
+from studio.ui.i18n import DEFAULT_LANGUAGE, LANGUAGE_CHOICES, get_columns, get_text
+from studio.ui.jobs_tab import create_jobs_tab, jobs_tab_language_updates
+from studio.ui.studio_jobs_client import StudioJobsApiClient
 from ultralytics import YOLO
 
 # Ignore unnecessary warnings

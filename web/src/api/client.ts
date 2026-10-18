@@ -24,6 +24,10 @@ function extractDetail(body: unknown): string {
       return `${loc ? `${loc}: ` : ""}${entry.msg ?? "invalid value"}`;
     }).join("; ");
   }
+  if (detail && typeof detail === "object" && "message" in detail) {
+    const entry = detail as { code?: string; message: unknown };
+    return `${entry.code ? `${entry.code}: ` : ""}${String(entry.message)}`;
+  }
   return JSON.stringify(detail);
 }
 

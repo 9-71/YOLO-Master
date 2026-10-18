@@ -61,6 +61,7 @@ class _TestClientSession:
     def request(self, method: str, url: str, **kwargs: Any):
         kwargs.pop("timeout", None)
         kwargs.pop("stream", None)
+        kwargs["follow_redirects"] = kwargs.pop("allow_redirects", False)
         parsed = urlsplit(url)
         path = parsed.path + (f"?{parsed.query}" if parsed.query else "")
         return self.client.request(method, path, **kwargs)
@@ -183,14 +184,16 @@ def test_api_backed_ui_transitions_to_completed_with_artifacts(task_type, data_n
         assert completed[-1].active is False
 
         open_button = next(
-            block for block in tab.blocks.values() if isinstance(block, gr.Button) and block.value == "📂 Open Folder"
+            block
+            for block in tab.blocks.values()
+            if isinstance(block, gr.Button) and block.value == "📂 Open Downloads"
         )
         open_fn = next(bf.fn for bf in tab.fns.values() if bf.fn and (open_button._id, "click") in bf.targets)
         opened: list[str] = []
         monkeypatch.setattr(os, "startfile", lambda path: opened.append(path), raising=False)
         monkeypatch.setattr("f1.ui.jobs_tab.subprocess.Popen", lambda command: opened.append(command[-1]))
         open_fn(job_id, artifact_metadata, "en")
-        assert opened == [str(artifact_dir.resolve())]
+        assert opened == [str(client.get_artifact_download_directory(job_id))]
 
 
 def test_submit_job_uses_studio_api_without_local_job_state() -> None:
@@ -251,7 +254,7 @@ def test_monitoring_operations_read_only_from_studio_api() -> None:
             },
             _Response(content=b"png"),
             {"jobs": [{"job_id": "job-1", "task_type": "predict", "status": "running", "created_at": "now"}]},
-            {"message": "Cancellation requested"},
+            {"status": "cancel_requested", "message": "Cancellation requested"},
         ]
     )
     client = StudioJobsApiClient("http://studio.test", session=session)
