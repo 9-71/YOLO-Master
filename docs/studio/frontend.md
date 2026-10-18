@@ -7,6 +7,13 @@ All three use the same `/api/v1/jobs` Service and Studio Runtime. The synchronou
 Inference Studio retains its existing direct inference path. A UI never creates a
 JobsManager or determines task completion from a submission or cancellation ack.
 
+For combined Service and Gradio startup from a source checkout, use Python
+3.10+ and install the Service extra plus the UI dependencies:
+
+```bash
+pip install -e ".[studio]" gradio pandas
+```
+
 Run `python main_engine.py` to serve the API and zero-build console at
 `http://127.0.0.1:8000/`. React development uses `npm ci` and `npm run dev` in `web/`.
 Run `npm run lint` and `npm run build` before delivering React changes; the build
@@ -86,11 +93,13 @@ STUDIO_TEST_MODEL=/absolute/local/yolov8n.pt python -m pytest \
   tests/studio/test_mainline_integration.py --slow --studio-integration -q
 ```
 
-These automated checks do not replace the human PR4 Gate. Before publication,
-exercise React, zero-build, and Gradio with actual submit → running → logs →
+Automated checks do not replace manual client acceptance. Record the candidate
+revision, environment, and evidence for each acceptance run. Exercise React,
+zero-build, and Gradio with actual submit → running → logs →
 artifacts → cancel flows. Check a large terminal log tail, rapid job/API switching,
 unavailable backend, nested artifact downloads, original synchronous inference,
 and combined launcher shutdown/restart. Review actual checkpoint load/resume,
-terminal state, and absence of owned descendants. Windows CPU evidence does not
-establish Linux/macOS, GPU/AMP/dataloader, or DDP support; retain their separate
-platform and training Gates until verified.
+terminal state, and absence of owned descendants. Reuse recorded acceptance only
+within its stated revision and scope. Windows CPU evidence does not establish
+Linux/macOS, GPU/AMP/dataloader, or DDP support; track unverified platform and
+training paths separately.

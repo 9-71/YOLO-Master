@@ -123,10 +123,10 @@ Windows workers detach from the service console before task execution and route
 Python stdout/stderr and prebound console logging through sanitized IPC. Job
 Object containment remains active. Native descriptor writes and interrupted
 partial lines are outside this text-stream guarantee. POSIX guardian/subreaper
-behavior is unchanged. The PR4 combined launcher now requests cooperative Service
+behavior is unchanged. The combined launcher requests cooperative Service
 shutdown and waits for the configured HTTP drain, Runtime cooperation/cleanup,
 and service exit budgets. See [clients and launcher](frontend.md) for process
-ownership, failure behavior, and the remaining human/platform acceptance Gates.
+ownership, failure behavior, and manual/platform acceptance scope.
 
 ## Verification
 
@@ -143,9 +143,9 @@ external service signal, checkpoint load/resume and restart. Its launcher case
 runs the actual combined Service and Gradio entry and checks both HTTP endpoints
 before exercising tasks and signal-driven cleanup. It uses CPU and a tiny generated
 dataset; effective loader workers are zero and CPU AMP is disabled even if the
-configured AMP option is true. This establishes the automated Windows CPU launcher
-path when run there; GPU/loader/AMP-scaler, DDP, Linux/macOS and browser-human Gates
-still require their own evidence. Process harness tests additionally
+configured AMP option is true. When run on Windows, this establishes the
+automated CPU launcher path. Manual client acceptance and GPU/loader/AMP-scaler,
+DDP, Linux/macOS validation require separate, scoped evidence. Process harness tests additionally
 cover cooperation, fallback and retained ownership after injected cleanup failure.
 Their finalizer restores cleanup; they do not prove permanent-failure exit bounds.
 Identity absence after cleanup/exit does not measure the exact kernel reap instant.
