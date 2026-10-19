@@ -22,7 +22,8 @@ from tests.studio.test_service_process import free_port, identities_gone, signal
 
 @pytest.mark.slow
 @pytest.mark.studio_integration
-def test_production_five_tasks_legacy_client_checkpoint_resume_restart(tmp_path):
+@pytest.mark.parametrize("entry", ["service", "launcher"])
+def test_production_five_tasks_legacy_client_checkpoint_resume_restart(tmp_path, entry):
     import torch
     import yaml
     from PIL import Image
@@ -46,6 +47,7 @@ def test_production_five_tasks_legacy_client_checkpoint_resume_restart(tmp_path)
     )
     image = tmp_path / "images" / "val" / "0.jpg"
     port = free_port()
+    ui_port = free_port()
     env = dict(os.environ)
     for suffix in SUFFIXES:
         env.pop("F1_" + suffix, None)
@@ -62,13 +64,20 @@ def test_production_five_tasks_legacy_client_checkpoint_resume_restart(tmp_path)
             "STUDIO_SHUTDOWN_GRACE_SECONDS": "120",
             "YOLO_AUTOINSTALL": "false",
             "YOLO_OFFLINE": "true",
+            "STUDIO_API_URL": f"http://127.0.0.1:{port}",
+            "F1_STUDIO_API_URL": f"http://127.0.0.1:{port}",
+            "GRADIO_SERVER_NAME": "127.0.0.1",
+            "GRADIO_SERVER_PORT": str(ui_port),
+            "GRADIO_ANALYTICS_ENABLED": "False",
+            "NO_PROXY": "127.0.0.1,localhost,::1",
+            "no_proxy": "127.0.0.1,localhost,::1",
         }
     )
     log = (tmp_path / "production.log").open("w", encoding="utf-8")
 
     def launch():
         return subprocess.Popen(
-            [sys.executable, "main_engine.py"],
+            [sys.executable, "start_studio.py" if entry == "launcher" else "main_engine.py"],
             env=env,
             stdout=log,
             stderr=subprocess.STDOUT,
@@ -77,7 +86,7 @@ def test_production_five_tasks_legacy_client_checkpoint_resume_restart(tmp_path)
 
     process = launch()
     facts = {
-        "entry": "python main_engine.py",
+        "entry": "python start_studio.py" if entry == "launcher" else "python main_engine.py",
         "factory": "production_manager",
         "model": str(source_model),
         "device": "cpu",
@@ -94,6 +103,33 @@ def test_production_five_tasks_legacy_client_checkpoint_resume_restart(tmp_path)
                     return False
 
             wait_for(ready, timeout=30)
+            if entry == "launcher":
+
+                def ui_ready():
+                    assert process.poll() is None, (tmp_path / "production.log").read_text(encoding="utf-8")
+                    try:
+                        return httpx.get(f"http://127.0.0.1:{ui_port}", trust_env=False, timeout=3).status_code == 200
+                    except httpx.TransportError:
+                        return False
+
+                wait_for(ui_ready, timeout=60)
+                facts["gradio_ready"] = True
+
+            def service_children():
+                root = psutil.Process(process.pid)
+                # Windows venv executables add redirector processes. Select the
+                # deepest actual service entry, excluding the still-live API
+                # itself from the worker identities that cancellation must reap.
+                services = [
+                    p
+                    for p in [root, *root.children(recursive=True)]
+                    if any(Path(arg).name == "main_engine.py" for arg in p.cmdline())
+                ]
+                assert services
+                owner = max(services, key=lambda p: len(p.parents()))
+                facts["service_process"] = {"pid": owner.pid, "created": owner.create_time()}
+                return owner.children(recursive=True)
+
             legacy_client = StudioJobsApiClient(f"http://127.0.0.1:{port}")
             predict_id, _ = legacy_client.submit_job(
                 "predict", str(model), str(image), str(tmp_path), 0.25, "cpu", [str(tmp_path)]
@@ -158,7 +194,7 @@ def test_production_five_tasks_legacy_client_checkpoint_resume_restart(tmp_path)
                 ),
                 timeout=120,
             )
-            cancel_children = psutil.Process(process.pid).children(recursive=True)
+            cancel_children = service_children()
             cancel_identities = [{"pid": child.pid, "created": child.create_time()} for child in cancel_children]
             assert cancel_identities
             assert client.get("/api/v1/jobs/production-cancel").json()["status"] == "running"

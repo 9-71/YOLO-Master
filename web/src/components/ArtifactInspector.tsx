@@ -5,6 +5,7 @@ import { useJobs } from "../state/JobContext";
 export function ArtifactInspector() {
   const { baseUrl, selectedJobId, artifacts, refreshArtifacts } = useJobs();
   const [lightbox, setLightbox] = useState<{ url: string; filename: string } | null>(null);
+  useEffect(() => setLightbox(null), [baseUrl, selectedJobId]);
   useEffect(() => { const close = (event: KeyboardEvent) => { if (event.key === "Escape") setLightbox(null); }; document.addEventListener("keydown", close); return () => document.removeEventListener("keydown", close); }, []);
   const images = useMemo(() => {
     const list = artifacts.artifacts.filter((entry) => entry.is_image).map((entry) => ({ filename: entry.filename, url: absUrl(baseUrl, entry.download_url) }));

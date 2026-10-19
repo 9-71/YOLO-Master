@@ -756,57 +756,39 @@ class TestArtifactTableSelectGuard:
 
 
 class TestOpenOutputFolderNavigation:
-    """The open-folder button must reveal exactly the job-specific root folder."""
+    """The folder control reveals the client's HTTP download cache only."""
 
-    def _build(self) -> tuple[JobsManager, Callable[..., Any]]:
-        manager = JobsManager()
-        tab = create_jobs_tab(manager, "en")
-        button = next(b for b in tab.blocks.values() if isinstance(b, gr.Button) and b.value == "📂 Open Folder")
-        return manager, _wired_fn(tab, button, "click")
-
-    def _insert_job(self, manager: JobsManager, job_id: str, output_dir: Path, artifacts: list[str]) -> None:
-        job = JobRequest(
-            job_id=job_id,
-            task_type=TaskType.PREDICT,
-            status=JobStatus.COMPLETED,
-            output=OutputConfig(output_dir=str(output_dir), artifacts=artifacts),
+    def _build(self, directory: Path | None = None) -> Callable[..., Any]:
+        client = SimpleNamespace(
+            list_recent_jobs=lambda limit: [],
+            get_artifact_download_directory=lambda job_id: directory,
         )
-        manager.jobs[job_id] = job
+        tab = create_jobs_tab(client, "en")
+        button = next(b for b in tab.blocks.values() if isinstance(b, gr.Button) and b.value == "📂 Open Downloads")
+        return _wired_fn(tab, button, "click")
 
     @pytest.mark.skipif(os.name != "nt", reason="os.startfile is Windows-only")
     def test_deep_artifact_opens_job_root(self, tmp_path: Path, monkeypatch: Any) -> None:
-        """Artifacts nested in ``<job_root>/weights/`` open the job root, not the subdir."""
-        manager, open_fn = self._build()
-        job_root = tmp_path / "runs" / "train" / "predict_open001"
-        (job_root / "weights").mkdir(parents=True)
-        best = job_root / "weights" / "best.pt"
+        """Nested downloaded files open the client cache root, independent of server roots."""
+        cache_root = tmp_path / "download-cache"
+        (cache_root / "weights").mkdir(parents=True)
+        best = cache_root / "weights" / "best.pt"
         best.write_bytes(b"pt")
-        self._insert_job(manager, "predict_open001", tmp_path / "runs" / "train", [str(best.resolve())])
-
+        open_fn = self._build(cache_root)
         opened: list[str] = []
-
-        def _fake_startfile(path: str) -> None:
-            opened.append(path)
-
-        monkeypatch.setattr(os, "startfile", _fake_startfile, raising=False)
-        metadata = TestArtifactTableSelectGuard._metadata([best])
-        open_fn("predict_open001", metadata, "en")
-
-        # Exactly the directory whose name contains the job_id — never deeper,
-        # never the parent runs/train.
-        assert opened == [str(job_root)]
+        monkeypatch.setattr(os, "startfile", lambda path: opened.append(path), raising=False)
+        open_fn("predict_open001", TestArtifactTableSelectGuard._metadata([best]), "en")
+        assert opened == [str(cache_root)]
 
     def test_posix_branch_uses_xdg_open_on_job_root(self, tmp_path: Path, monkeypatch: Any) -> None:
-        """Non-Windows platforms shell out with the job root as the sole argument."""
-        import f1.ui.jobs_tab as jobs_tab_module
+        """The POSIX file manager receives the explicit client cache root."""
+        import studio.ui.jobs_tab as jobs_tab_module
 
-        manager, open_fn = self._build()
-        job_root = tmp_path / "runs" / "val" / "val_open002"
-        job_root.mkdir(parents=True)
-        report = job_root / "results.csv"
+        cache_root = tmp_path / "download-cache"
+        cache_root.mkdir()
+        report = cache_root / "results.csv"
         report.write_text("epoch\n", encoding="utf-8")
-        self._insert_job(manager, "val_open002", tmp_path / "runs" / "val", [str(report.resolve())])
-
+        open_fn = self._build(cache_root)
         commands: list[list[str]] = []
 
         class _FakePopen:
@@ -816,34 +798,22 @@ class TestOpenOutputFolderNavigation:
         monkeypatch.setattr(jobs_tab_module, "os", SimpleNamespace(name="posix"))
         monkeypatch.setattr(sys, "platform", "linux")
         monkeypatch.setattr(subprocess, "Popen", _FakePopen)
-        metadata = TestArtifactTableSelectGuard._metadata([report])
-        open_fn("val_open002", metadata, "en")
-
-        assert commands == [["xdg-open", str(job_root)]]
+        open_fn("val_open002", TestArtifactTableSelectGuard._metadata([report]), "en")
+        assert commands == [["xdg-open", str(cache_root)]]
 
     def test_missing_directory_warns_without_opening(self, tmp_path: Path, monkeypatch: Any) -> None:
-        """A dangling manifest or unknown job id degrades to a localized warning."""
-        manager, open_fn = self._build()
-        self._insert_job(
-            manager,
-            "predict_gone001",
-            tmp_path / "runs" / "predict",
-            [str(tmp_path / "runs" / "predict" / "predict_gone001" / "ghost.jpg")],
-        )
-
+        """No downloaded cache produces a localized warning without filesystem discovery."""
+        open_fn = self._build()
         warnings: list[str] = []
         opened: list[str] = []
         monkeypatch.setattr("gradio.Warning", lambda message: warnings.append(message))
         monkeypatch.setattr(os, "startfile", lambda path: opened.append(path), raising=False)
-
-        ghost = tmp_path / "runs" / "predict" / "predict_gone001" / "ghost.jpg"
-        open_fn("predict_gone001", TestArtifactTableSelectGuard._metadata([ghost]), "en")
+        open_fn("predict_gone001", [], "en")
         open_fn("no-such-job", [], "zh")
-
         assert len(warnings) == 2
         assert "Output directory does not exist." in warnings
         assert "输出目录尚不存在。" in warnings
-        assert opened == []  # never touches the OS on a missing folder
+        assert opened == []
 
 
 class TestJobsPersistence:

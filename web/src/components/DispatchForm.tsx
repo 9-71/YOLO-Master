@@ -1,4 +1,4 @@
-import { useState, type FormEvent } from "react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
 import { useJobs } from "../state/JobContext";
 import type { JobRequest, TaskType } from "../types";
 
@@ -110,6 +110,8 @@ const optionalDefaultHint = "Leave blank to use server/engine default.";
 
 export function DispatchForm({ onJobCreated }: { onJobCreated: (jobId: string) => void }) {
   const { submitJob } = useJobs();
+  const mounted = useRef(true);
+  useEffect(() => { mounted.current = true; return () => { mounted.current = false; }; }, []);
   const [taskType, setTaskType] = useState<TaskType>("predict");
   const [modelPath, setModelPath] = useState(TASK_PRESETS.predict.model);
   const [dataSource, setDataSource] = useState(TASK_PRESETS.predict.data);
@@ -239,12 +241,14 @@ export function DispatchForm({ onJobCreated }: { onJobCreated: (jobId: string) =
       };
       setBusy(true);
       const jobId = await submitJob(payload);
+      if (!mounted.current || jobId === null) return;
       setFeedback(`✓ Job ${jobId} submitted (201) — opening detail…`);
       onJobCreated(jobId);
     } catch (error) {
+      if (!mounted.current) return;
       setFeedback(`✗ ${error instanceof Error ? error.message : String(error)}`);
     } finally {
-      setBusy(false);
+      if (mounted.current) setBusy(false);
     }
   }
 

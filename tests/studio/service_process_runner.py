@@ -41,7 +41,7 @@ def main():
                 )
 
     def factory():
-        grace = 120 if mode == "real" else 1
+        grace = 120 if mode == "real" else 5 if mode == "cooperative" else 1
         manager = ObservedManager(
             storage_path=root / "state.json",
             output_root=root,
